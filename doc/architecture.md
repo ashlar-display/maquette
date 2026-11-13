@@ -465,9 +465,106 @@ not turn red on `cargo update`.
 maquette runs each check against its own implementations, and the checks' negative cases
 against deliberately broken doubles.
 
-*To settle before the checks are written:* their signatures — how clock and delay are passed
-(as two values, the general platform case), how the known device and its image are
-described, the PHY probe's type, the report type, and the async forms.
+### The checks' shape
+
+Every check lives in `maquette::check`, takes the implementation under test as the trait
+values a procedure would get, and returns a `Report` of its own failure type:
+
+```rust
+/// What a check found: the points that failed, in the order found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report<F, const N: usize = 16> { /* private */ }
+
+impl<F, const N: usize> Report<F, N> {
+    /// Whether every point passed.
+    pub fn is_ok(&self) -> bool;
+    /// How many points the check ran.
+    pub fn points(&self) -> usize;
+    /// How many points failed, recorded or not.
+    pub fn failed(&self) -> usize;
+    /// The failed points recorded: the first `N`, in the order found.
+    pub fn failures(&self) -> impl Iterator<Item = &F>;
+    /// How many failed points were not recorded, past the first `N`.
+    pub fn overflow(&self) -> usize;
+    /// Panics, listing every recorded failure and the overflow, unless every point passed.
+    #[track_caller]
+    pub fn assert_ok(&self) where F: fmt::Display;
+}
+
+impl<F: fmt::Display, const N: usize> fmt::Display for Report<F, N> { /* one line per failure */ }
+```
+
+- **A report, not a panic:** a check runs every point, so an implementor sees every failure
+  at once. `assert_ok` is the one assertion a test needs.
+- **Fixed capacity, overflow counted:** no `alloc`; `failed()` stays exact past `N`.
+- **Failure types are the check's own** `#[non_exhaustive]` enums, `Copy` where their fields
+  are, implementing `Display`, so a check can gain a point in a breaking release without
+  changing the report type.
+- **A check's settings** are a `#[non_exhaustive]` struct with a `const DEFAULT` and `const`
+  `with_*` builders, and `run` (and `run_async` with the `async` feature) on it; a function
+  named after the check runs it with the defaults.
+- **The async form** takes hdmi-hal-async's trait, which their `Send` twins implement through
+  their blanket implementations, so one async check covers both. It does not promise a `Send`
+  future: a test drives it to completion where it is.
+
+### The clock check
+
+Clock and delay are passed as two values, as a platform supplies them from two peripherals;
+one value implementing both (a `SimClock`) is passed as `&clock` and `&mut &clock`.
+
+```rust
+/// The clock check with its default settings.
+pub fn clock<C: Clock + ?Sized, D: Delay + ?Sized>(clock: &C, delay: &mut D)
+    -> Report<ClockFailure>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClockCheck<'a> {
+    /// The delays run, each between two reads of the clock.
+    pub delays: &'a [Duration],
+    /// The reads of the clock in a row, with no delay between them.
+    pub reads: u32,
+}
+
+impl ClockCheck<'static> {
+    /// Delays of 0, 1 ns, 1 µs, 999 µs, 1 ms, 1.001 ms and 10 ms (about 13 ms in all on a
+    /// real timer), and 1000 reads in a row.
+    pub const DEFAULT: Self;
+}
+
+impl<'a> ClockCheck<'a> {
+    pub const fn with_delays<'b>(self, delays: &'b [Duration]) -> ClockCheck<'b>;
+    pub const fn with_reads(self, reads: u32) -> Self;
+
+    pub fn run<C: Clock + ?Sized, D: Delay + ?Sized>(&self, clock: &C, delay: &mut D)
+        -> Report<ClockFailure>;
+
+    #[cfg(feature = "async")]
+    pub async fn run_async<C, D>(&self, clock: &C, delay: &mut D) -> Report<ClockFailure>
+    where
+        C: Clock + ?Sized,
+        D: hdmi_hal_async::time::Delay + ?Sized;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClockFailure {
+    /// A read of the clock was earlier than the read before it.
+    WentBackwards { earlier: Timestamp, later: Timestamp },
+    /// Across `delay(requested)`, the clock advanced only `elapsed`.
+    DelayTooShort { requested: Duration, elapsed: Duration },
+}
+```
+
+The points: each read compared with the read before it, over the reads in a row and around
+every delay (`WentBackwards`); each delay, measured on the clock from the read before it to
+the read after it (`DelayTooShort`). A clock that never advances fails every delay but the
+zero one. The delays run in the order given, so a coarse clock or a timer with a long
+minimum delay is checked at the durations its procedures use; `with_delays` sets them, for
+a platform whose real delays should be few or short.
+
+*To settle with their checks:* how the known device and its image are described (the
+`DdcBus` and `ScdcTransport` checks), and the PHY probe's type.
 
 ---
 
