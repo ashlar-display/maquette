@@ -223,7 +223,31 @@ a bare target the user supplies one. The state is borrowed only inside
 - the test (`advance(d)`).
 
 `now` never moves backwards, never reads the host, and saturates rather than overflowing. A
-tick setting gives it a coarse resolution, as some platform clocks have.
+tick setting gives it a coarse resolution, as some platform clocks have: `now` reads in
+whole ticks, rounded down, and a delay is rounded up to whole ticks, so `now` read after
+`delay(d)` is always at least `d` later than before it.
+
+```rust
+pub struct SimClock { /* private */ }   // Send + Sync
+
+impl SimClock {
+    pub const fn new() -> Self;                                // at zero, 1 µs tick
+    pub const fn with_tick(self, tick: Duration) -> Self;
+    pub const fn with_overshoot(self, overshoot: Duration) -> Self;
+    pub const fn tick(&self) -> Duration;
+    pub const fn overshoot(&self) -> Duration;
+    pub fn advance(&self, duration: Duration);
+}
+
+impl Clock for SimClock {}   impl Delay for SimClock {}
+impl Clock for &SimClock {}  impl Delay for &SimClock {}
+```
+
+Standing alone, the clock keeps its time behind a `critical_section::Mutex`, so it is `Sync`
+and can be a `static`. `Clock` and `Delay` are also implemented for `&SimClock`, so one clock
+is passed as both where a procedure takes them as separate values (`&clock`,
+`&mut &clock`), as hdmi-hal's time module describes for test doubles. Durations are rounded
+up to whole microseconds, the resolution of hdmi-hal's `Timestamp`.
 
 **When things are evaluated.** The sink evaluates its behaviour at every bench event: a bus
 transfer, a PHY call, a line change, an HPD change, `advance`. Nothing runs in the

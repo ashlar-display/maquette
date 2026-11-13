@@ -2,16 +2,16 @@
 
 What each release contains will be in the [changelog](../CHANGELOG.md); this page is about
 what comes next. Today `maquette` is its design ([`architecture.md`](architecture.md)) and
-the crate's scaffolding; nothing is implemented yet.
+`SimClock`, hdmi-hal's `Clock` and `Delay` on simulated time.
 
 ## Planned
 
 In the order they are built:
 
-### `SimClock` and the clock checks
+### The clock check
 
-hdmi-hal's `Clock` and `Delay` on simulated time, standalone or held by a bench, and the
-conformance check for `Clock` and `Delay` implementations.
+The conformance check for `Clock` and `Delay` implementations, run against `SimClock` and
+against broken clocks.
 
 ### The register-level sink and `DdcBus`
 

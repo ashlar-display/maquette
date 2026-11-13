@@ -28,6 +28,11 @@ hdmi-hal = { version = "0.6", default-features = false }
 hdmi-hal-async = { version = "0.3", default-features = false, optional = true }
 critical-section = "1.2"
 
+[dev-dependencies]
+# The tests run on a host, which needs a critical-section implementation with every
+# feature set; a bare-target build of the library does not see this.
+critical-section = { version = "1.2", features = ["std"] }
+
 # Prototype against hdmi-hal's unreleased breaking release: pushed commits of hdmi-hal's
 # and hdmi-hal-async's feat/tmds-phy branches, moved by hand. Removed when they are
 # released; CI on main and the publish workflow fail while it is here.

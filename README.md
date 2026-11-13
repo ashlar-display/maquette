@@ -24,13 +24,52 @@ conformance checks that an implementation of hdmi-hal's traits runs in its own t
 
 ## Status
 
-Design. Nothing is implemented yet; the design is in
-[`doc/architecture.md`](doc/architecture.md), and the order in which it is built is on the
-[roadmap](doc/roadmap.md).
+In development. Built so far: `SimClock`, hdmi-hal's clock and delay on simulated time. The
+design is in [`doc/architecture.md`](doc/architecture.md), and the order in which the rest is
+built is on the [roadmap](doc/roadmap.md).
 
 ## Usage
 
-*To come with the implementation.*
+A procedure that waits and reads the time runs on `SimClock` in no time at all, and a test
+checks exactly how long it took. One clock serves as both clock and delay:
+
+```rust
+use core::time::Duration;
+use maquette::{Clock, Delay, SimClock, Timestamp};
+
+/// Polls `ready` every millisecond until it holds or `timeout` has passed.
+fn poll<C: Clock, D: Delay>(
+    clock: &C,
+    delay: &mut D,
+    timeout: Duration,
+    mut ready: impl FnMut() -> bool,
+) -> bool {
+    let start = clock.now();
+    loop {
+        if ready() {
+            return true;
+        }
+        if clock.now().saturating_duration_since(start) >= timeout {
+            return false;
+        }
+        delay.delay(Duration::from_millis(1));
+    }
+}
+
+// A delay that sleeps 100 µs long, as a real one may.
+let clock = SimClock::new().with_overshoot(Duration::from_micros(100));
+let mut polls = 0;
+let found = poll(&clock, &mut &clock, Duration::from_millis(5), || {
+    polls += 1;
+    polls == 4
+});
+assert!(found);
+// Three delays of 1 ms, each 100 µs long.
+assert_eq!(clock.now(), Timestamp::from_micros(3_300));
+```
+
+`SimClock` is `Sync` and can be a `static`. With the `std` feature a host supplies its
+critical section; on a bare target the application supplies one.
 
 ## Features
 

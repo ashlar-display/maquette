@@ -7,7 +7,8 @@
 //! asserts on one ordered transcript of everything that happened. It also carries
 //! conformance checks that an implementation of hdmi-hal's traits runs in its own tests.
 //!
-//! Nothing is implemented yet: the design is in `doc/architecture.md`.
+//! Built so far: [`SimClock`], hdmi-hal's `Clock` and `Delay` on simulated time. The rest
+//! of the design is in `doc/architecture.md`.
 //!
 //! # Features
 //!
@@ -21,7 +22,15 @@
 #![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod clock;
+
 // Compiles and runs the README's examples as doctests.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
+
+pub use clock::SimClock;
+
+/// The hdmi-hal time types `SimClock` implements and returns, re-exported so a test names
+/// the same versions maquette does without depending on hdmi-hal itself.
+pub use hdmi_hal::time::{Clock, Delay, Timestamp};

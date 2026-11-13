@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`SimClock`:** hdmi-hal's `Clock` and `Delay` on simulated time, starting at zero and
+  moving only by a delay or the test's `advance`; it never reads the host's time, never
+  moves backwards and saturates instead of overflowing. `with_tick` gives it a coarse
+  resolution (`now` rounded down, delays rounded up to whole ticks) and `with_overshoot`
+  makes every delay wait longer than asked; either way `now` after `delay(d)` is at least
+  `d` later. `Sync`, `const`-constructible, and implemented for `&SimClock` too, so one
+  clock is passed as both clock and delay.
+- Re-exports of hdmi-hal's `Clock`, `Delay` and `Timestamp`.
+
 ### Internal
 
 - CI: format, clippy and tests without features, with `std` and with `async`; docs with

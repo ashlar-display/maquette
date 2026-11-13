@@ -1,7 +1,16 @@
 # Testing Strategy
 
-No tests yet: nothing is implemented. This page says how the tests will be designed; the
-test structure (which file tests what) is filled in as the parts are built.
+This page says how the tests are designed, and which file tests what; it grows as the
+parts are built.
+
+## Test structure
+
+- **`src/clock.rs`** — `SimClock`: the start at zero, `advance`, delays with and without
+  overshoot, the tick's rounding (`now` down, delays up), that a delay from any point within
+  a tick waits at least its duration, saturation at the largest `Timestamp`, monotonic
+  reads over mixed delays and advances, the reference implementations, `Send` and `Sync`,
+  sharing between threads, and use in a `static`.
+- **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed
 
