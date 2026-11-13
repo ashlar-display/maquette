@@ -1,0 +1,102 @@
+# maquette
+
+[![CI](https://github.com/ashlar-display/maquette/actions/workflows/ci.yml/badge.svg)](https://github.com/ashlar-display/maquette/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/maquette.svg)](https://crates.io/crates/maquette)
+[![docs.rs](https://docs.rs/maquette/badge.svg)](https://docs.rs/maquette)
+[![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](LICENSE)
+[![Rust 1.85+](https://img.shields.io/badge/rustc-1.85+-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![SLSA Level 2](https://slsa.dev/images/gh-badge-level2.svg)](https://slsa.dev)
+
+> **Part of [Ashlar](https://ashlar-display.org)** — a display connection stack in Rust,
+> HDMI 2.1 first: from EDID parsing through mode negotiation to FRL link training.
+> See [all crates](https://ashlar-display.org/crates.html).
+
+A simulated HDMI sink for tests.
+
+`maquette` simulates what an HDMI source can observe of a sink: its SCDC registers, its EDID
+and DisplayID behind the DDC bus, the source's PHY and the line between them, and a clock,
+all under deterministic simulated time. Code written over
+[hdmi-hal](https://github.com/ashlar-display/hdmi-hal)'s traits runs against it as against a
+sink — with the sink's delays, its refusals and its faults — and a test asserts on one
+ordered transcript of everything that happened. Where real sinks differ and no public source
+settles how, the behaviour is a setting with a documented default. It also carries
+conformance checks that an implementation of hdmi-hal's traits runs in its own tests.
+
+## Status
+
+Design. Nothing is implemented yet; the design is in
+[`doc/architecture.md`](doc/architecture.md), and the order in which it is built is on the
+[roadmap](doc/roadmap.md).
+
+## Usage
+
+*To come with the implementation.*
+
+## Features
+
+- **`std`** — the critical-section implementation for hosts, and the checks that need
+  threads. Without it, the application supplies its own critical section, as embedded code
+  does. A host test enables it:
+
+  ```toml
+  [dev-dependencies]
+  maquette = { version = "…", features = ["std"] }
+  ```
+- **`async`** — hdmi-hal-async's traits, and their `Send` twins, on the same handles.
+
+## `no_std` builds
+
+`maquette` is `#![no_std]` without `alloc` in every build, and `#![forbid(unsafe_code)]`:
+its capacities are const generics with defaults, so a bench also runs on a bare target.
+
+## Stack position
+
+`maquette` implements and checks [hdmi-hal](https://github.com/ashlar-display/hdmi-hal)'s
+traits, and [hdmi-hal-async](https://github.com/ashlar-display/hdmi-hal-async)'s with the
+`async` feature. The crates above them use it in their tests.
+
+## Out of scope
+
+Checks for traits defined by the crates that test against it, a sink's internals (video
+decoding, its EDID policy, CEC), and real hardware. See
+[`doc/architecture.md`](doc/architecture.md).
+
+## Documentation
+
+- [`doc/architecture.md`](doc/architecture.md) — role, scope, the bench and its handles,
+  time, the sink's behaviour and its sources, faults, the conformance checks
+- [`doc/roadmap.md`](doc/roadmap.md) — what is planned, in the order it is built
+- [`doc/setup.md`](doc/setup.md) — build, test, MSRV and coverage commands
+- [`doc/testing.md`](doc/testing.md) — how the tests are designed
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — issues, pull requests and coding standards
+
+## Verifying releases
+
+Releases will be built on GitHub Actions and attested with
+[SLSA Build Level 2](https://slsa.dev) provenance. To verify a release `.crate` against its
+signed provenance, install the [GitHub CLI](https://cli.github.com/) and run:
+
+```sh
+gh attestation verify maquette-X.Y.Z.crate --repo ashlar-display/maquette
+```
+
+The attested `.crate` will be attached to each
+[GitHub release](https://github.com/ashlar-display/maquette/releases).
+
+The first release will be uploaded by the publish workflow with a crates.io API token scoped
+to publishing this new crate, because trusted publishing can only be set up for a crate
+already on crates.io; the token is revoked afterwards. Later releases will be uploaded
+through crates.io
+[trusted publishing](https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html):
+the publish workflow obtains a short-lived token via OpenID Connect instead of using a
+stored API token. Each version's publishing details, including the workflow run and commit,
+are available from the crates.io API:
+
+```sh
+curl -A "your-tool (contact)" https://crates.io/api/v1/crates/maquette/X.Y.Z
+# see .version.trustpub_data
+```
+
+## License
+
+[MPL-2.0](LICENSE)
