@@ -1008,8 +1008,98 @@ zero one. The delays run in the order given, so a coarse clock or a timer with a
 minimum delay is checked at the durations its procedures use; `with_delays` sets them, for
 a platform whose real delays should be few or short.
 
-*To settle with their checks:* how the known device and its image are described (the
-`DdcBus` and `ScdcTransport` checks), and the PHY probe's type.
+### The checks for hdmi-hal's traits
+
+Each takes the implementation under test, a description of what is on its other side, and
+the hooks a check needs for what the traits cannot show. The descriptions and hooks are
+plain values and small traits, so the checks run against the bench, against Linux's
+`i2c-stub`, against a board, or against a test's own double; the bench provides every hook.
+
+```rust
+/// What is behind a DDC bus, as far as the check needs to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DdcDevice<'d> {
+    /// The EDID the device serves, if the check should read and compare it.
+    pub edid: Option<&'d [u8]>,
+    /// Whether the device has an E-DDC segment pointer (`false`: segment 0 is read without
+    /// one, E-DDC 1.3 §8.1.2).
+    pub segment_pointer: bool,
+    /// An address the capabilities reach where nothing answers, for the `NoAcknowledge`
+    /// point.
+    pub silent: Option<u8>,
+}
+// DdcDevice::new(), with const `with_edid`, `without_segment_pointer`, `with_silent`.
+
+pub struct DdcBusCheck<'d> { /* the device; settings with `with_*` */ }
+impl<'d> DdcBusCheck<'d> {
+    pub const fn new(device: DdcDevice<'d>) -> Self;
+    pub fn run<B: DdcBus + ?Sized>(&self, bus: &B) -> Report<DdcBusFailure>;
+    #[cfg(feature = "std")]   // concurrent calls from `threads` threads, without a panic
+    pub fn run_threads<B: DdcBus + Sync + ?Sized>(&self, bus: &B, threads: usize)
+        -> Report<DdcBusFailure>;
+    #[cfg(feature = "async")]
+    pub async fn run_async<B: hdmi_hal_async::ddc::DdcBus + ?Sized>(&self, bus: &B)
+        -> Report<DdcBusFailure>;
+}
+
+/// The SCDC registers whose values the check knows and that hold still while it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScdcImage { /* 256 × Option<u8> */ }
+// ScdcImage::new(), `with(reg, value)`; `ScdcImage::of(&bench)`: the bench's registers but
+// the ones that change by themselves (status and update flags, the error counters).
+
+/// Makes the next transfer fail, so a check can see what follows an error.
+pub trait FailNext {
+    fn fail_next(&self, kind: DdcErrorKind);
+}
+// Implemented for `Bench` (a scheduled fault on the next operation).
+
+pub struct ScdcTransportCheck<'i> { /* the image; an optional `&dyn FailNext` */ }
+impl<'i> ScdcTransportCheck<'i> {
+    pub const fn new(image: &'i ScdcImage) -> Self;
+    pub const fn with_faults(self, faults: &'i dyn FailNext) -> Self;
+    pub fn run<T: ScdcTransport + ?Sized>(&self, transport: &mut T)
+        -> Report<ScdcTransportFailure>;
+    // run_async with the `async` feature, over hdmi-hal-async's `ScdcTransport`.
+}
+
+/// Whether the PHY's output is running: what the traits cannot show.
+pub trait OutputProbe {
+    /// `None` when it cannot tell; the points that need it are then skipped.
+    fn running(&self) -> Option<bool>;
+}
+// Implemented for `Bench` (its line is not `Line::Off`).
+
+pub struct PhyCheck<'p> { /* a configuration the PHY can do, an optional FRL rate, the probe */ }
+impl<'p> PhyCheck<'p> {
+    pub const fn new(config: TmdsPhyConfig, probe: &'p dyn OutputProbe) -> Self;
+    pub const fn with_frl_rate(self, rate: HdmiForumFrl) -> Self;
+    /// `TmdsPhy` alone: the points that need no power or FRL.
+    pub fn run_tmds<P: TmdsPhy + ?Sized>(&self, phy: &mut P) -> Report<PhyFailure>;
+    /// With `PhyPower`: the power points too.
+    pub fn run_powered<P>(&self, phy: &mut P) -> Report<PhyFailure>
+    where P: TmdsPhy + PhyPower + ?Sized;
+    /// With `FrlPhy`: the mode rule too (needs `with_frl_rate`).
+    pub fn run_frl<P>(&self, phy: &mut P) -> Report<PhyFailure>
+    where P: TmdsPhy + PhyPower + FrlPhy + ?Sized;
+    // The async forms with the `async` feature.
+}
+```
+
+- **The device and the image are the caller's word.** The checks do not discover them: a
+  test on the bench builds the bench from the same values (or takes `ScdcImage::of`), and
+  a test against `i2c-stub` or a board states what it set up there. A point whose
+  description is missing (no EDID given, no silent address) is skipped, not failed.
+- **The `DdcBus` check drives only what is safe on a real device:** the refusals it checks
+  are reads, or writes to the silent address or past `write_max` there, so a backend that
+  wrongly lets one through writes nothing that matters.
+- **The PHY's errors are `Debug` only**, so its failures say which point failed and how
+  (`Failed` where the contract says it succeeds, `Succeeded` where it says it fails,
+  `Running { expected, found }` from the probe), not why. The configuration is the
+  caller's: one the PHY can do.
+- **Failure types** follow the clock check's: `#[non_exhaustive]` enums naming the point
+  (`DdcBusFailure`, `ScdcTransportFailure`, `PhyFailure`), `Copy`, with `Display`.
 
 ---
 
