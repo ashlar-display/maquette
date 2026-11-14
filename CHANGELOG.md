@@ -24,6 +24,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   1 µs, 999 µs, 1 ms, 1.001 ms and 10 ms) and the reads in a row (1000); with `async`,
   `run_async` checks an async delay, its `Send` twin included. Failures are
   `check::ClockFailure` values.
+- **`Bench`**, the simulation a procedure runs against, built with `Bench::new` or
+  `Bench::builder` (the sink's settings, the bus's capabilities and timing, the clock, the
+  test's own targets, and the capacities, which default to 256 records and 16 faults). Its
+  handles are `Copy`, `Send` and `Sync` and name no capacity: `ddc()`, the sink's DDC bus, and
+  `time()`, its clock as one `Clock` and `Delay`. `advance` moves its time and lets every
+  target see it. `BenchError` refuses an EDID store that is not whole 128-byte blocks, up
+  to 256; an empty one is accepted.
+- **`Ddc`, the bench's `DdcBus`:** each call is one transaction, routed to the first target
+  that answers the address of its first operation, or `NoAcknowledge(Address)`. It refuses
+  what `DdcBus`'s argument rules and its capabilities rule out, before any target and
+  without taking time; splits `read_segmented` into pieces where the capabilities say so,
+  writing the segment pointer from segment 1; charges the clock by `BusTiming` (90 µs a byte
+  by default, standard mode); and fills a failed read with `0xA5`. Its errors are
+  `BusError`s, with the kind, the call and the address.
+- **`Target`**, a device on the sink's bus, for a test's own: `answers`, `transaction` over
+  `Operation`s, and `update`; `Env` gives it the time, HPD and `note`.
+- **The transcript**, `Bench::transcript`: one `Record` per bus call (`BusRecord`, refused
+  calls included, a split read per piece) and per target note, in order, with its time;
+  what does not fit is counted. `Event` also has the variants the built-in targets will
+  record (`Register`, `IgnoredWrite`, with `Actor` and `Ignored`).
+- **`SinkConfig`**, the sink's settings, with nothing to set yet.
+- Re-exports of `hdmi_hal` itself and its DDC types (`DdcBus`, `DdcCapabilities`,
+  `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`).
 - **`check::Report`**, what every check returns: the points run, every failed point counted,
   the first 16 recorded in the order found, and `assert_ok`, which panics listing them.
 

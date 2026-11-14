@@ -24,8 +24,9 @@ conformance checks that an implementation of hdmi-hal's traits runs in its own t
 
 ## Status
 
-In development. Built so far: `SimClock`, hdmi-hal's clock and delay on simulated time, and
-the conformance check for clock and delay implementations. The
+In development. Built so far: `SimClock`, hdmi-hal's clock and delay on simulated time; the
+conformance check for clock and delay implementations; and the bench, with its DDC bus routed
+to a test's own targets and the transcript. The built-in SCDC and EDID targets come next. The
 design is in [`doc/architecture.md`](doc/architecture.md), and the order in which the rest is
 built is on the [roadmap](doc/roadmap.md).
 

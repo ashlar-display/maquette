@@ -151,6 +151,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     pub fn time(&self) -> Time<'_>;    // Clock, Delay
     pub fn sink(&self) -> Sink<'_>;    // reads the sink's registers and state
 
+    /// Moves the bench's time forward, then lets every target see it (`Target::update`).
+    pub fn advance(&self, duration: Duration);
+    /// The bench's time.
+    pub fn now(&self) -> Timestamp;
+
     // The test's controls (HPD, plug, detach, advance, presets, faults, the transcript)
     // take `&self` too: a test calls them while the handles are lent to the procedure.
 }
@@ -164,6 +169,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
     pub fn ddc_capabilities(self, capabilities: DdcCapabilities) -> Self;
     pub fn phy_capabilities(self, capabilities: TmdsPhyCapabilities) -> Self;
     pub fn clock(self, clock: SimClock) -> Self;
+    pub fn bus_timing(self, timing: BusTiming) -> Self;
     pub fn targets(self, targets: &'a mut [&'a mut (dyn Target + Send)]) -> Self;
     pub fn capacities<const L: usize, const F: usize>(self) -> BenchBuilder<'a, L, F>;
     pub fn build(self) -> Result<Bench<'a, LOG, FAULTS>, BenchError>;
@@ -199,7 +205,9 @@ pub enum BenchError {
 that failed, implementing `DdcError`. `Phy`'s is `PhyError`: a kind and whether the call took
 effect.
 
-*To settle:* whether an empty EDID store is accepted, as a sink whose EDID does not answer.
+An empty EDID store is accepted: a sink whose EDID does not answer, `NoAcknowledge(Address)`
+at 0x50 (*chosen*, the one way to model a sink without EDID). The DisplayID store is absent
+unless given, and 0x52 then does not answer either.
 
 ### State and threads
 
@@ -283,29 +291,82 @@ copied into `SinkConfig`.
 
 ### Targets
 
-The sink is a set of targets at DDC addresses, which the bench routes operations to. A
-public `Target` trait — `write`, `write_read` and `read` against the bench's time, with
-access to the transcript for the target's own events — is implemented by the built-in
-targets and by a test's own:
+The sink is a set of targets at DDC addresses, which the bench routes transactions to. A
+target sees what a device on the bus sees: transactions, each a sequence of writes and reads
+to addresses, ending in STOP. The built-in targets implement the same public trait a test's
+own do:
+
+```rust
+pub trait Target {
+    /// Whether this target answers at `addr` now (HPD may matter: `env.hpd()`).
+    fn answers(&self, addr: u8, env: &Env<'_>) -> bool;
+
+    /// One transaction: `ops` in order, ending in STOP. The target applies what it accepts
+    /// and fills every read; an error says how the transaction failed, and what the target
+    /// applied before it stays applied.
+    fn transaction(&mut self, ops: &mut [Operation<'_>], env: &mut Env<'_>)
+        -> Result<(), DdcErrorKind>;
+
+    /// A bench event that is not a transaction: time moved, HPD or the line changed.
+    fn update(&mut self, env: &mut Env<'_>) {}
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Operation<'b> {
+    Write { addr: u8, bytes: &'b [u8] },
+    Read { addr: u8, buf: &'b mut [u8] },
+}
+
+/// The bench as a target sees it, for the length of one call.
+pub struct Env<'e> { /* private */ }
+
+impl Env<'_> {
+    pub fn now(&self) -> Timestamp;
+    pub fn hpd(&self) -> bool;
+    /// Records one of the target's own events in the transcript.
+    pub fn note(&mut self, addr: u8, code: u32, value: u32);
+}
+```
+
+The bench turns each `DdcBus` call into one transaction: `write` and `read` into one
+operation, `write_read` into a write and a read, and a piece of `read_segmented` into a
+write of the segment to 0x30 (for segment 1 and higher), a write of the offset and a read.
+The line joins `Env` with the PHY.
+
+**Routing.** While the sink is unplugged or the adapter detached, the bench answers for it
+(see "HPD, unplug and detach"). Otherwise a transaction goes to the first target that
+answers the address of its first operation, the test's targets first, in the order given,
+then the built-in ones; when none answers, it fails `NoAcknowledge(Address)` and no target
+sees it. The target that takes a transaction takes all of it: a later operation to an
+address it does not answer is its to refuse, as a device that does not acknowledge. So a
+test's target at 0x54 replaces the built-in SCDC, and one that replaces the EDID for E-DDC
+reads answers 0x30 as well as 0x50.
+
+The built-in targets:
 
 - **SCDC (0x54):** a 256-byte register file. Which registers the source writes, which the
   sink owns and which are write-1-to-clear are cited in the code from public sources. The
   registers modelled first are those TMDS bring-up uses: `Sink_Version`, `Source_Version`,
-  `Update_0`, `TMDS_Config`, `Scrambling_Status`, `Config_1`.
-- **EDID (0x50) behind the segment pointer (0x30),** and optionally **DisplayID (0x52):**
-  the caller's bytes, a whole number of 128-byte blocks, up to 256. The pointer resets when a
-  NACK or STOP is received (E-DDC 1.3 §8.1.1, Table 9-1) — so a 0x30 write in one call does
-  not carry into the next, because the first call ended in STOP — and at the end of each
-  command sequence (§2.2.5). The word offset persists between calls: a read with no offset
-  written reads at the current address (§6.1). A sink without a segment pointer does not
-  acknowledge its address byte (§8.1.2), `NoAcknowledge(Address)`, and answers segment 0
-  reads (§9.5.1).
+  `Update_0`, `TMDS_Config`, `Scrambling_Status`, `Config_1`. A write sets the offset with
+  its first byte, then writes from there; a read starts at the offset, which advances with
+  every byte, and persists between transactions.
+- **EDID (0x50) behind the segment pointer (0x30),** and optionally **DisplayID (0x52)**,
+  one target: the caller's bytes, a whole number of 128-byte blocks, up to 256. A segment
+  is 256 bytes (E-DDC 1.3 §2.2.5).
+  - The pointer is 0 at the start of every transaction: it resets on a NACK or STOP
+    (§8.1.1, Table 9-1) and at the end of each command sequence (§2.2.5), so a write to
+    0x30 matters only to the reads in the same transaction.
+  - The word offset persists between transactions and advances with every byte read: a
+    read with no offset written reads at the current address (§6.1, §6.3).
+  - For segment 1 and higher the sink acknowledges the pointer value (§6.4–§6.5).
+  - A sink without a segment pointer does not answer 0x30, `NoAcknowledge(Address)`, and
+    answers segment 0 reads (§8.1.2, Table 9-1).
+  - A write to 0x50 or 0x52 after the offset byte is acknowledged and ignored, recorded in
+    the transcript: E-DDC does not require a display to support one (§6).
 
 A test adds targets: DDC/CI at 0x37, an HDCP port, a vendor's register quirk. Register
 presets set any register, the sink-owned ones too.
-
-*To settle with the targets:* the `Target` trait's exact methods, and how a test's target
-and a built-in one at the same address are routed.
 
 ### The line
 
@@ -345,6 +406,55 @@ written before scrambled output starts, the FRL clear before `TMDS_Config`, the 
 ratio write — assert on it, and a failing test shows why the sink did what it did.
 Behaviour can be triggered by a count of operations as well as by time.
 
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Record {
+    /// When it happened: for a bus operation, when it started.
+    pub at: Timestamp,
+    pub event: Event,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Event {
+    /// A `DdcBus` call: what was asked and how it ended, refused calls included.
+    Bus(BusRecord),
+    /// A register of a built-in target changed, by the source or by the sink.
+    Register { addr: u8, reg: u8, from: u8, to: u8, by: Actor },
+    /// A built-in target ignored a write, and why.
+    IgnoredWrite { addr: u8, reg: u8, value: u8, why: Ignored },
+    /// A test's target's own event (`Env::note`).
+    Note { addr: u8, code: u32, value: u32 },
+    // PHY calls, line changes, HPD and plug changes, faults: added with them.
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BusRecord {
+    pub op: BusOp,        // Write, WriteRead, Read, ReadSegmented { target, segment }
+    pub addr: u8,
+    /// The first byte written (an offset or register), if any.
+    pub first: Option<u8>,
+    pub written: u16,
+    pub read: u16,
+    pub result: Result<(), DdcErrorKind>,
+}
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    /// The records, oldest first; each is copied out under the lock.
+    pub fn transcript(&self) -> impl Iterator<Item = Record> + '_;
+    /// How many records did not fit, past `LOG`.
+    pub fn transcript_overflow(&self) -> usize;
+    pub fn clear_transcript(&self);
+}
+```
+
+Records are `Copy` and hold no slices, so the transcript needs no `alloc`; a bus record keeps
+the first byte written, which for SCDC and the EDID is the register or offset, and the
+register events carry the values. When the transcript is full, later records are counted,
+not stored: the oldest are the ones a test of a bring-up asks about.
+
 ---
 
 ## Sink behaviour
@@ -363,11 +473,11 @@ source settles is marked *chosen*.
 | `Source_Version` written by the source, `Sink_Version` reported | [7] | `Sink_Version` a setting (default 1); `Source_Version` stored |
 | Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset at first; the rule that sets them a setting |
 | A sink without SCDC | no source for its answer | NACKs 0x54 (*chosen*) |
-
-*To settle with the targets, each with its sources or a chosen default:* a write to a
-register the sink owns; a read past the EDID store, and a segment the sink does not have
-(E-DDC 1.3 §6.4–§6.5 for segments that exist); an SCDC read past 0xFF; reading across the
-128-byte boundary at 0x50 (E-DDC 1.3 §2.2.6: "some implementations may support" it).
+| A write to an SCDC register the sink owns | no source | a setting: acknowledged and ignored, recorded (*chosen*), or `NoAcknowledge(Data)` at that byte |
+| An SCDC read or write past 0xFF | left to the sink: hdmi-hal's `ScdcTransport` leaves it open, and no source covers it | a setting: the offset wraps to 0x00 (*chosen*, an 8-bit offset register), or `NoAcknowledge(Data)` past 0xFF |
+| A read past the end of the EDID or DisplayID store, in a segment the sink has | E-DDC covers only the data a display has | a setting: reads 0xFF (*chosen*), wraps to the start of the store, or `NoAcknowledge(Data)` |
+| A segment the sink does not have | E-DDC requires an acknowledge of the pointer for segments that exist (§6.4–§6.5), not what follows for others | a setting: `NoAcknowledge(Data)` at the pointer value (*chosen*, as hdmi-hal's `DdcBus` contract reads it), or acknowledged and read as past the store |
+| Reading across the 128-byte boundary at 0x50 or 0x52 | "some implementations may support" it (E-DDC 1.3 §2.2.6) | a setting: continues into the next block (*chosen*), or wraps to the start of the block |
 
 Planned before the first release: FRL training responses (`FLT_ready`, LTP requests,
 `FLT_update`, `FRL_start`), the CED counters (saturation at 0x7FFF, both clear-on-read
@@ -382,6 +492,53 @@ The bench's `ddc()` handle implements `DdcBus` with capabilities a test sets: by
 such as an engine that reads only the EDID or only segment 0. It refuses what its
 capabilities rule out with `Unsupported` before touching the sink, as `DdcBus`'s contract
 asks; a test that wants a backend to misbehave uses a fault.
+
+- **Before the sink:** the argument rules of `DdcBus` (an address outside
+  `is_usable_address`, an empty `write`, a segment above `MAX_SEGMENT` or a read past 256
+  bytes of a segment: `Unsupported`; an empty buffer: `Ok`), then the capabilities. A
+  refused call touches no target, takes no time and is recorded with its result.
+- **`read_segmented`:** split into pieces of `segmented_piece` bytes where the capabilities
+  set one, each piece its own transaction with the pointer and offset written again, so
+  something can change between pieces. Segment 0 writes no pointer.
+- **Errors:** `BusError`, which implements `DdcError`, `Display` and `core::error::Error`:
+
+  ```rust
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  #[non_exhaustive]
+  pub struct BusError {
+      pub kind: DdcErrorKind,
+      pub op: BusOp,
+      pub addr: u8,
+  }
+  ```
+
+- **A failed read** fills its buffer with `0xA5`, so a caller that uses it after an error
+  reads a pattern, not plausible data (`DdcBus` leaves the contents unspecified).
+- **Timing:** each transaction charges the clock after it is evaluated, by `BusTiming`:
+  every byte of it, address bytes included, as if it all went out, except a transaction
+  nothing answered, which charges its first address byte.
+
+  ```rust
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  #[non_exhaustive]
+  pub struct BusTiming {
+      /// Each byte on the wire, address bytes included.
+      pub per_byte: Duration,
+      /// Each transaction, on top of its bytes.
+      pub per_transaction: Duration,
+  }
+
+  impl BusTiming {
+      /// 90 µs a byte (nine clocks at 100 kHz), nothing per transaction.
+      pub const STANDARD_MODE: Self;
+      pub const fn with_per_byte(self, d: Duration) -> Self;
+      pub const fn with_per_transaction(self, d: Duration) -> Self;
+  }
+  ```
+
+  A byte is eight data bits and the acknowledge, nine clocks; at 100 kHz, I²C standard
+  mode's maximum clock (DDC/CI 1.1), that is 90 µs, the fastest a DDC bus runs. A slower
+  sink or adapter is a setting.
 
 ---
 

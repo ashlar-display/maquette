@@ -18,6 +18,17 @@ parts are built.
   clock, a delay that waits half, a clock that counts down on every read, a delay that moves
   the clock back; the settings; the async form, through `Delay` and through the `Send` twin
   (with `async`).
+- **`src/transcript.rs`** — the transcript's storage: order, overflow past the capacity
+  (a capacity of 0 included), clearing, and completing a bus record's result.
+- **`tests/bus.rs`** — the bench's DDC bus over targets the test defines: routing to the
+  first target that answers, a transaction no target takes, a target taking all of its
+  transaction; `read_segmented` with and without the segment pointer and split into pieces;
+  every refusal by argument and by capability, in hdmi-hal's order, reaching no target and
+  taking no time; empty buffers; timing per byte and per transaction; a target's error with
+  what it applied kept and the read filled with the pattern; notes and `Env`; `advance`
+  updating every target; the transcript's overflow; the EDID store's lengths; SCDC through
+  hdmi-hal's `ScdcOverDdc`; the time handle passing the clock check; `Send`, `Sync` and
+  threads.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

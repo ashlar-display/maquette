@@ -7,9 +7,10 @@
 //! asserts on one ordered transcript of everything that happened. It also carries
 //! conformance checks that an implementation of hdmi-hal's traits runs in its own tests.
 //!
-//! Built so far: [`SimClock`], hdmi-hal's `Clock` and `Delay` on simulated time, and the
-//! conformance check for `Clock` and `Delay` implementations ([`check::clock`]). The rest of
-//! the design is in `doc/architecture.md`.
+//! Built so far: [`SimClock`], hdmi-hal's `Clock` and `Delay` on simulated time; the
+//! conformance check for `Clock` and `Delay` implementations ([`check::clock`]); and the
+//! [`Bench`], whose DDC bus ([`Ddc`]) routes each call to a test's own [`Target`]s and
+//! records it in the transcript. The rest of the design is in `doc/architecture.md`.
 //!
 //! # Features
 //!
@@ -23,15 +24,33 @@
 #![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod bench;
 pub mod check;
 mod clock;
+mod config;
+mod ddc;
+mod target;
+mod transcript;
 
 // Compiles and runs the README's examples as doctests.
 #[cfg(doctest)]
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
+pub use bench::{Bench, BenchBuilder, BenchError, Time};
 pub use clock::SimClock;
+pub use config::SinkConfig;
+pub use ddc::{BusError, BusTiming, Ddc};
+pub use target::{Env, Operation, Target};
+pub use transcript::{Actor, BusOp, BusRecord, Event, Ignored, Record};
+
+/// hdmi-hal, whose types maquette's API is made of: a test names the same version through
+/// this re-export without depending on hdmi-hal itself.
+pub use hdmi_hal;
+/// The hdmi-hal DDC types the bench's bus implements and uses.
+pub use hdmi_hal::ddc::{
+    DdcBus, DdcCapabilities, DdcError, DdcErrorKind, EddcTarget, NoAcknowledgeSource,
+};
 
 /// The hdmi-hal time types `SimClock` implements and returns, re-exported so a test names
 /// the same versions maquette does without depending on hdmi-hal itself.
