@@ -5,10 +5,10 @@ use core::time::Duration;
 /// The sink's settings.
 ///
 /// [`new`](Self::new) is the default sink: an SCDC sink reporting `Sink_Version` 1, with an
-/// E-DDC segment pointer, and the defaults of each setting. Each setting has a `const` `with_*` (or `without_*`) builder;
-/// there are no named sink models, since a name would suggest a real product whose behaviour
-/// no source backs. Where no public source settles what a sink does, the setting's default
-/// is marked *chosen*.
+/// E-DDC segment pointer, and the defaults of each setting. Each setting has a `const`
+/// `with_*` (or `without_*`) builder; there are no named sink models, since a name would
+/// suggest a real product whose behaviour no source backs. Where no public source settles
+/// what a sink does, the setting's default is marked *chosen*.
 ///
 /// ```
 /// use maquette::{OwnedWrite, SinkConfig};

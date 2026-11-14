@@ -72,6 +72,14 @@ parts are built.
   the first scheduled fault striking while every fault counts; a full schedule; a fault
   that never strikes; the stretch timeout, slow operations, `Detached` and `Unsupported`
   effects; a preset as an event the lock answers.
+- **`tests/phy.rs`** — the simulated PHY: a bring-up driving the line until the sink locks,
+  and a procedure that never sets the scrambler failing at every rate; each scrambler
+  setting after `configure`; `configure` with the output running, failing or stopping it;
+  power and the configure-since-power-on rule; the capabilities (rate, scrambler, low-rate
+  scrambling); the mode rule between TMDS and FRL, and the FRL calls outside FRL; a test's
+  line holding until the PHY's output changes; the records; PHY faults before and after
+  effect, counting and sharing the schedule; the budget; two handles one PHY; generic code
+  bounded on the traits; the settings.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed
@@ -96,8 +104,8 @@ the EDID read) live with those crates, which use maquette as a dev-dependency.
 
 ## Fuzzing
 
-`fuzz/fuzz_targets/bench.rs` drives a bench with arbitrary sequences of bus calls, line
-changes, HPD, plug and adapter changes, presets, faults and clock advances, on a sink whose
+`fuzz/fuzz_targets/bench.rs` drives a bench with arbitrary sequences of bus calls, PHY calls,
+line changes, HPD, plug and adapter changes, presets, faults and clock advances, on a sink whose
 settings and bus capabilities the input chooses; it decodes the input bytes itself. After
 every action it checks the invariants a simulator must keep:
 

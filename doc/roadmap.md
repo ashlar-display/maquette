@@ -7,16 +7,17 @@ for `Clock` and `Delay` implementations, and the bench: its DDC bus routed to a 
 targets, the sink's SCDC registers and its EDID and DisplayID behind the E-DDC segment
 pointer, register presets, and the transcript; the line, HPD, unplug and detach as bench
 events; the sink's scrambling lock and the registers a long HPD low resets; the operation
-budget; scheduled faults; and a fuzz target checking the simulator's invariants.
+budget; scheduled faults; the simulated PHY (`TmdsPhy`, `FrlPhy`, `PhyPower`) driving the
+line; and a fuzz target checking the simulator's invariants.
 
 ## Planned
 
 In the order they are built:
 
-### The line and the simulated PHY
+### `Coupled<P>`
 
-The line between source and sink; a simulated PHY implementing `TmdsPhy`, `FrlPhy` and
-`PhyPower` with the mode rule; `Coupled<P>`, so any PHY can drive the line.
+Any `TmdsPhy` — a third party's, a forwarding stub, a firmware PHY under
+hardware-in-the-loop — driving the line, so the sink answers what it transmits.
 
 ### The async handles
 

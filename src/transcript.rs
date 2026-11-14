@@ -6,6 +6,7 @@ use hdmi_hal::time::Timestamp;
 use crate::config::RefusalKind;
 use crate::fault::{Effect, FaultId, Point};
 use crate::line::Line;
+use crate::phy::{PhyCall, PhyErrorKind};
 
 /// One entry of the transcript: what happened, and when.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +82,13 @@ pub enum Event {
         effect: Effect,
         /// Where it struck.
         point: Point,
+    },
+    /// A call of the simulated PHY, and how it ended, recorded when it returned.
+    Phy {
+        /// The call, with its arguments.
+        call: PhyCall,
+        /// How it ended.
+        result: Result<(), PhyErrorKind>,
     },
     /// A test's target's own event, recorded with [`Env::note`](crate::Env::note).
     Note {

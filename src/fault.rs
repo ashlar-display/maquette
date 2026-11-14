@@ -5,6 +5,7 @@ use core::time::Duration;
 
 use hdmi_hal::ddc::DdcErrorKind;
 
+use crate::phy::{PhyCall, PhyFault};
 use crate::transcript::{BusOp, BusRecord};
 
 /// A fault: it strikes bus operations that match its filter, at a point of the operation,
@@ -15,7 +16,10 @@ use crate::transcript::{BusOp, BusRecord};
 /// calls while detached do not count; calls while unplugged do.
 ///
 /// ```
-/// use maquette::{Bench, DdcBus, DdcErrorKind, Effect, Fault, Filter, NoAcknowledgeSource, Point, SinkConfig};
+/// use maquette::{
+///     Bench, DdcBus, DdcErrorKind, Effect, Fault, Filter, NoAcknowledgeSource, Point,
+///     SinkConfig,
+/// };
 ///
 /// let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
 /// // The second write to TMDS_Config is not acknowledged at its value byte.
@@ -228,15 +232,36 @@ pub(crate) struct Strike {
     pub(crate) point: Point,
 }
 
+/// A scheduled fault: the bus's or the PHY's.
+#[derive(Debug, Clone, Copy)]
+enum Kind {
+    Bus(Fault),
+    Phy(PhyFault),
+}
+
 /// A scheduled fault and how many matching operations it has counted.
 #[derive(Debug, Clone, Copy)]
 struct Scheduled {
     id: FaultId,
-    fault: Fault,
+    kind: Kind,
     seen: u32,
 }
 
-/// The fault schedule: `FAULTS` slots.
+/// Counts one more matching operation; whether it is struck, and whether the fault's last
+/// operation has now passed.
+fn count(seen: &mut u32, nth: u32, times: Times) -> (bool, bool) {
+    *seen = seen.saturating_add(1);
+    let first = nth.max(1);
+    match times {
+        Times::Count(count) => {
+            let end = first.saturating_add(count);
+            (*seen >= first && *seen < end, seen.saturating_add(1) >= end)
+        }
+        Times::UntilCleared => (*seen >= first, false),
+    }
+}
+
+/// The fault schedule: `FAULTS` slots, shared by the bus's faults and the PHY's.
 #[derive(Debug)]
 pub(crate) struct Schedule<const FAULTS: usize> {
     slots: [Option<Scheduled>; FAULTS],
@@ -251,7 +276,7 @@ impl<const FAULTS: usize> Schedule<FAULTS> {
         }
     }
 
-    pub(crate) fn add(&mut self, fault: Fault) -> Result<FaultId, ScheduleFull> {
+    fn insert(&mut self, kind: Kind) -> Result<FaultId, ScheduleFull> {
         let slot = self
             .slots
             .iter_mut()
@@ -259,8 +284,16 @@ impl<const FAULTS: usize> Schedule<FAULTS> {
             .ok_or(ScheduleFull)?;
         let id = FaultId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
-        *slot = Some(Scheduled { id, fault, seen: 0 });
+        *slot = Some(Scheduled { id, kind, seen: 0 });
         Ok(id)
+    }
+
+    pub(crate) fn add(&mut self, fault: Fault) -> Result<FaultId, ScheduleFull> {
+        self.insert(Kind::Bus(fault))
+    }
+
+    pub(crate) fn add_phy(&mut self, fault: PhyFault) -> Result<FaultId, ScheduleFull> {
+        self.insert(Kind::Phy(fault))
     }
 
     pub(crate) fn remove(&mut self, id: FaultId) -> bool {
@@ -285,36 +318,53 @@ impl<const FAULTS: usize> Schedule<FAULTS> {
         self.slots.iter().flatten().count()
     }
 
-    /// Counts `record`'s operation for every fault it matches, in the order scheduled, and
-    /// returns the first that strikes; a fault whose last operation has passed leaves, struck
-    /// or not (an earlier fault may have taken it).
+    /// Counts `record`'s operation for every bus fault it matches, in the order scheduled,
+    /// and returns the first that strikes; a fault whose last operation has passed leaves,
+    /// struck or not (an earlier fault may have taken it).
     pub(crate) fn strike(&mut self, record: &BusRecord) -> Option<Strike> {
         let mut strike = None;
         for slot in self.slots.iter_mut() {
             let Some(scheduled) = slot else {
                 continue;
             };
-            if !scheduled.fault.matches(record) {
+            let Kind::Bus(fault) = scheduled.kind else {
+                continue;
+            };
+            if !fault.matches(record) {
                 continue;
             }
-            scheduled.seen = scheduled.seen.saturating_add(1);
-            let first = scheduled.fault.nth.max(1);
-            let (strikes, last) = match scheduled.fault.times {
-                Times::Count(count) => {
-                    let end = first.saturating_add(count);
-                    (
-                        scheduled.seen >= first && scheduled.seen < end,
-                        scheduled.seen + 1 >= end,
-                    )
-                }
-                Times::UntilCleared => (scheduled.seen >= first, false),
-            };
+            let (strikes, last) = count(&mut scheduled.seen, fault.nth, fault.times);
             if strikes && strike.is_none() {
                 strike = Some(Strike {
                     id: scheduled.id,
-                    effect: scheduled.fault.effect,
-                    point: scheduled.fault.point,
+                    effect: fault.effect,
+                    point: fault.point,
                 });
+            }
+            if last {
+                *slot = None;
+            }
+        }
+        strike
+    }
+
+    /// Counts `call` for every PHY fault it matches, as [`strike`](Self::strike) does for
+    /// the bus; the fault that strikes, and whether the call takes effect first.
+    pub(crate) fn strike_phy(&mut self, call: &PhyCall) -> Option<(FaultId, bool)> {
+        let mut strike = None;
+        for slot in self.slots.iter_mut() {
+            let Some(scheduled) = slot else {
+                continue;
+            };
+            let Kind::Phy(fault) = scheduled.kind else {
+                continue;
+            };
+            if !fault.matches(call) {
+                continue;
+            }
+            let (strikes, last) = count(&mut scheduled.seen, fault.nth, fault.times);
+            if strikes && strike.is_none() {
+                strike = Some((scheduled.id, fault.took_effect));
             }
             if last {
                 *slot = None;

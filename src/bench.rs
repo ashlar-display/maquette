@@ -6,6 +6,7 @@ use core::time::Duration;
 
 use critical_section::Mutex;
 use hdmi_hal::ddc::{DdcCapabilities, DdcErrorKind, NoAcknowledgeSource};
+use hdmi_hal::phy::TmdsPhyCapabilities;
 use hdmi_hal::time::{Clock, Delay, Timestamp};
 
 use crate::clock::SimClock;
@@ -14,6 +15,7 @@ use crate::ddc::{BusTiming, Ddc};
 use crate::eddc::Eddc;
 use crate::fault::{Effect, Fault, FaultId, Schedule, ScheduleFull, Strike};
 use crate::line::Line;
+use crate::phy::{Phy, PhyCall, PhyErrorKind, PhyFault, PhySettings, PhyState};
 use crate::scdc::Scdc;
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{BusRecord, Event, Record, Transcript};
@@ -40,6 +42,12 @@ const MAX_STORE: usize = 256 * 128;
 /// The default operation budget (*chosen*): far more than a bring-up, a training run or a
 /// long session of polling takes, and spent within seconds by a loop that never ends.
 pub const DEFAULT_BUDGET: u64 = 1_000_000;
+
+/// The simulated PHY's capabilities by default: 600 000 kHz, with a scrambler that also
+/// scrambles at or below 340 Mcsc.
+pub const DEFAULT_PHY_CAPABILITIES: TmdsPhyCapabilities = TmdsPhyCapabilities::new(600_000)
+    .with_scrambling(true)
+    .with_low_rate_scrambling(true);
 
 /// Checks the stores' lengths: whole 128-byte blocks, up to 256.
 fn check_stores(edid: &[u8], displayid: Option<&[u8]>) -> Result<(), BenchError> {
@@ -103,6 +111,10 @@ struct State<'a, const LOG: usize, const FAULTS: usize> {
     spent: u64,
     transcript: Transcript<LOG>,
     faults: Schedule<FAULTS>,
+    phy: PhyState,
+    /// What the PHY last put on the line: it drives the line only when this changes, so a
+    /// test's own `set_line` holds until the PHY's output changes.
+    phy_line: Line,
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
@@ -210,6 +222,38 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
         (result, reach)
     }
 
+    /// A call of the simulated PHY: counted for the PHY faults, applied, recorded, and a
+    /// bench event; the line follows the PHY's output when it changes. Returns the result
+    /// and whether the call took effect before a fault failed it.
+    fn phy_call(&mut self, call: PhyCall, clock: &SimClock) -> (Result<(), PhyErrorKind>, bool) {
+        let strike = self.faults.strike_phy(&call);
+        let was_running = self.phy.is_running();
+        let (result, took_effect) = match strike {
+            Some((_, false)) => (Err(PhyErrorKind::Fault), false),
+            Some((_, true)) => match self.phy.apply(call) {
+                Ok(()) => (Err(PhyErrorKind::Fault), true),
+                Err(kind) => (Err(kind), false),
+            },
+            None => (self.phy.apply(call), false),
+        };
+        if !was_running && self.phy.is_running() {
+            // `start_output` returns once the output is on the wire.
+            clock.advance(self.phy.start_latency());
+        }
+        let at = clock.now();
+        self.record(at, Event::Phy { call, result });
+        let line = self.phy.line();
+        if line != self.phy_line {
+            self.phy_line = line;
+            if line != self.line {
+                self.line = line;
+                self.record(at, Event::Line(line));
+            }
+        }
+        self.update(at);
+        (result, took_effect)
+    }
+
     /// Unplugs the sink at `at`, if it is plugged.
     fn unplug(&mut self, at: Timestamp) {
         if !self.plugged {
@@ -263,6 +307,8 @@ impl<'a> Bench<'a> {
             clock: SimClock::new(),
             budget: Some(DEFAULT_BUDGET),
             targets: Default::default(),
+            phy_capabilities: DEFAULT_PHY_CAPABILITIES,
+            phy_settings: PhySettings::DEFAULT,
         }
     }
 }
@@ -277,6 +323,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// The sink's DDC bus.
     pub fn ddc(&self) -> Ddc<'_> {
         Ddc::new(self)
+    }
+
+    /// The source's simulated PHY: `TmdsPhy`, `FrlPhy` and `PhyPower`, driving the line.
+    pub fn phy(&self) -> Phy<'_> {
+        Phy::new(self)
     }
 
     /// The bench's clock, as a `Clock` and a `Delay`: one value passed as both.
@@ -419,6 +470,13 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
         self.locked(|state, _| state.faults.add(fault))
     }
 
+    /// Schedules a fault of the simulated PHY, in the same schedule as the bus's faults; it
+    /// counts the calls from now. `ScheduleFull` when the bench's `FAULTS` faults are
+    /// scheduled.
+    pub fn schedule_phy(&self, fault: PhyFault) -> Result<FaultId, ScheduleFull> {
+        self.locked(|state, _| state.faults.add_phy(fault))
+    }
+
     /// Removes a scheduled fault; whether it was still scheduled.
     pub fn clear_fault(&self, id: FaultId) -> bool {
         self.locked(|state, _| state.faults.remove(id))
@@ -501,6 +559,7 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for Bench<'_, LOG, FAULTS
                 .field("attached", &state.attached)
                 .field("operations", &state.spent)
                 .field("faults", &state.faults.len())
+                .field("phy", &state.phy)
                 .field("budget", &self.budget)
                 .field("transcript_len", &state.transcript.len())
                 .field("transcript_overflow", &state.transcript.overflow())
@@ -538,6 +597,11 @@ pub(crate) trait Core {
     fn scdc(&self, reg: u8) -> Option<u8>;
     /// HPD, and whether the sink is plugged.
     fn hpd(&self) -> (bool, bool);
+    /// What the simulated PHY can do.
+    fn phy_capabilities(&self) -> TmdsPhyCapabilities;
+    /// A call of the simulated PHY: the result, and whether it took effect before a fault
+    /// failed it.
+    fn phy_call(&self, call: PhyCall) -> (Result<(), PhyErrorKind>, bool);
 }
 
 impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
@@ -598,6 +662,14 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
     fn hpd(&self) -> (bool, bool) {
         self.locked(|state, _| (state.hpd, state.plugged))
     }
+
+    fn phy_capabilities(&self) -> TmdsPhyCapabilities {
+        self.locked(|state, _| state.phy.capabilities())
+    }
+
+    fn phy_call(&self, call: PhyCall) -> (Result<(), PhyErrorKind>, bool) {
+        self.locked(|state, _| state.phy_call(call, &self.clock))
+    }
 }
 
 /// Builds a [`Bench`]: [`Bench::builder`], the `with`-style setters, then
@@ -612,6 +684,8 @@ pub struct BenchBuilder<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
     clock: SimClock,
     budget: Option<u64>,
     targets: Targets<'a>,
+    phy_capabilities: TmdsPhyCapabilities,
+    phy_settings: PhySettings,
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
@@ -654,6 +728,23 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
         Self { budget, ..self }
     }
 
+    /// What the simulated PHY can do; by default [`DEFAULT_PHY_CAPABILITIES`].
+    pub fn phy_capabilities(self, phy_capabilities: TmdsPhyCapabilities) -> Self {
+        Self {
+            phy_capabilities,
+            ..self
+        }
+    }
+
+    /// How the simulated PHY behaves where hdmi-hal's contract allows several behaviours;
+    /// by default [`PhySettings::DEFAULT`].
+    pub fn phy(self, phy_settings: PhySettings) -> Self {
+        Self {
+            phy_settings,
+            ..self
+        }
+    }
+
     /// The test's own targets, routed to before the built-in ones, in this order.
     pub fn targets(self, targets: &'a mut [&'a mut (dyn Target + Send)]) -> Self {
         Self { targets, ..self }
@@ -670,6 +761,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
             clock: self.clock,
             budget: self.budget,
             targets: self.targets,
+            phy_capabilities: self.phy_capabilities,
+            phy_settings: self.phy_settings,
         }
     }
 
@@ -694,6 +787,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
                 spent: 0,
                 transcript: Transcript::new(),
                 faults: Schedule::new(),
+                phy: PhyState::new(self.phy_settings, self.phy_capabilities),
+                phy_line: Line::Off,
             })),
         })
     }
@@ -710,6 +805,8 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for BenchBuilder<'_, LOG,
             .field("clock", &self.clock)
             .field("budget", &self.budget)
             .field("targets", &self.targets.len())
+            .field("phy_capabilities", &self.phy_capabilities)
+            .field("phy_settings", &self.phy_settings)
             .finish()
     }
 }

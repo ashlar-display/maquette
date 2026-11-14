@@ -677,8 +677,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
-    /// What the PHY can do; by default 600 000 kHz with a scrambler that also scrambles
-    /// at or below 340 Mcsc.
+    /// What the PHY can do; by default `DEFAULT_PHY_CAPABILITIES`: 600 000 kHz with a
+    /// scrambler that also scrambles at or below 340 Mcsc.
     pub fn phy_capabilities(self, capabilities: TmdsPhyCapabilities) -> Self;
     /// How the PHY behaves where the contract allows several behaviours.
     pub fn phy(self, settings: PhySettings) -> Self;
@@ -741,17 +741,20 @@ pub enum PhyErrorKind {
   needs (`ScramblerAfterConfigure::Opposite`: on at or below 340 000 kHz, off above), so a
   procedure that never calls `set_scrambling` fails at every rate. `start_output` takes 1 ms
   before it returns, so a deadline counted from before it is visibly late.
-- **The line:** the PHY drives it after every call: running TMDS output is
+- **The line:** the PHY drives it whenever its own output changes: running TMDS output is
   `Line::Tmds { character_rate_khz, ratio, scrambled }` from the configuration and the
   scrambler; FRL is `Line::Frl { rate }`; anything else is `Line::Off`. A test's own
-  `set_line` changes it too; the last change wins.
+  `set_line` changes it too, and holds until the PHY's output next changes: the last change
+  wins.
 - **Records:** every call is an `Event::Phy { call, result }`, with `PhyCall` the call and
-  its arguments, followed by any line change it made. Each call counts against the budget.
+  its arguments, recorded when it returns, followed by any line change it made. Each call
+  counts against the budget; `capabilities()`, a report, does not.
 - **Faults:** `Bench::schedule_phy(PhyFault)` schedules a PHY fault in the same schedule as
   the bus's, sharing its `FAULTS` capacity: on the `nth` call matching an optional
   `PhyCallKind`, for `times` calls, failing with `PhyErrorKind::Fault` either before the call
-  (`took_effect: false`, nothing changes) or after it (`took_effect: true`, the call applied
-  and the line driven).
+  (`took_effect: false`, nothing changes) or after it (`PhyFault::after_effect()`;
+  `took_effect: true`, the call applied and the line driven). The struck call's
+  `Event::Phy` carries the fault's error.
 
 The coupling between the line and the sink catches a procedure that never writes the sink or
 never starts scrambled output; it does not judge order, which a test checks from the

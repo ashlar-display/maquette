@@ -91,6 +91,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   100 ms for the first three and on every HPD low for `Config`, set by
   `SinkConfig::with_hpd_reset`. Each reset register is a `Register` event by `Actor::Sink`;
   resetting `TMDS_Config` loses the scrambling lock.
+- **The simulated PHY**, `Bench::phy`: a `Copy` handle implementing hdmi-hal's `TmdsPhy`,
+  `FrlPhy` and `PhyPower` to their contracts, the mode rule included, with `PhyError`s
+  (`PhyErrorKind::PoweredOff`, `NotConfigured`, `Running`, `Unsupported`, `NotInFrl`,
+  `Fault`). It drives the line whenever its output changes: running TMDS from its
+  configuration and scrambler, FRL from its rate. Where the contract allows several
+  behaviours, `PhySettings` sets them, each defaulting to the least forgiving one:
+  `configure` fails with the output running (`ConfigureWhileRunning`), the scrambler after
+  `configure` is the opposite of what the rate needs (`ScramblerAfterConfigure`), and
+  `start_output` takes 1 ms; the PHY starts powered on. `BenchBuilder::phy_capabilities`
+  sets what it can do (by default `DEFAULT_PHY_CAPABILITIES`: 600 000 kHz with a scrambler,
+  low rates included). Every call is an `Event::Phy` with its `PhyCall` and result, a bench
+  event, and counts against the budget. `Bench::schedule_phy` schedules a `PhyFault`, in
+  the same schedule as the bus's faults, failing a call before or after it takes effect.
+  The hdmi-hal PHY traits and types are re-exported.
 - **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
   written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
   (`Fail(kind)`, or `Slow(d)`) and a `Point` (`Before` the sink sees it, `After` it applied

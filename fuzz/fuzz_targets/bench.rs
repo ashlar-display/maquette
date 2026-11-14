@@ -1,5 +1,5 @@
-//! Drives a bench with arbitrary sequences of bus calls, line changes, HPD, plug and adapter
-//! changes, presets, faults and clock advances, on a sink whose settings and bus capabilities
+//! Drives a bench with arbitrary sequences of bus calls, PHY calls, line changes, HPD, plug
+//! and adapter changes, presets, faults and clock advances, on a sink whose settings and bus capabilities
 //! the input chooses, and checks the invariants a simulator must keep after every action:
 //!
 //! - the same input gives the same transcript (each input runs twice);
@@ -18,10 +18,11 @@ use core::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
 use maquette::{
-    Actor, Bench, BlockBoundary, Clock, DdcBus, DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow,
-    EddcTarget, Effect, Event, Fault, Filter, HdmiForumFrl, Line, MissingSegment,
-    NoAcknowledgeSource, OpKind, OwnedWrite, PastStore, Point, Record, Refusal, RefusalKind,
-    ScdcPastEnd, SinkConfig, Times, TmdsClockRatio, Trigger,
+    Actor, Bench, BlockBoundary, Clock, ColorBitDepth, ColorFormat, DdcBus, DdcCapabilities,
+    DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, Event, Fault, Filter, FrlPhy,
+    HdmiForumFrl, Line, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite, PastStore,
+    PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, ScdcPastEnd, SinkConfig,
+    Times, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger,
 };
 
 /// The most actions one input runs.
@@ -223,6 +224,17 @@ impl Input<'_> {
     }
 }
 
+/// A TMDS configuration: 594 000 kHz at 1/40, or 148 500 kHz at 1/10.
+fn phy_config(high: bool) -> TmdsPhyConfig {
+    let (rate, ratio) = if high {
+        (594_000, TmdsClockRatio::Div40)
+    } else {
+        (148_500, TmdsClockRatio::Div10)
+    };
+    let video = TmdsVideo::new(rate, ColorBitDepth::Depth8, ColorFormat::Rgb444);
+    TmdsPhyConfig::new(rate, ratio, video)
+}
+
 fn tmds(character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool) -> Line {
     Line::Tmds {
         character_rate_khz,
@@ -280,6 +292,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
     let bus = bench.ddc();
     let clock = bench.time();
     let mut delay = bench.time();
+    let mut phy = bench.phy();
 
     for _ in 0..MAX_ACTIONS {
         if input.data.is_empty() {
@@ -287,7 +300,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
         }
         let mut bytes = [0u8; 8];
         let mut buf = [0u8; 64];
-        match input.byte() % 17 {
+        match input.byte() % 21 {
             0 => {
                 let addr = input.addr();
                 let _ = bus.write(addr, input.bytes(&mut bytes));
@@ -353,6 +366,39 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let _ = bench.schedule(input.fault());
             }
             15 => bench.clear_faults(),
+            16 => {
+                let _ = phy.configure(phy_config(input.bit()));
+            }
+            17 => {
+                let _ = phy.set_scrambling(input.bit());
+            }
+            18 => {
+                let _ = match input.byte() % 6 {
+                    0 => phy.start_output(),
+                    1 => phy.stop_output(),
+                    2 => phy.power_on(),
+                    3 => phy.power_off(),
+                    4 => phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes),
+                    _ => phy.set_frl_rate(HdmiForumFrl::NotSupported),
+                };
+            }
+            19 => {
+                let kinds = [
+                    PhyCallKind::Configure,
+                    PhyCallKind::SetScrambling,
+                    PhyCallKind::StartOutput,
+                    PhyCallKind::StopOutput,
+                ];
+                let byte = input.byte();
+                let mut fault = PhyFault::new().nth(u32::from(byte % 3));
+                if let Some(&kind) = kinds.get(usize::from(byte >> 2) % 8) {
+                    fault = fault.on(kind);
+                }
+                if byte & 0x80 != 0 {
+                    fault = fault.after_effect();
+                }
+                let _ = bench.schedule_phy(fault);
+            }
             _ => {
                 let _ = clock.now();
             }

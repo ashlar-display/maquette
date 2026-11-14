@@ -339,3 +339,16 @@ fn a_preset_is_an_event_the_lock_answers() {
     bench.preset_scdc(0x20, 0x00);
     assert_eq!(bench.sink().scrambling_status(), Some(0));
 }
+
+#[test]
+fn a_filter_on_plain_reads() {
+    let bench = bench();
+    bench
+        .schedule(fail(DdcErrorKind::Busy).on(Filter::ANY.with_op(OpKind::Read)))
+        .unwrap();
+    bench.ddc().write(EDID, &[0x00]).unwrap();
+    assert_eq!(
+        bench.ddc().read(EDID, &mut [0]).unwrap_err().kind,
+        DdcErrorKind::Busy
+    );
+}
