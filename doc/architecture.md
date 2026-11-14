@@ -520,7 +520,8 @@ pub enum Event {
     Refusal { attempt: u32, kind: RefusalKind },
     /// A scheduled fault struck the bus operation recorded before it.
     Fault { id: FaultId, effect: Effect, point: Point },
-    // PHY calls: added with the PHY.
+    /// A call of the simulated or a coupled PHY, and how it ended.
+    Phy { call: PhyCall, result: Result<(), PhyErrorKind> },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -667,22 +668,105 @@ asks; a test that wants a backend to misbehave uses a fault.
 ## The simulated PHY
 
 `phy()` implements `TmdsPhy`, `FrlPhy` and `PhyPower` to hdmi-hal's contracts, including the
-mode rule (entering one mode leaves the other):
+mode rule (entering one mode leaves the other). Like the other handles it is `Copy`; two
+`phy()` handles are one PHY.
 
-- its power state at creation is a setting, **on** by default (*chosen*: `PhyPower`'s
-  documentation says procedures never change the power, so a procedure test expects a
-  powered PHY); creation in the on state counts as a power-on, so `start_output` after a
-  `configure` works either way the contract is read;
-- `start_output` needs a `configure` since the last power-on; `stop_output` works in every
-  state; `set_scrambling(true)` fails on a PHY without a scrambler (`TmdsPhyCapabilities`);
-- where the contract allows several behaviours — `configure` with the output running (fail,
-  or stop it), the scrambler after `configure` (kept, reset, or set from the rate), the
-  start-up latency — each is a setting, defaulting to the least forgiving one: a procedure
-  must be correct under any behaviour the contract allows.
+```rust
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn phy(&self) -> Phy<'_>;   // TmdsPhy + FrlPhy + PhyPower, Error = PhyError
+}
 
-Its calls go into the transcript and drive the line. The coupling between the line and the
-sink catches a procedure that never writes the sink or never starts scrambled output; it does
-not judge order, which a test checks from the transcript.
+impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
+    /// What the PHY can do; by default 600 000 kHz with a scrambler that also scrambles
+    /// at or below 340 Mcsc.
+    pub fn phy_capabilities(self, capabilities: TmdsPhyCapabilities) -> Self;
+    /// How the PHY behaves where the contract allows several behaviours.
+    pub fn phy(self, settings: PhySettings) -> Self;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PhySettings {
+    /// Powered on at creation; true by default.
+    pub powered: bool,
+    pub configure_while_running: ConfigureWhileRunning,   // Fail (default) | StopFirst
+    pub scrambler_after_configure: ScramblerAfterConfigure,
+        // Opposite (default) | Keep | Off | FromRate
+    /// How long `start_output` takes before it returns, on the bench's clock; 1 ms by
+    /// default.
+    pub start_latency: Duration,
+}
+// PhySettings::DEFAULT, with const `with_*` builders.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PhyError {
+    pub kind: PhyErrorKind,
+    pub call: PhyCall,
+    /// Whether the call took effect before it failed (a fault that strikes after).
+    pub took_effect: bool,
+}
+
+#[non_exhaustive]
+pub enum PhyErrorKind {
+    PoweredOff,     // configure, start_output, set_frl_rate and the FRL calls while off
+    NotConfigured,  // start_output without a configure since the last power-on
+    Running,        // configure with the output running, under `ConfigureWhileRunning::Fail`
+    Unsupported,    // beyond the capabilities: the rate, the scrambler, low-rate scrambling
+    NotInFrl,       // send_ltp, set_frl_output, adjust_equalization outside FRL
+    Fault,          // a scheduled PHY fault
+}
+```
+
+- **Power:** on at creation by default (*chosen*: `PhyPower`'s documentation says procedures
+  never change the power, so a procedure test expects a powered PHY); creation in the on
+  state counts as a power-on, so `start_output` after a `configure` works either way the
+  contract is read. `power_on` on a PHY that is on changes nothing; `power_off` stops the
+  output and forgets the mode and its configuration.
+- **TMDS:** `configure` fails while powered off, and for a rate above the capabilities'
+  maximum; it enters TMDS, leaving FRL, and leaves the output stopped. `start_output` needs a
+  `configure` since the last power-on; starting a running output changes nothing.
+  `stop_output` works in every state and leaves FRL. `set_scrambling(true)` fails on a PHY
+  without a scrambler, and at or below 340 000 kHz on one that cannot scramble there (a
+  capability, so an error rather than a silent no-op); `set_scrambling(false)` always
+  succeeds.
+- **FRL:** `set_frl_rate` with a rate enters FRL, leaving TMDS (the TMDS configuration is
+  forgotten), and returns once the PHY transmits at that rate; `NotSupported` leaves FRL and
+  enters nothing. `send_ltp`, `set_frl_output` and `adjust_equalization` need FRL; their
+  values are recorded, not modelled, until the sink's FRL responses arrive.
+- **Where the contract allows several behaviours, each is a setting defaulting to the least
+  forgiving one:** a procedure must be correct under any behaviour the contract allows.
+  `configure` with the output running fails (`ConfigureWhileRunning::Fail`) rather than
+  stopping it. After `configure` the scrambler is set to the opposite of what the rate
+  needs (`ScramblerAfterConfigure::Opposite`: on at or below 340 000 kHz, off above), so a
+  procedure that never calls `set_scrambling` fails at every rate. `start_output` takes 1 ms
+  before it returns, so a deadline counted from before it is visibly late.
+- **The line:** the PHY drives it after every call: running TMDS output is
+  `Line::Tmds { character_rate_khz, ratio, scrambled }` from the configuration and the
+  scrambler; FRL is `Line::Frl { rate }`; anything else is `Line::Off`. A test's own
+  `set_line` changes it too; the last change wins.
+- **Records:** every call is an `Event::Phy { call, result }`, with `PhyCall` the call and
+  its arguments, followed by any line change it made. Each call counts against the budget.
+- **Faults:** `Bench::schedule_phy(PhyFault)` schedules a PHY fault in the same schedule as
+  the bus's, sharing its `FAULTS` capacity: on the `nth` call matching an optional
+  `PhyCallKind`, for `times` calls, failing with `PhyErrorKind::Fault` either before the call
+  (`took_effect: false`, nothing changes) or after it (`took_effect: true`, the call applied
+  and the line driven).
+
+The coupling between the line and the sink catches a procedure that never writes the sink or
+never starts scrambled output; it does not judge order, which a test checks from the
+transcript.
+
+### `Coupled<P>`
+
+`Coupled::new(phy, &bench)` wraps any `TmdsPhy` — a third party's, a forwarding stub, a
+firmware PHY under hardware-in-the-loop — and implements `TmdsPhy` with `P`'s error, and
+`PhyPower` and `FrlPhy` where `P` does. Each call goes to `P` unchanged; what succeeded drives
+the bench's line, and every call is recorded and counts against the budget as the simulated
+PHY's are. The coupled line follows the contract's guarantees only: `configure` stops the
+output, `start_output` starts it, and the scrambler is unscrambled after `configure` until a
+`set_scrambling` says otherwise (*chosen*: what `P` does to its scrambler there is its own,
+and the bench cannot see it).
 
 ---
 
@@ -769,8 +853,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
   point }` follows it. A failed read fills the buffer with the pattern, so a caller that
   uses it after an error fails.
 
-PHY faults use `PhyError`, with a kind and whether the call took effect; their schedule is
-designed with the PHY.
+PHY faults are `PhyFault`s, in the same schedule (see "The simulated PHY").
 
 ---
 
