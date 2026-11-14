@@ -192,6 +192,9 @@ pub enum PhyErrorKind {
     NotInFrl,
     /// A scheduled PHY fault.
     Fault,
+    /// A coupled PHY's own error, which [`Coupled`](crate::Coupled) returns unchanged; the
+    /// transcript records only that it failed.
+    Coupled,
 }
 
 /// A failed call of the simulated PHY.
@@ -284,12 +287,27 @@ impl Default for PhyFault {
     }
 }
 
-/// The mode the PHY is in.
+/// The mode a PHY is in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(crate) enum Mode {
     None,
     Tmds(TmdsPhyConfig),
     Frl(HdmiForumFrl),
+}
+
+/// What a PHY in `mode`, with its TMDS output `running` or not and its scrambler as given,
+/// puts on the line: running TMDS from the configuration and the scrambler, FRL from its
+/// rate, nothing otherwise.
+pub(crate) fn line_of(mode: Mode, running: bool, scrambler: bool) -> Line {
+    match mode {
+        Mode::Tmds(config) if running => Line::Tmds {
+            character_rate_khz: config.character_rate_khz,
+            ratio: config.clock_ratio,
+            scrambled: scrambler,
+        },
+        Mode::Frl(rate) => Line::Frl { rate },
+        _ => Line::Off,
+    }
 }
 
 /// The simulated PHY's state, held by the bench.
@@ -325,15 +343,7 @@ impl PhyState {
 
     /// What the PHY puts on the line.
     pub(crate) fn line(&self) -> Line {
-        match self.mode {
-            Mode::Tmds(config) if self.running => Line::Tmds {
-                character_rate_khz: config.character_rate_khz,
-                ratio: config.clock_ratio,
-                scrambled: self.scrambler,
-            },
-            Mode::Frl(rate) => Line::Frl { rate },
-            _ => Line::Off,
-        }
+        line_of(self.mode, self.running, self.scrambler)
     }
 
     /// Whether the TMDS output is running.

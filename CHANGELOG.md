@@ -105,6 +105,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event, and counts against the budget. `Bench::schedule_phy` schedules a `PhyFault`, in
   the same schedule as the bus's faults, failing a call before or after it takes effect.
   The hdmi-hal PHY traits and types are re-exported.
+- **`Coupled<P>`**, any PHY driving the bench's line: `Coupled::new(phy, &bench)`
+  implements `TmdsPhy` with `P`'s error, and `PhyPower` and `FrlPhy` where `P` does. Calls go
+  to `P` unchanged; what succeeded drives the line by the contract's guarantees (unscrambled
+  after `configure` until `set_scrambling`); every call is an `Event::Phy` (a failure as
+  `PhyErrorKind::Coupled`), a bench event, and counts against the budget. `get_ref`,
+  `get_mut` and `into_inner` reach `P`.
 - **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
   written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
   (`Fail(kind)`, or `Slow(d)`) and a `Point` (`Before` the sink sees it, `After` it applied

@@ -80,6 +80,12 @@ parts are built.
   line holding until the PHY's output changes; the records; PHY faults before and after
   effect, counting and sharing the schedule; the budget; two handles one PHY; generic code
   bounded on the traits; the settings.
+- **`tests/coupled.rs`** — `Coupled<P>` over a double: a bring-up locking the sink; the line
+  unscrambled after `configure` until `set_scrambling`, whatever the double's scrambler;
+  errors returned unchanged and a failed call changing nothing, recorded as `Coupled`; the
+  budget; FRL and power passing through by the contract; the last change to the line
+  winning, with the simulated PHY and the test's own line; scheduled PHY faults left to the
+  simulated PHY; reaching and taking back the PHY; a TMDS-only PHY.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

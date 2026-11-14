@@ -602,6 +602,9 @@ pub(crate) trait Core {
     /// A call of the simulated PHY: the result, and whether it took effect before a fault
     /// failed it.
     fn phy_call(&self, call: PhyCall) -> (Result<(), PhyErrorKind>, bool);
+    /// A call a coupled PHY made: recorded with its result, the line set when the PHY's
+    /// output changed, and a bench event.
+    fn coupled_call(&self, call: PhyCall, result: Result<(), PhyErrorKind>, line: Option<Line>);
 }
 
 impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
@@ -669,6 +672,19 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
 
     fn phy_call(&self, call: PhyCall) -> (Result<(), PhyErrorKind>, bool) {
         self.locked(|state, _| state.phy_call(call, &self.clock))
+    }
+
+    fn coupled_call(&self, call: PhyCall, result: Result<(), PhyErrorKind>, line: Option<Line>) {
+        self.locked(|state, at| {
+            state.record(at, Event::Phy { call, result });
+            if let Some(line) = line {
+                if line != state.line {
+                    state.line = line;
+                    state.record(at, Event::Line(line));
+                }
+            }
+            state.update(at);
+        });
     }
 }
 

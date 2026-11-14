@@ -715,6 +715,7 @@ pub enum PhyErrorKind {
     Unsupported,    // beyond the capabilities: the rate, the scrambler, low-rate scrambling
     NotInFrl,       // send_ltp, set_frl_output, adjust_equalization outside FRL
     Fault,          // a scheduled PHY fault
+    Coupled,        // a coupled PHY's own error (see `Coupled<P>`)
 }
 ```
 
@@ -764,12 +765,18 @@ transcript.
 
 `Coupled::new(phy, &bench)` wraps any `TmdsPhy` — a third party's, a forwarding stub, a
 firmware PHY under hardware-in-the-loop — and implements `TmdsPhy` with `P`'s error, and
-`PhyPower` and `FrlPhy` where `P` does. Each call goes to `P` unchanged; what succeeded drives
-the bench's line, and every call is recorded and counts against the budget as the simulated
-PHY's are. The coupled line follows the contract's guarantees only: `configure` stops the
-output, `start_output` starts it, and the scrambler is unscrambled after `configure` until a
-`set_scrambling` says otherwise (*chosen*: what `P` does to its scrambler there is its own,
-and the bench cannot see it).
+`PhyPower` and `FrlPhy` where `P` does. Each call goes to `P` unchanged and returns what `P`
+returned; what succeeded drives the bench's line when the coupled output changes, and every
+call is recorded (a failure as `PhyErrorKind::Coupled`, `P`'s own error going back to the
+caller), is a bench event and counts against the budget, as the simulated PHY's are.
+Scheduled PHY faults are the simulated PHY's: `P` has its own. `get_ref`, `get_mut` (whose
+calls bypass the coupling) and `into_inner` reach `P`.
+
+The coupled line follows the contract's guarantees only: `configure` enters TMDS with the
+output stopped, `start_output` starts it, `stop_output` stops it and leaves FRL, a FRL rate
+enters FRL, `power_off` leaves every mode, and a failed call changes nothing. The line is
+unscrambled after `configure` until a `set_scrambling` says otherwise (*chosen*: what `P`
+does to its scrambler there is its own, and the bench cannot see it).
 
 ---
 

@@ -13,7 +13,8 @@
 //! sink's SCDC registers, EDID and DisplayID, and records it in the transcript. The line,
 //! HPD, unplug and detach are bench events; the sink keeps a scrambling lock and resets its
 //! registers after a long HPD low; register presets and a view of the registers ([`Sink`])
-//! serve the test; the simulated [`Phy`] drives the line; scheduled [`Fault`]s fail
+//! serve the test; the simulated [`Phy`], or any PHY [`Coupled`] to the bench, drives the
+//! line; scheduled [`Fault`]s fail
 //! operations; an operation budget ends a test
 //! that loops forever. The rest of the design is in `doc/architecture.md`.
 //!
@@ -33,6 +34,7 @@ mod bench;
 pub mod check;
 mod clock;
 mod config;
+mod coupled;
 mod ddc;
 mod eddc;
 mod fault;
@@ -55,6 +57,7 @@ pub use config::{
     BlockBoundary, DuringHpdLow, HpdReset, MissingSegment, OwnedWrite, PastStore, Refusal,
     RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, Trigger,
 };
+pub use coupled::Coupled;
 pub use ddc::{BusError, BusTiming, Ddc};
 pub use fault::{Effect, Fault, FaultId, Filter, OpKind, Point, ScheduleFull, Times};
 pub use line::Line;
