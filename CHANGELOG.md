@@ -44,7 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   calls included, a split read per piece) and per target note, in order, with its time;
   what does not fit is counted. `Event` also has the variants the built-in targets will
   record (`Register`, `IgnoredWrite`, with `Actor` and `Ignored`).
-- **`SinkConfig`**, the sink's settings, with nothing to set yet.
+- **The sink's SCDC registers** at 0x54, the built-in target routed after a test's own: a
+  write sets the offset with its first byte, a read reads from it, the offset persists. The
+  source's registers (`Source_Version`, `TMDS_Config`, `Config_0`, `Config_1`, …) are stored
+  as written; the update flags (`Update_0`, `Update_1`) clear when written back as 1; the
+  sink's (`Sink_Version`, `Scrambling_Status`, status flags, error counters, the
+  manufacturer's block) follow `OwnedWrite`; any other register is stored. Addresses, bits
+  and roles are cited in the code from Linux, amdgpu, Xilinx and Amlogic. Every byte written
+  is a `Register` or `IgnoredWrite` event in the transcript.
+- **`Bench::preset_scdc`**, which sets any SCDC register, recorded as by `Actor::Test`, and
+  **`Bench::sink`**, a `Sink` view of the registers (`scdc`, `tmds_config`,
+  `scrambling_status`, `sink_version`, `source_version`, `update_0`, `config_0`, `config_1`)
+  that takes no bus operation.
+- **`SinkConfig`**, the sink's settings, with `const` builders and getters: `without_scdc`
+  (nothing answers 0x54), `with_sink_version` (1 by default), `with_owned_scdc_writes`
+  (`OwnedWrite::Ignore` by default, or `Nack`) and `with_scdc_past_end`
+  (`ScdcPastEnd::Wrap` by default, or `Nack`).
 - Re-exports of `hdmi_hal` itself and its DDC types (`DdcBus`, `DdcCapabilities`,
   `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`).
 - **`check::Report`**, what every check returns: the points run, every failed point counted,

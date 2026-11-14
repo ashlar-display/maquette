@@ -11,8 +11,20 @@ use hdmi_hal::time::{Clock, Delay, Timestamp};
 use crate::clock::SimClock;
 use crate::config::SinkConfig;
 use crate::ddc::{BusTiming, Ddc};
+use crate::scdc::Scdc;
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{BusRecord, Event, Record, Transcript};
+
+/// The targets in routing order: the test's, in the order given, then the built-in ones.
+fn routed<'s>(
+    targets: &'s mut Targets<'_>,
+    scdc: &'s mut Option<Scdc>,
+) -> impl Iterator<Item = &'s mut dyn Target> {
+    targets
+        .iter_mut()
+        .map(|target| &mut **target as &mut dyn Target)
+        .chain(scdc.as_mut().map(|scdc| scdc as &mut dyn Target))
+}
 
 /// The test's own targets, as given to the bench.
 type Targets<'a> = &'a mut [&'a mut (dyn Target + Send)];
@@ -57,6 +69,7 @@ struct State<'a, const LOG: usize> {
     config: SinkConfig,
     edid: &'a [u8],
     targets: Targets<'a>,
+    scdc: Option<Scdc>,
     hpd: bool,
     transcript: Transcript<LOG>,
 }
@@ -101,15 +114,44 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
             let mut state = self.state.borrow_ref_mut(cs);
             let State {
                 targets,
+                scdc,
                 transcript,
                 hpd,
                 ..
             } = &mut *state;
             let mut env = Env::new(at, *hpd, transcript);
-            for target in targets.iter_mut() {
+            for target in routed(targets, scdc) {
                 target.update(&mut env);
             }
         });
+    }
+
+    /// Sets the SCDC register `reg` to `value`, whatever its role, the sink's own registers
+    /// included; recorded as a `Register` event by `Actor::Test`.
+    ///
+    /// # Panics
+    ///
+    /// On a sink without SCDC: a preset there is a mistake in the test.
+    pub fn preset_scdc(&self, reg: u8, value: u8) {
+        let at = self.clock.now();
+        critical_section::with(|cs| {
+            let mut state = self.state.borrow_ref_mut(cs);
+            let State {
+                scdc,
+                transcript,
+                hpd,
+                ..
+            } = &mut *state;
+            let Some(scdc) = scdc else {
+                panic!("preset of SCDC register {reg:#04x} on a sink without SCDC");
+            };
+            scdc.preset(reg, value, &mut Env::new(at, *hpd, transcript));
+        });
+    }
+
+    /// The sink as the test sees it: its registers, read without a bus operation.
+    pub fn sink(&self) -> Sink<'_> {
+        Sink { core: self }
     }
 
     /// The bench's time.
@@ -149,6 +191,7 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for Bench<'_, LOG, FAULTS
                 .field("config", &state.config)
                 .field("edid_len", &state.edid.len())
                 .field("targets", &state.targets.len())
+                .field("scdc", &state.scdc.is_some())
                 .field("hpd", &state.hpd)
                 .field("transcript_len", &state.transcript.len())
                 .field("transcript_overflow", &state.transcript.overflow())
@@ -171,6 +214,8 @@ pub(crate) trait Core {
     ) -> (Result<(), DdcErrorKind>, bool);
     /// Records a call that reached no target.
     fn record(&self, record: BusRecord);
+    /// The SCDC register `reg`; `None` for a sink without SCDC.
+    fn scdc(&self, reg: u8) -> Option<u8>;
 }
 
 impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
@@ -196,6 +241,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
             let mut state = self.state.borrow_ref_mut(cs);
             let State {
                 targets,
+                scdc,
                 transcript,
                 hpd,
                 ..
@@ -206,7 +252,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
             });
             let addr = ops.first().map_or(0, Operation::addr);
             let mut env = Env::new(at, *hpd, transcript);
-            let (result, answered) = match targets.iter_mut().find(|t| t.answers(addr, &env)) {
+            let (result, answered) = match routed(targets, scdc).find(|t| t.answers(addr, &env)) {
                 Some(target) => (target.transaction(ops, &mut env), true),
                 None => (
                     Err(DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)),
@@ -215,6 +261,13 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
             };
             transcript.set_result(index, result);
             (result, answered)
+        })
+    }
+
+    fn scdc(&self, reg: u8) -> Option<u8> {
+        critical_section::with(|cs| {
+            let state = self.state.borrow_ref(cs);
+            state.scdc.as_ref().map(|scdc| scdc.get(reg))
         })
     }
 
@@ -295,6 +348,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
             state: Mutex::new(RefCell::new(State {
                 config: self.config,
                 edid: self.edid,
+                scdc: Scdc::new(&self.config),
                 targets: self.targets,
                 hpd: true,
                 transcript: Transcript::new(),
@@ -360,5 +414,64 @@ impl Clock for Time<'_> {
 impl Delay for Time<'_> {
     fn delay(&mut self, duration: Duration) {
         Delay::delay(&mut self.clock, duration);
+    }
+}
+
+/// The sink as the test sees it, a `Copy` handle borrowed from the bench ([`Bench::sink`]):
+/// its registers, read without a bus operation, so reading them changes nothing and takes no
+/// time.
+#[derive(Clone, Copy)]
+pub struct Sink<'b> {
+    core: &'b (dyn Core + Sync + 'b),
+}
+
+impl Sink<'_> {
+    /// The SCDC register `reg`; `None` for a sink without SCDC.
+    pub fn scdc(&self, reg: u8) -> Option<u8> {
+        self.core.scdc(reg)
+    }
+
+    /// `TMDS_Config` (0x20): bit 0 `Scrambling_Enable`, bit 1 `TMDS_Bit_Clock_Ratio`.
+    pub fn tmds_config(&self) -> Option<u8> {
+        self.scdc(crate::scdc::TMDS_CONFIG)
+    }
+
+    /// `Scrambling_Status` (0x21): bit 0, scrambled TMDS detected.
+    pub fn scrambling_status(&self) -> Option<u8> {
+        self.scdc(crate::scdc::SCRAMBLING_STATUS)
+    }
+
+    /// `Sink_Version` (0x01).
+    pub fn sink_version(&self) -> Option<u8> {
+        self.scdc(crate::scdc::SINK_VERSION)
+    }
+
+    /// `Source_Version` (0x02), as the source last wrote it.
+    pub fn source_version(&self) -> Option<u8> {
+        self.scdc(crate::scdc::SOURCE_VERSION)
+    }
+
+    /// `Update_0` (0x10): the update flags.
+    pub fn update_0(&self) -> Option<u8> {
+        self.scdc(crate::scdc::UPDATE_0)
+    }
+
+    /// `Config_0` (0x30): bit 0 `RR_Enable`, bit 1 `FLT_no_retrain`.
+    pub fn config_0(&self) -> Option<u8> {
+        self.scdc(crate::scdc::CONFIG_0)
+    }
+
+    /// `Config_1` (0x31): `FRL_Rate` in bits 3:0, `FFE_Levels` in 7:4.
+    pub fn config_1(&self) -> Option<u8> {
+        self.scdc(crate::scdc::CONFIG_1)
+    }
+}
+
+impl fmt::Debug for Sink<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Sink")
+            .field("tmds_config", &self.tmds_config())
+            .field("scrambling_status", &self.scrambling_status())
+            .finish_non_exhaustive()
     }
 }

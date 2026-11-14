@@ -119,7 +119,7 @@ let scdc = culvert::Scdc::new(ScdcOverDdc::new(&bus).ok().unwrap());
 let mut link = TmdsLink::new(scdc, phy, time, time);   // spiritlevel, `culvert` feature
 // … run the procedure …
 bench.hpd_pulse(Duration::from_millis(500));   // the test's controls
-assert_eq!(bench.sink().tmds_config(), 0);
+assert_eq!(bench.sink().tmds_config(), Some(0));
 ```
 
 The time handle implements both `Clock` and `Delay`, so one value is passed as both, as
@@ -150,6 +150,10 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     pub fn phy(&self) -> Phy<'_>;      // TmdsPhy, FrlPhy, PhyPower
     pub fn time(&self) -> Time<'_>;    // Clock, Delay
     pub fn sink(&self) -> Sink<'_>;    // reads the sink's registers and state
+
+    /// Sets an SCDC register, the sink's own included; recorded as by `Actor::Test`.
+    /// Panics on a sink without SCDC.
+    pub fn preset_scdc(&self, reg: u8, value: u8);
 
     /// Moves the bench's time forward, then lets every target see it (`Target::update`).
     pub fn advance(&self, duration: Duration);
@@ -283,7 +287,8 @@ operations instead could let the procedure end quietly and the test pass.
 One `SinkConfig`, `#[non_exhaustive]`, with a `const fn new()` (an SCDC sink with a segment
 pointer, `Sink_Version` 1, and the defaults in "Sink behaviour") and `const` `with_*`
 builders for each setting (`without_scdc()`, `without_segment_pointer()`,
-`with_scrambling_delay(d)`, `with_tmds_config_reset(rule)`, …), as the stack's other
+`with_scrambling_delay(d)`, `with_tmds_config_reset(rule)`, …), with a getter for each, as
+the stack's other
 capability and option types are built (`DdcCapabilities`, `TmdsPhyCapabilities`). There are
 no named sink models: a name would suggest a real product whose behaviour no source backs.
 The bus's and the PHY's capabilities are hdmi-hal's own types, passed to the bench, not
@@ -345,12 +350,23 @@ reads answers 0x30 as well as 0x50.
 
 The built-in targets:
 
-- **SCDC (0x54):** a 256-byte register file. Which registers the source writes, which the
-  sink owns and which are write-1-to-clear are cited in the code from public sources. The
-  registers modelled first are those TMDS bring-up uses: `Sink_Version`, `Source_Version`,
-  `Update_0`, `TMDS_Config`, `Scrambling_Status`, `Config_1`. A write sets the offset with
-  its first byte, then writes from there; a read starts at the offset, which advances with
-  every byte, and persists between transactions.
+- **SCDC (0x54):** a 256-byte register file [9]. A write sets the offset with its first
+  byte, then writes from there; a read starts at the offset, which advances with every byte,
+  and persists between transactions. What a byte written does depends on the register:
+  - **the source's** — `Source_Version` (0x02), `TMDS_Config` (0x20), `Config_0` (0x30),
+    `Config_1` (0x31) and the test registers: stored as written;
+  - **update flags** — `Update_0` (0x10) and `Update_1` (0x11): a 1 written clears that
+    flag [8];
+  - **the sink's** — `Sink_Version` (0x01), `Scrambling_Status` (0x21), the status flags
+    (0x40–0x42), the error counters (0x50–0x5A), the manufacturer's block (0xD0–0xFF): by
+    the setting in "Sink behaviour";
+  - **any other register:** stored as written (*chosen*, until it is modelled).
+
+  At creation every register is 0 but `Sink_Version`, which is the setting (1 by default).
+  Every byte written is recorded as a `Register` event, with its value before and after, or
+  as an `IgnoredWrite`. A test reads the registers through `bench.sink()` (`scdc(reg)`,
+  `tmds_config()`, `scrambling_status()`, …, each `None` for a sink without SCDC), which
+  takes no bus operation and no time.
 - **EDID (0x50) behind the segment pointer (0x30),** and optionally **DisplayID (0x52)**,
   one target: the caller's bytes, a whole number of 128-byte blocks, up to 256. A segment
   is 256 bytes (E-DDC 1.3 §2.2.5).
@@ -420,7 +436,8 @@ pub struct Record {
 pub enum Event {
     /// A `DdcBus` call: what was asked and how it ended, refused calls included.
     Bus(BusRecord),
-    /// A register of a built-in target changed, by the source or by the sink.
+    /// A register of a built-in target was written or set, by the source, the sink or a
+    /// preset; `from` and `to` may be equal.
     Register { addr: u8, reg: u8, from: u8, to: u8, by: Actor },
     /// A built-in target ignored a write, and why.
     IgnoredWrite { addr: u8, reg: u8, value: u8, why: Ignored },
@@ -798,7 +815,8 @@ Driver source read at these commits; line numbers refer to them.
 | [5] | The sink disabling scrambling without a scrambled clock within 100 ms | i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2767–2770` |
 | [6] | Restoring `TMDS_Config` when the sink may have lost it | i915, vc4 and the DRM helper (one lineage) `drivers/gpu/drm/i915/display/intel_ddi.c:4851–4880`, `drivers/gpu/drm/vc4/vc4_hdmi.c:276–354`, `drivers/gpu/drm/display/drm_hdmi_helper.c:640–641` (the sink's SCDC status "is reset and must be explicitly restored"); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:5053–5062`, `4786–4796` |
 | [7] | `Source_Version` and `Sink_Version` | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:592–600` (when `Sink_Version` is 1); Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:322–350`; dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:2112–2115`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–806` |
-| [8] | `FLT_update` cleared by writing it back as 1 | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:178–200`; Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:446–463` |
+| [8] | Update flags cleared by writing them back as 1 | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:178–200` (`FLT_update`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:446–463` (`FLT_update`), `hdmitx21/hdmi_tx_scdc.c:106–107` (`Status_update`, `CED_update`, `RSED_update`) |
+| [9] | The SCDC register map: addresses, bits, and which registers the source writes | Linux `include/drm/display/drm_scdc.h:27–53`; amdgpu `drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h:58–65`, `dc/link/protocols/link_ddc.c:602–609`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:41–49`, `645–669`, `719–743`, `790`, `870`; Amlogic `drivers/media/vout/hdmitx21/hw/hdmi_tx_ddc.h:16–56` (the source's registers marked `RW`) |
 
 Standards (VESA, public):
 

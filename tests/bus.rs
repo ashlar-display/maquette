@@ -13,6 +13,8 @@ use maquette::{
 
 const NACK_ADDRESS: DdcErrorKind = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address);
 const BYTE: u64 = 90;
+/// An address nothing on the bench answers: the HDCP port, which it does not model.
+const HDCP: u8 = 0x3A;
 
 /// What a [`Device`] saw of one operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,10 +155,10 @@ fn nothing_answers_an_address_no_target_takes() {
     let bench = Bench::builder(&[]).targets(&mut targets).build().unwrap();
     let mut buf = [0u8; 4];
 
-    let error = bench.ddc().write_read(SCDC, &[0x01], &mut buf).unwrap_err();
+    let error = bench.ddc().write_read(HDCP, &[0x01], &mut buf).unwrap_err();
     assert_eq!(
         (error.kind, error.op, error.addr),
-        (NACK_ADDRESS, BusOp::WriteRead, SCDC)
+        (NACK_ADDRESS, BusOp::WriteRead, HDCP)
     );
     assert_eq!(error.kind(), NACK_ADDRESS);
     assert_eq!(buf, [0xA5; 4], "a failed read is filled with the pattern");

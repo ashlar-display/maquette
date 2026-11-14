@@ -126,6 +126,14 @@ impl<'e> Env<'e> {
         self.hpd
     }
 
+    /// Records a built-in target's event at [`now`](Self::now).
+    pub(crate) fn record(&mut self, event: Event) {
+        self.log.note(Record {
+            at: self.now,
+            event,
+        });
+    }
+
     /// Records one of the target's own events in the transcript, as an
     /// [`Event::Note`](crate::Event::Note) at [`now`](Self::now).
     pub fn note(&mut self, addr: u8, code: u32, value: u32) {

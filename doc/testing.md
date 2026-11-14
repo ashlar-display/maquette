@@ -29,6 +29,14 @@ parts are built.
   updating every target; the transcript's overflow; the EDID store's lengths; SCDC through
   hdmi-hal's `ScdcOverDdc`; the time handle passing the clock check; `Send`, `Sync` and
   threads.
+- **`src/scdc.rs`** — the SCDC register roles, and the transactions the bus never makes: an
+  empty write, a second address.
+- **`tests/scdc.rs`** — the built-in SCDC target: the default registers; source writes
+  stored and recorded, bursts included; register events after their bus record, at its time;
+  the offset persisting; SCDC through `ScdcOverDdc`; update flags cleared by writing them
+  back; the sink's registers ignored or refused; registers outside the modelled set; bursts
+  past 0xFF wrapping or refused; presets; the `Sink_Version` setting; a sink without SCDC; a
+  test's target at 0x54 replacing the built-in one; the settings and the `Sink` view.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

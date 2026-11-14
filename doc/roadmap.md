@@ -4,16 +4,16 @@ What each release contains will be in the [changelog](../CHANGELOG.md); this pag
 what comes next. Today `maquette` is its design ([`architecture.md`](architecture.md)) and
 `SimClock`, hdmi-hal's `Clock` and `Delay` on simulated time, with the conformance check
 for `Clock` and `Delay` implementations, and the bench: its DDC bus routed to a test's own
-targets, and the transcript.
+targets and the sink's SCDC registers, register presets, and the transcript.
 
 ## Planned
 
 In the order they are built:
 
-### The built-in targets
+### The EDID and DisplayID
 
-The SCDC register file, with register presets and a view of the sink's registers; the EDID
-behind the E-DDC segment pointer, and DisplayID.
+The EDID behind the E-DDC segment pointer, and DisplayID, with the settings for reads past
+the store, segments the sink does not have and the 128-byte boundary.
 
 ### The sink's behaviour
 
