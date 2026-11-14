@@ -1,5 +1,7 @@
 //! The sink's settings.
 
+use core::time::Duration;
+
 /// The sink's settings.
 ///
 /// [`new`](Self::new) is the default sink: an SCDC sink reporting `Sink_Version` 1, with an
@@ -30,6 +32,10 @@ pub struct SinkConfig {
     pub(crate) block_boundary: BlockBoundary,
     pub(crate) scdc_during_hpd_low: DuringHpdLow,
     pub(crate) edid_during_hpd_low: DuringHpdLow,
+    pub(crate) scrambling_lock: Trigger,
+    pub(crate) strict_lock: bool,
+    pub(crate) refusal: Refusal,
+    pub(crate) enable_timeout: Option<Duration>,
 }
 
 impl SinkConfig {
@@ -46,6 +52,10 @@ impl SinkConfig {
             block_boundary: BlockBoundary::Continue,
             scdc_during_hpd_low: DuringHpdLow::Answers,
             edid_during_hpd_low: DuringHpdLow::Answers,
+            scrambling_lock: Trigger::After(Duration::from_millis(1)),
+            strict_lock: false,
+            refusal: Refusal::NONE,
+            enable_timeout: None,
         }
     }
 
@@ -137,6 +147,41 @@ impl SinkConfig {
         }
     }
 
+    /// When the sink sets `Scrambling_Status` once its conditions hold; by default
+    /// `Trigger::After` 1 ms (*chosen*: no source gives the delay).
+    pub const fn with_scrambling_lock(self, scrambling_lock: Trigger) -> Self {
+        Self {
+            scrambling_lock,
+            ..self
+        }
+    }
+
+    /// A strict sink: when scrambled output was already running at the write that set
+    /// `Scrambling_Enable`, it does not lock until the output stops and starts again after
+    /// the write. Off by default: sources that redo the whole mode set say some sinks would
+    /// accept the SCDC writes alone, and others restore with the output running.
+    pub const fn with_strict_lock(self, strict_lock: bool) -> Self {
+        Self {
+            strict_lock,
+            ..self
+        }
+    }
+
+    /// A sink that refuses to set the scrambling bit right away, for the first attempts; by
+    /// default [`Refusal::NONE`] (*chosen*).
+    pub const fn with_scrambling_refusals(self, refusal: Refusal) -> Self {
+        Self { refusal, ..self }
+    }
+
+    /// A sink that clears `Scrambling_Enable` itself when no scrambled TMDS at the matching
+    /// ratio arrives within the duration of the write that set it; off (`None`) by default.
+    pub const fn with_enable_timeout(self, enable_timeout: Option<Duration>) -> Self {
+        Self {
+            enable_timeout,
+            ..self
+        }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -175,6 +220,26 @@ impl SinkConfig {
     /// What a read across a 128-byte block boundary does.
     pub const fn block_boundary(&self) -> BlockBoundary {
         self.block_boundary
+    }
+
+    /// When the sink sets `Scrambling_Status` once its conditions hold.
+    pub const fn scrambling_lock(&self) -> Trigger {
+        self.scrambling_lock
+    }
+
+    /// Whether the sink is strict about scrambled output arriving before the write.
+    pub const fn strict_lock(&self) -> bool {
+        self.strict_lock
+    }
+
+    /// How the sink refuses to set the scrambling bit right away.
+    pub const fn scrambling_refusals(&self) -> Refusal {
+        self.refusal
+    }
+
+    /// How long the sink waits for scrambled TMDS before clearing `Scrambling_Enable`.
+    pub const fn enable_timeout(&self) -> Option<Duration> {
+        self.enable_timeout
     }
 
     /// Whether SCDC answers while HPD is low.
@@ -262,4 +327,50 @@ pub enum DuringHpdLow {
     Answers,
     /// Nothing answers its addresses: `NoAcknowledge(Address)`.
     Silent,
+}
+
+/// When a sink's behaviour happens once its conditions hold: after a time, or on a count of
+/// operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Trigger {
+    /// Once this long has passed on the bench's clock.
+    After(Duration),
+    /// On the source's `n`-th read of the register that shows it (0 and 1: the first).
+    AfterReads(u32),
+}
+
+/// "Some displays refuse to set the scrambling bit right away": a sink that does, for its
+/// first `attempts` attempts, an attempt being a write of `TMDS_Config` with
+/// `Scrambling_Enable` set. One source, which reads two ways: the two kinds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Refusal {
+    /// How the sink refuses.
+    pub kind: RefusalKind,
+    /// How many attempts it refuses; 0 for none.
+    pub attempts: u32,
+}
+
+impl Refusal {
+    /// No refusals.
+    pub const NONE: Self = Self {
+        kind: RefusalKind::WithholdStatus,
+        attempts: 0,
+    };
+
+    /// Refuses the first `attempts` attempts, by `kind`.
+    pub const fn new(kind: RefusalKind, attempts: u32) -> Self {
+        Self { kind, attempts }
+    }
+}
+
+/// How a sink refuses an attempt to enable scrambling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RefusalKind {
+    /// The write is stored, but the sink does not lock until a later attempt.
+    WithholdStatus,
+    /// The write is stored without `Scrambling_Enable`.
+    DropEnable,
 }

@@ -16,11 +16,25 @@
 //!   0x54; the registers, the bits, the registers the source writes marked `RW`);
 //!   `hdmitx21/hdmi_tx_scdc.c:106–107` (update flags cleared by writing them back).
 
-use hdmi_hal::ddc::{DdcErrorKind, NoAcknowledgeSource};
+use core::time::Duration;
 
-use crate::config::{DuringHpdLow, OwnedWrite, ScdcPastEnd, SinkConfig};
+use hdmi_hal::ddc::{DdcErrorKind, NoAcknowledgeSource};
+use hdmi_hal::phy::TmdsClockRatio;
+use hdmi_hal::time::Timestamp;
+
+use crate::config::{
+    DuringHpdLow, OwnedWrite, Refusal, RefusalKind, ScdcPastEnd, SinkConfig, Trigger,
+};
+use crate::line::Line;
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
+
+/// `TMDS_Config` bit 0.
+const SCRAMBLING_ENABLE: u8 = 1 << 0;
+/// `TMDS_Config` bit 1: the ratio is 1/40.
+const RATIO_40: u8 = 1 << 1;
+/// `Scrambling_Status` bit 0.
+const STATUS: u8 = 1 << 0;
 
 /// The SCDC target's address.
 pub(crate) const SCDC: u8 = 0x54;
@@ -66,7 +80,14 @@ fn role(reg: u8) -> Role {
     }
 }
 
-/// The SCDC register file.
+/// The SCDC register file, and the sink's scrambling lock.
+///
+/// The lock: `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
+/// scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, and the trigger has passed since
+/// the later of the write that set `Scrambling_Enable` (from 0 to 1) and the line becoming
+/// what it is. It is cleared when any condition fails. The sink changes the status only when
+/// its lock is gained or lost, so a test's preset holds until then. Evaluated at every
+/// event: each transaction, each byte written, each read of the status, and every update.
 #[derive(Debug)]
 pub(crate) struct Scdc {
     regs: [u8; 256],
@@ -74,6 +95,24 @@ pub(crate) struct Scdc {
     owned_write: OwnedWrite,
     past_end: ScdcPastEnd,
     during_hpd_low: DuringHpdLow,
+    trigger: Trigger,
+    strict: bool,
+    refusal: Refusal,
+    enable_timeout: Option<Duration>,
+    /// The line as last seen, and since when it is so.
+    line: Line,
+    line_since: Timestamp,
+    /// When `Scrambling_Enable` was last set from 0 to 1; `None` while it is 0.
+    enable_at: Option<Timestamp>,
+    /// Whether scrambled TMDS at the matching ratio was seen since `enable_at`.
+    seen_since_enable: bool,
+    /// Attempts so far, and whether the last one is withheld.
+    attempts: u32,
+    withheld: bool,
+    /// The time the current lock conditions hold from, and reads of the status since.
+    lock_from: Option<Timestamp>,
+    reads: u32,
+    locked: bool,
 }
 
 impl Scdc {
@@ -90,6 +129,19 @@ impl Scdc {
             owned_write: config.owned_scdc_write,
             past_end: config.scdc_past_end,
             during_hpd_low: config.scdc_during_hpd_low,
+            trigger: config.scrambling_lock,
+            strict: config.strict_lock,
+            refusal: config.refusal,
+            enable_timeout: config.enable_timeout,
+            line: Line::Off,
+            line_since: Timestamp::from_micros(0),
+            enable_at: None,
+            seen_since_enable: false,
+            attempts: 0,
+            withheld: false,
+            lock_from: None,
+            reads: 0,
+            locked: false,
         })
     }
 
@@ -112,6 +164,74 @@ impl Scdc {
             to,
             by,
         });
+        if reg == TMDS_CONFIG {
+            match (from & SCRAMBLING_ENABLE != 0, to & SCRAMBLING_ENABLE != 0) {
+                (false, true) => {
+                    self.enable_at = Some(env.now());
+                    self.seen_since_enable = false;
+                }
+                (true, false) => self.enable_at = None,
+                _ => {}
+            }
+        }
+    }
+
+    /// The sink evaluates its behaviour at `env`'s time; `reading_status` when the source is
+    /// about to read `Scrambling_Status`, which counts toward `Trigger::AfterReads`.
+    fn evaluate(&mut self, env: &mut Env<'_>, reading_status: bool) {
+        let now = env.now();
+        let line = env.line();
+        if line != self.line {
+            self.line = line;
+            self.line_since = now;
+        }
+        let config = self.get(TMDS_CONFIG);
+        let matching = match line {
+            Line::Tmds {
+                ratio,
+                scrambled: true,
+                ..
+            } => (ratio == TmdsClockRatio::Div40) == (config & RATIO_40 != 0),
+            _ => false,
+        };
+        // Giving up: no scrambled TMDS at the matching ratio within the timeout.
+        if let Some(at) = self.enable_at {
+            self.seen_since_enable |= matching;
+            let expired = self
+                .enable_timeout
+                .and_then(|timeout| at.checked_add(timeout))
+                .is_some_and(|deadline| now >= deadline);
+            if expired && !self.seen_since_enable {
+                self.set(TMDS_CONFIG, config & !SCRAMBLING_ENABLE, Actor::Sink, env);
+            }
+        }
+        let lock_from = match self.enable_at {
+            Some(at) if matching && !self.withheld && !(self.strict && self.line_since < at) => {
+                Some(at.max(self.line_since))
+            }
+            _ => None,
+        };
+        if lock_from != self.lock_from {
+            self.lock_from = lock_from;
+            self.reads = 0;
+        }
+        if reading_status && lock_from.is_some() {
+            self.reads = self.reads.saturating_add(1);
+        }
+        let locked = lock_from.is_some_and(|from| match self.trigger {
+            Trigger::After(delay) => from.checked_add(delay).is_some_and(|due| now >= due),
+            Trigger::AfterReads(n) => self.reads >= n.max(1),
+        });
+        if locked != self.locked {
+            self.locked = locked;
+            let status = self.get(SCRAMBLING_STATUS);
+            let to = if locked {
+                status | STATUS
+            } else {
+                status & !STATUS
+            };
+            self.set(SCRAMBLING_STATUS, to, Actor::Sink, env);
+        }
     }
 
     /// The next register in a burst: the offset advances, wrapping past 0xFF. Returns
@@ -125,6 +245,21 @@ impl Scdc {
     /// The source writes `value` at the current offset.
     fn write_byte(&mut self, value: u8, env: &mut Env<'_>) -> Result<(), DdcErrorKind> {
         let reg = self.offset;
+        let mut value = value;
+        if reg == TMDS_CONFIG && value & SCRAMBLING_ENABLE != 0 {
+            self.attempts = self.attempts.saturating_add(1);
+            self.withheld = false;
+            if self.attempts <= self.refusal.attempts {
+                env.record(Event::Refusal {
+                    attempt: self.attempts,
+                    kind: self.refusal.kind,
+                });
+                match self.refusal.kind {
+                    RefusalKind::WithholdStatus => self.withheld = true,
+                    RefusalKind::DropEnable => value &= !SCRAMBLING_ENABLE,
+                }
+            }
+        }
         match role(reg) {
             Role::Source => self.set(reg, value, Actor::Source, env),
             Role::WriteOneToClear => {
@@ -152,6 +287,10 @@ impl Target for Scdc {
         addr == SCDC && (env.hpd() || self.during_hpd_low == DuringHpdLow::Answers)
     }
 
+    fn update(&mut self, env: &mut Env<'_>) {
+        self.evaluate(env, false);
+    }
+
     /// A write sets the offset with its first byte, then writes from there; a read reads from
     /// the offset. The offset advances with every byte and persists between transactions.
     /// Past 0xFF a burst wraps to 0x00, or with `ScdcPastEnd::Nack` fails on the next byte.
@@ -160,6 +299,7 @@ impl Target for Scdc {
         ops: &mut [Operation<'_>],
         env: &mut Env<'_>,
     ) -> Result<(), DdcErrorKind> {
+        self.evaluate(env, false);
         let mut past_end = false;
         let refuse_past_end = self.past_end == ScdcPastEnd::Nack;
         for op in ops.iter_mut() {
@@ -175,6 +315,7 @@ impl Target for Scdc {
                             return Err(NACK_DATA);
                         }
                         self.write_byte(value, env)?;
+                        self.evaluate(env, false);
                         past_end |= self.advance();
                     }
                 }
@@ -182,6 +323,9 @@ impl Target for Scdc {
                     for byte in buf.iter_mut() {
                         if past_end && refuse_past_end {
                             return Err(NACK_DATA);
+                        }
+                        if self.offset == SCRAMBLING_STATUS {
+                            self.evaluate(env, true);
                         }
                         *byte = self.get(self.offset);
                         past_end |= self.advance();

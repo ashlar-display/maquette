@@ -54,6 +54,13 @@ parts are built.
   fail `Detached` after the argument checks, take no time) and reattaching; the operation
   budget counting what the handles do and not the test's own controls, panicking past it,
   and off.
+- **`tests/lock.rs`** — the scrambling lock: the status 1 ms after the later of the write
+  and scrambled output, either order; the strict sink waiting for output to start again; the
+  ratio match, scrambling at 1/10 and unscrambled output; the lock lost when the output
+  stops or `Scrambling_Enable` is cleared; a rewrite not restarting it; the count trigger;
+  refusals of both kinds; the enable timeout, with and without output in time; a delay on
+  the time handle as the event that sets it; a preset status holding until the lock
+  changes; the defaults.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

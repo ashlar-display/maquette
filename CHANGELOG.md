@@ -73,6 +73,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state. `SinkConfig::with_scdc_during_hpd_low` and `with_edid_during_hpd_low` say whether
   the built-in targets answer while HPD is low (`DuringHpdLow::Answers` by default, or
   `Silent`).
+- **The scrambling lock:** the SCDC target sets `Scrambling_Status` when
+  `Scrambling_Enable` is set, the line is scrambled TMDS at the ratio
+  `TMDS_Bit_Clock_Ratio` names, and the lock's `Trigger` has passed since the later of the
+  write that set `Scrambling_Enable` and the line becoming what it is; it clears it when a
+  condition fails. Each change is a `Register` event by `Actor::Sink`, made only when the
+  lock is gained or lost, so a preset holds until then. `SinkConfig` gains
+  `with_scrambling_lock` (`Trigger::After` 1 ms by default, or `Trigger::AfterReads(n)`),
+  `with_strict_lock` (off by default), `with_scrambling_refusals` (`Refusal` with
+  `RefusalKind::WithholdStatus` or `DropEnable` for the first attempts; none by default,
+  each refusal an `Event::Refusal`) and `with_enable_timeout` (off by default), with
+  getters.
 - **The operation budget:** every bus call (refused ones included), clock read and delay
   through the bench's handles counts; past `BenchBuilder::budget` (by default
   `DEFAULT_BUDGET`, 1 000 000; `None` for none) the bench panics, naming the budget, so a

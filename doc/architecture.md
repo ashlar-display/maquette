@@ -281,7 +281,7 @@ can tear — the CED counters and FRL's LTP requests — so the setting arrives 
 
 **The operation budget.** A bench counts every operation through its handles — bus calls,
 refused ones included, PHY calls, clock reads and delays — against a budget,
-`BenchBuilder::budget(Option<u64>)`: by default 1 000 000 operations (*chosen*: far more
+`BenchBuilder::budget(Option<u64>)`: by default `DEFAULT_BUDGET`, 1 000 000 operations (*chosen*: far more
 than a bring-up, a training run or a long session of polling takes, and spent within
 seconds by a loop that never ends), `None` for none. Past it the bench panics, naming the
 budget and how many operations it allowed: a procedure that loops forever fails its test
@@ -293,7 +293,9 @@ quietly and the test pass. A `SimClock` standing alone counts nothing.
 One `SinkConfig`, `#[non_exhaustive]`, with a `const fn new()` (an SCDC sink with a segment
 pointer, `Sink_Version` 1, and the defaults in "Sink behaviour") and `const` `with_*`
 builders for each setting (`without_scdc()`, `without_segment_pointer()`,
-`with_scrambling_lock(trigger)`, `with_hpd_reset(group, rule)`, `with_scdc_during_hpd_low(..)`,
+`with_scrambling_lock(trigger)`, `with_strict_lock(..)`, `with_scrambling_refusals(..)`,
+`with_enable_timeout(..)`, `with_hpd_reset(group, rule)`, `with_scdc_during_hpd_low(..)`,
+`with_edid_during_hpd_low(..)`,
 …), with a getter for each, as the stack's other
 capability and option types are built (`DdcCapabilities`, `TmdsPhyCapabilities`). There are
 no named sink models: a name would suggest a real product whose behaviour no source backs.
@@ -450,10 +452,15 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
         -> Result<(), BenchError>;
     pub fn detach(&self);
     pub fn reattach(&self);
+    pub fn is_attached(&self) -> bool;
+    /// How many operations the handles made: what the budget counts.
+    pub fn operations(&self) -> u64;
 }
 ```
 
-- **HPD:** the sink stays on the bus. What answers during HPD low is a setting per built-in
+- **HPD:** the sink stays on the bus; `bench.sink().hpd()` and `is_plugged()` read it.
+  Raising HPD on an unplugged sink panics: the test plugs it in instead. What answers during
+  HPD low is a setting per built-in
   target (`DuringHpdLow::{Answers, Silent}`): the EDID answers by default (*chosen*, after
   E-DDC's rule that the EDID is readable with the display powered off, §9.2, §9.5.3), and so
   does SCDC (*chosen*: no source says a sink's SCDC stops answering, and its registers are
@@ -584,7 +591,12 @@ not restart it) and the time the line became scrambled TMDS at its current ratio
   the matching ratio within `d` of the write that set `Scrambling_Enable`, the sink clears
   `Scrambling_Enable` itself.
 
-Every change the sink makes on its own is a `Register` event by `Actor::Sink`.
+Every change the sink makes on its own is a `Register` event by `Actor::Sink`. The sink
+changes `Scrambling_Status` only when its lock is gained or lost, so a test's preset of the
+status holds until then; `Scrambling_Enable` is tracked the same way, from the register,
+whoever set it. The lock is evaluated at the start of each transaction, after each byte
+written, before each read of the status (which `Trigger::AfterReads` counts) and at every
+other bench event.
 
 Planned before the first release: FRL training responses (`FLT_ready`, LTP requests,
 `FLT_update`, `FRL_start`), the CED counters (saturation at 0x7FFF, both clear-on-read

@@ -3,6 +3,7 @@
 use hdmi_hal::ddc::{DdcErrorKind, EddcTarget};
 use hdmi_hal::time::Timestamp;
 
+use crate::config::RefusalKind;
 use crate::line::Line;
 
 /// One entry of the transcript: what happened, and when.
@@ -62,6 +63,14 @@ pub enum Event {
     Adapter {
         /// Whether the adapter is now attached.
         attached: bool,
+    },
+    /// The sink refused to set the scrambling bit right away (`SinkConfig`'s refusals).
+    Refusal {
+        /// Which attempt, counted from 1: a write of `TMDS_Config` with `Scrambling_Enable`
+        /// set.
+        attempt: u32,
+        /// How it refused.
+        kind: RefusalKind,
     },
     /// A test's target's own event, recorded with [`Env::note`](crate::Env::note).
     Note {
