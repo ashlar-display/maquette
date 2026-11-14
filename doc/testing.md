@@ -91,6 +91,12 @@ parts are built.
   traits through the blanket implementations; hdmi-hal-async's `SendScdcOverDdc` over the
   bench's bus; errors and records as the sync handles make them; nothing happening until a
   future is polled.
+- **`tests/ddc_check.rs`** — the `DdcBus` check: the bench's bus passing with a described
+  device, as a narrow SMBus-style bus, without a segment pointer, without a description,
+  from several threads and async; and buses broken one way each caught — doing more than
+  they claim, accepting an empty write, writing the pointer for segment 0, corrupting what
+  they read, answering where nothing does, panicking; unreachable addresses and no
+  segmented reads refused; failures from several threads counted; every failure printed.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

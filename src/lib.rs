@@ -31,6 +31,9 @@
 #![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "std")]
+extern crate std;
+
 #[cfg(feature = "async")]
 mod asynch;
 mod bench;

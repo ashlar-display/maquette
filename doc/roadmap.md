@@ -8,8 +8,8 @@ targets, the sink's SCDC registers and its EDID and DisplayID behind the E-DDC s
 pointer, register presets, and the transcript; the line, HPD, unplug and detach as bench
 events; the sink's scrambling lock and the registers a long HPD low resets; the operation
 budget; scheduled faults; the simulated PHY (`TmdsPhy`, `FrlPhy`, `PhyPower`) and
-`Coupled<P>`, any PHY, driving the line; hdmi-hal-async's traits on the same handles; and
-a fuzz target checking the simulator's invariants.
+`Coupled<P>`, any PHY, driving the line; hdmi-hal-async's traits on the same handles; a
+fuzz target checking the simulator's invariants; and the conformance check for `DdcBus`.
 
 ## Planned
 
@@ -17,8 +17,8 @@ In the order they are built:
 
 ### The conformance checks
 
-Checks for implementations of `DdcBus`, `ScdcTransport`, `TmdsPhy`, `FrlPhy` and
-`PhyPower`, each returning a report of every point that failed.
+Checks for implementations of `ScdcTransport`, `TmdsPhy`, `FrlPhy` and `PhyPower`, each
+returning a report of every point that failed, as the `DdcBus` check does.
 
 ### Before the first release
 

@@ -22,7 +22,9 @@
 //! the check, as it ends the test.
 
 mod clock;
+mod ddc;
 mod report;
 
 pub use clock::{ClockCheck, ClockFailure, clock};
+pub use ddc::{DdcBusCheck, DdcBusFailure, DdcDevice};
 pub use report::Report;

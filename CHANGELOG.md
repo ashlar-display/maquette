@@ -139,6 +139,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`ScdcPastEnd::Wrap` by default, or `Nack`).
 - Re-exports of `hdmi_hal` itself and its DDC types (`DdcBus`, `DdcCapabilities`,
   `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`).
+- **The `DdcBus` check** (`check::DdcBusCheck`): hdmi-hal's `DdcBus` contract as a caller
+  sees it, against a device the test describes (`check::DdcDevice`: its EDID, whether it has
+  a segment pointer, an address where nothing answers). Argument and capability refusals,
+  empty buffers, the EDID read from segment 0 (without a pointer too) and segment 1, and
+  `NoAcknowledge` where nothing answers; every call safe on a real device, points without a
+  description skipped. `run_threads` (with `std`) runs it from several threads at once;
+  `run_async` (with `async`) over hdmi-hal-async's `DdcBus`. Failures are
+  `check::DdcBusFailure`s.
 - **`check::Report`**, what every check returns: the points run, every failed point counted,
   the first 16 recorded in the order found, and `assert_ok`, which panics listing them. A
   check of another crate's own trait that runs against the bench builds one with

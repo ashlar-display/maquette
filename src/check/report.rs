@@ -41,6 +41,21 @@ impl<F, const N: usize> Report<F, N> {
         }
     }
 
+    /// Adds `other`'s points, failures and overflow to this report.
+    #[cfg_attr(not(feature = "std"), allow(dead_code))]
+    pub(crate) fn absorb(&mut self, other: Self) {
+        let recorded = other.len;
+        for failure in other.recorded.into_iter().flatten() {
+            self.record(Some(failure));
+        }
+        let passed = other.points - other.failed;
+        self.points = self.points.saturating_add(passed);
+        // Failures past `other`'s capacity are counted, not recorded, here too.
+        let unrecorded = other.failed - recorded;
+        self.points = self.points.saturating_add(unrecorded);
+        self.failed = self.failed.saturating_add(unrecorded);
+    }
+
     /// Whether every point passed.
     pub fn is_ok(&self) -> bool {
         self.failed == 0
