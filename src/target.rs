@@ -3,6 +3,7 @@
 use hdmi_hal::ddc::DdcErrorKind;
 use hdmi_hal::time::Timestamp;
 
+use crate::line::Line;
 use crate::transcript::{Event, Record, Transcript};
 
 /// A device on the sink's DDC bus, as the bench routes transactions to it.
@@ -108,12 +109,18 @@ impl Operation<'_> {
 pub struct Env<'e> {
     now: Timestamp,
     hpd: bool,
+    line: Line,
     log: &'e mut dyn NoteSink,
 }
 
 impl<'e> Env<'e> {
-    pub(crate) fn new(now: Timestamp, hpd: bool, log: &'e mut dyn NoteSink) -> Self {
-        Self { now, hpd, log }
+    pub(crate) fn new(now: Timestamp, hpd: bool, line: Line, log: &'e mut dyn NoteSink) -> Self {
+        Self {
+            now,
+            hpd,
+            line,
+            log,
+        }
     }
 
     /// The bench's time: for a transaction, when it started.
@@ -124,6 +131,11 @@ impl<'e> Env<'e> {
     /// Whether HPD is high.
     pub fn hpd(&self) -> bool {
         self.hpd
+    }
+
+    /// What the source transmits.
+    pub fn line(&self) -> Line {
+        self.line
     }
 
     /// Records a built-in target's event at [`now`](Self::now).
@@ -149,6 +161,7 @@ impl core::fmt::Debug for Env<'_> {
         f.debug_struct("Env")
             .field("now", &self.now)
             .field("hpd", &self.hpd)
+            .field("line", &self.line)
             .finish_non_exhaustive()
     }
 }

@@ -262,8 +262,12 @@ is passed as both where a procedure takes them as separate values (`&clock`,
 up to whole microseconds, the resolution of hdmi-hal's `Timestamp`.
 
 **When things are evaluated.** The sink evaluates its behaviour at every bench event: a bus
-transfer, a PHY call, a line change, an HPD change, `advance`. Nothing runs in the
-background, so a run is a function of the calls and the settings. A transfer is evaluated at
+transfer, a PHY call, a line change, an HPD, plug or adapter change, a delay on the bench's
+time handle (after it), `advance`. Nothing runs in the background, so a run is a function of
+the calls and the settings. A decision that falls due between two events (the status set
+1 ms after the write, a reset after 100 ms of HPD low) is taken at the first event at or
+after it, and recorded at that event's time: a read always sees it, since a read is an
+event, and the transcript stays in time order. A transfer is evaluated at
 its start and charged after it; an operation the bus's capabilities refuse touches nothing
 and is not charged; a faulted one is charged. A `read_segmented` that the bus splits into
 pieces (`segmented_piece`) is several transfers, each charged, so something can change
@@ -275,20 +279,22 @@ setting, as is a bus that `splits_reads`: each byte is then evaluated at its own
 transfer's start plus the per-byte charge so far. Only registers that change by themselves
 can tear — the CED counters and FRL's LTP requests — so the setting arrives with them.
 
-**The operation budget.** A bench counts bus operations, PHY calls and clock reads against a
-budget, configurable or off. Past it the bench panics, naming the budget: a procedure that
-loops without letting time move fails its test instead of hanging CI. A budget that failed
-operations instead could let the procedure end quietly and the test pass.
-
-*To settle:* the budget's default size.
+**The operation budget.** A bench counts every operation through its handles — bus calls,
+refused ones included, PHY calls, clock reads and delays — against a budget,
+`BenchBuilder::budget(Option<u64>)`: by default 1 000 000 operations (*chosen*: far more
+than a bring-up, a training run or a long session of polling takes, and spent within
+seconds by a loop that never ends), `None` for none. Past it the bench panics, naming the
+budget and how many operations it allowed: a procedure that loops forever fails its test
+instead of hanging CI. A budget that failed operations instead could let the procedure end
+quietly and the test pass. A `SimClock` standing alone counts nothing.
 
 ### Settings
 
 One `SinkConfig`, `#[non_exhaustive]`, with a `const fn new()` (an SCDC sink with a segment
 pointer, `Sink_Version` 1, and the defaults in "Sink behaviour") and `const` `with_*`
 builders for each setting (`without_scdc()`, `without_segment_pointer()`,
-`with_scrambling_delay(d)`, `with_tmds_config_reset(rule)`, …), with a getter for each, as
-the stack's other
+`with_scrambling_lock(trigger)`, `with_hpd_reset(group, rule)`, `with_scdc_during_hpd_low(..)`,
+…), with a getter for each, as the stack's other
 capability and option types are built (`DdcCapabilities`, `TmdsPhyCapabilities`). There are
 no named sink models: a name would suggest a real product whose behaviour no source backs.
 The bus's and the PHY's capabilities are hdmi-hal's own types, passed to the bench, not
@@ -405,24 +411,64 @@ things can drive it:
 - `Coupled<P>`, which wraps any `TmdsPhy` (a third party's, a forwarding stub, a firmware
   PHY under hardware-in-the-loop), forwards each call and drives the line from what
   succeeded;
-- the test, directly.
+- the test, directly — the only way until the PHY exists.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Line {
+    /// Nothing transmitted.
+    Off,
+    /// TMDS at `character_rate_khz`, the clock at `ratio`, scrambled or not.
+    Tmds { character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool },
+    /// FRL at `rate`; what it carries comes with the sink's FRL responses.
+    Frl { rate: HdmiForumFrl },
+}
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    /// Sets what the source transmits: a bench event, recorded as `Event::Line`.
+    pub fn set_line(&self, line: Line);
+    pub fn line(&self) -> Line;
+}
+```
+
+`TmdsClockRatio` and `HdmiForumFrl` are hdmi-hal's. A target sees the line through
+`Env::line()`. Setting the line it already has is not a change: nothing is recorded and the
+time it started stays.
 
 ### HPD, unplug and detach
 
 Three events a test needs to tell apart:
 
-- **HPD** (`hpd(level)`, `hpd_pulse(d)`): the sink stays on the bus. What answers during HPD
-  low is a setting per target: the EDID answers by default (*chosen*, after E-DDC's rule that
-  the EDID is readable with the display powered off, §9.2, §9.5.3). What a long HPD low
-  resets is a setting over every register group (`TMDS_Config`, the status and update flags,
-  `Source_Version`, `Config_1`, later the CED counters).
-- **Unplug and replug** (`unplug()`, `plug(..)`): while unplugged nothing answers,
-  `NoAcknowledge(Address)` on every address. `plug` may bring a new EDID and new settings: a
-  different sink coming back.
-- **Detach** (`detach()`, `reattach()`): the adapter is gone; every operation fails
-  `Detached`.
+```rust
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn hpd(&self, high: bool);
+    /// HPD low, `low_for` on the bench's clock (`advance`), HPD high.
+    pub fn hpd_pulse(&self, low_for: Duration);
+    pub fn unplug(&self);
+    pub fn plug(&self, edid: &'a [u8], displayid: Option<&'a [u8]>, config: SinkConfig)
+        -> Result<(), BenchError>;
+    pub fn detach(&self);
+    pub fn reattach(&self);
+}
+```
 
-*To settle with the sink's behaviour:* whether SCDC answers during HPD low by default.
+- **HPD:** the sink stays on the bus. What answers during HPD low is a setting per built-in
+  target (`DuringHpdLow::{Answers, Silent}`): the EDID answers by default (*chosen*, after
+  E-DDC's rule that the EDID is readable with the display powered off, §9.2, §9.5.3), and so
+  does SCDC (*chosen*: no source says a sink's SCDC stops answering, and its registers are
+  kept until the reset below). A test's own target decides with `Env::hpd()`. What a long
+  HPD low resets is a setting per register group ("Sink behaviour").
+- **Unplug and replug:** while unplugged HPD is low and nothing answers, the test's own
+  targets included: `NoAcknowledge(Address)` on every address, charging the address byte.
+  `plug` brings a sink back — new stores and new settings, its registers fresh, HPD high:
+  a different sink, or the same one after a power cycle. The test's own targets stay.
+- **Detach:** the adapter is gone. Every `DdcBus` call that passes the argument and
+  capability checks fails `Detached`, reaches no target and takes no time, until
+  `reattach`.
+
+Each is a bench event, recorded: `Event::Hpd { high }`, `Event::Plug { plugged }`,
+`Event::Adapter { attached }`. A change to the state it already has records nothing.
 
 ### The transcript
 
@@ -454,7 +500,17 @@ pub enum Event {
     IgnoredWrite { addr: u8, reg: u8, value: u8, why: Ignored },
     /// A test's target's own event (`Env::note`).
     Note { addr: u8, code: u32, value: u32 },
-    // PHY calls, line changes, HPD and plug changes, faults: added with them.
+    /// What the source transmits changed (`Bench::set_line`, later the PHY).
+    Line(Line),
+    /// HPD changed.
+    Hpd { high: bool },
+    /// The sink was unplugged or plugged.
+    Plug { plugged: bool },
+    /// The adapter was detached or reattached.
+    Adapter { attached: bool },
+    /// The sink refused to set the scrambling bit right away, at this attempt.
+    Refusal { attempt: u32, kind: RefusalKind },
+    // PHY calls and faults: added with them.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -493,19 +549,42 @@ source settles is marked *chosen*.
 | Behaviour | Sources | In maquette |
 |---|---|---|
 | `TMDS_Config` holds the source's `Scrambling_Enable` and `TMDS_Bit_Clock_Ratio` | settled [1] | fixed |
-| `Scrambling_Status` set when scrambled TMDS runs at the ratio `TMDS_Bit_Clock_Ratio` names, with `Scrambling_Enable` set, for the delay after the later of the write and scrambled output starting | settled that sources read it [2]; the delay and the ratio match have no source | delay a setting, *chosen* default 1 ms; ratio match *chosen*; scrambling at 1/10 sets it too |
+| `Scrambling_Status` set when scrambled TMDS runs at the ratio `TMDS_Bit_Clock_Ratio` names, with `Scrambling_Enable` set, once the lock trigger has passed since the later of the write and scrambled output starting | settled that sources read it [2]; the delay and the ratio match have no source | the trigger a setting, `Trigger::After(d)`, *chosen* default 1 ms, or `Trigger::AfterReads(n)`, the *n*-th read of `Scrambling_Status`; ratio match *chosen*; scrambling at 1/10 sets it too |
 | A sink that does not lock when scrambled TMDS arrived before the write | sources that redo the whole mode set say some sinks would accept the SCDC writes alone; others restore with the output running [3] | a setting, off by default (the lenient sink) |
 | "Some displays refuse to set the scrambling bit right away" | one source, which reads two ways [4] | a setting in both readings: the status withheld, or `Scrambling_Enable` dropped from the write; for the first *n* attempts, an attempt being a write that sets `Scrambling_Enable`; default none (*chosen*) |
 | The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5] | a setting, default off |
-| `TMDS_Config` and other registers reset after a long HPD low | settled that sources restore it [6]; when the sink resets it has no public source | a setting per register group: after HPD low for at least *d*, *chosen* default 100 ms; or never; or on every HPD low |
+| `TMDS_Config` and other registers reset after a long HPD low | settled that sources restore it [6]; when the sink resets it has no public source | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config}`): `HpdReset::After(d)`, *chosen* default 100 ms for `TMDS_Config`, the status and update flags and `Source_Version`; `HpdReset::OnHpdLow`, *chosen* default for `Config_0` and `Config_1`; or `HpdReset::Never` |
 | `Source_Version` written by the source, `Sink_Version` reported | [7] | `Sink_Version` a setting (default 1); `Source_Version` stored |
-| Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset at first; the rule that sets them a setting |
+| Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset; the rule that sets them a setting, with the status flags and FRL responses they report |
 | A sink without SCDC | no source for its answer | NACKs 0x54 (*chosen*) |
 | A write to an SCDC register the sink owns | no source | a setting: acknowledged and ignored, recorded (*chosen*), or `NoAcknowledge(Data)` at that byte |
 | An SCDC read or write past 0xFF | left to the sink: hdmi-hal's `ScdcTransport` leaves it open, and no source covers it | a setting: the offset wraps to 0x00 (*chosen*, an 8-bit offset register), or `NoAcknowledge(Data)` past 0xFF |
 | A read past the end of the EDID or DisplayID store, in a segment the sink has | E-DDC covers only the data a display has | a setting: reads 0xFF (*chosen*), wraps to the start of the store, or `NoAcknowledge(Data)` |
 | A segment the sink does not have | E-DDC requires an acknowledge of the pointer for segments that exist (§6.4–§6.5), not what follows for others | a setting: `NoAcknowledge(Data)` at the pointer value (*chosen*, as hdmi-hal's `DdcBus` contract reads it), or acknowledged and read as past the store |
 | Reading across the 128-byte boundary at 0x50 or 0x52 | "some implementations may support" it (E-DDC 1.3 §2.2.6) | a setting: continues into the next block (*chosen*), or wraps to the start of the block |
+
+**The scrambling lock, in full.** The SCDC target keeps the time of the write that set
+`Scrambling_Enable` (from 0 to 1; a rewrite that keeps it set, as a quick restore makes, does
+not restart it) and the time the line became scrambled TMDS at its current ratio.
+
+- **Locking:** `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
+  scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, and the lock trigger has passed
+  since the later of the two times.
+- **The strict sink** (`with_strict_lock(true)`; off by default): when scrambled output was
+  already running at the write, the sink does not lock until the output stops and starts
+  again after it.
+- **Losing it:** the status is cleared at the first event at which a condition fails: the
+  bit or the ratio changes, or the line stops, changes rate, or stops scrambling.
+- **Refusals** (`with_scrambling_refusals(Refusal { kind, attempts })`; none by default):
+  an attempt is a write that sets `Scrambling_Enable`. For the first `attempts` attempts the
+  sink either withholds the status (`RefusalKind::WithholdStatus`: no lock until a later
+  attempt) or stores the write without `Scrambling_Enable` (`RefusalKind::DropEnable`); each
+  refusal is an `Event::Refusal`.
+- **Giving up** (`with_enable_timeout(Some(d))`; off by default): without scrambled TMDS at
+  the matching ratio within `d` of the write that set `Scrambling_Enable`, the sink clears
+  `Scrambling_Enable` itself.
+
+Every change the sink makes on its own is a `Register` event by `Actor::Sink`.
 
 Planned before the first release: FRL training responses (`FLT_ready`, LTP requests,
 `FLT_update`, `FRL_start`), the CED counters (saturation at 0x7FFF, both clear-on-read

@@ -8,7 +8,7 @@ use hdmi_hal::ddc::{
     is_usable_address,
 };
 
-use crate::bench::Core;
+use crate::bench::{Core, Reach};
 use crate::target::Operation;
 use crate::transcript::{BusOp, BusRecord};
 
@@ -56,21 +56,24 @@ impl<'b> Ddc<'b> {
 
     /// Runs one transaction, charges it, and returns its result as the call's.
     fn run(&self, record: BusRecord, ops: &mut [Operation<'_>]) -> Result<(), BusError> {
-        let (result, answered) = self.core.transaction(record, ops);
+        let (result, reach) = self.core.transaction(record, ops);
         let timing = self.core.timing();
-        let wire_bytes = if answered {
-            ops.iter()
+        let wire_bytes = match reach {
+            Reach::Answered => ops
+                .iter()
                 .map(|op| op.len().saturating_add(1))
-                .sum::<usize>()
-        } else {
-            1
+                .sum::<usize>(),
+            Reach::Unanswered => 1,
+            Reach::Detached => 0,
         };
-        let bytes = u32::try_from(wire_bytes).unwrap_or(u32::MAX);
-        self.core.clock().advance(
-            timing
-                .per_transaction
-                .saturating_add(timing.per_byte.saturating_mul(bytes)),
-        );
+        if reach != Reach::Detached {
+            let bytes = u32::try_from(wire_bytes).unwrap_or(u32::MAX);
+            self.core.clock().advance(
+                timing
+                    .per_transaction
+                    .saturating_add(timing.per_byte.saturating_mul(bytes)),
+            );
+        }
         result.map_err(|kind| {
             for op in ops.iter_mut() {
                 if let Operation::Read { buf, .. } = op {
@@ -102,6 +105,7 @@ impl DdcBus for Ddc<'_> {
     }
 
     fn write(&self, addr: u8, bytes: &[u8]) -> Result<(), BusError> {
+        self.core.spend();
         let record = BusRecord {
             op: BusOp::Write,
             addr,
@@ -125,6 +129,7 @@ impl DdcBus for Ddc<'_> {
         if bytes.is_empty() {
             return self.read(addr, buf);
         }
+        self.core.spend();
         let record = BusRecord {
             op: BusOp::WriteRead,
             addr,
@@ -158,6 +163,7 @@ impl DdcBus for Ddc<'_> {
     }
 
     fn read(&self, addr: u8, buf: &mut [u8]) -> Result<(), BusError> {
+        self.core.spend();
         let record = BusRecord {
             op: BusOp::Read,
             addr,
@@ -187,6 +193,7 @@ impl DdcBus for Ddc<'_> {
         offset: u8,
         buf: &mut [u8],
     ) -> Result<(), BusError> {
+        self.core.spend();
         let addr = target.address();
         let pointer = u16::from(segment > 0);
         let record = BusRecord {

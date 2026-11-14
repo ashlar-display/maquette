@@ -46,6 +46,14 @@ parts are built.
   segment present in one store only; reads past the store filled, wrapped or refused; the
   128-byte boundary continued or wrapped; writes after the offset ignored and recorded; an
   empty EDID; the DisplayID's own store and offset, and its length check.
+- **`tests/events.rs`** — bench events: the line starting off and its changes recorded once
+  and seen by targets; a delay on the time handle as an event; HPD changes, the built-in
+  targets answering or silent while HPD is low, a test's target deciding with HPD, pulses,
+  and HPD refused on an unplugged sink; unplugging (nothing answers, the address byte
+  charged); plugging a fresh sink, over a plugged one, and with a bad store; detaching (calls
+  fail `Detached` after the argument checks, take no time) and reattaching; the operation
+  budget counting what the handles do and not the test's own controls, panicking past it,
+  and off.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

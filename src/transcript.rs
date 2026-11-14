@@ -3,6 +3,8 @@
 use hdmi_hal::ddc::{DdcErrorKind, EddcTarget};
 use hdmi_hal::time::Timestamp;
 
+use crate::line::Line;
+
 /// One entry of the transcript: what happened, and when.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -43,6 +45,23 @@ pub enum Event {
         value: u8,
         /// Why it was ignored.
         why: Ignored,
+    },
+    /// What the source transmits changed ([`Bench::set_line`](crate::Bench::set_line)).
+    Line(Line),
+    /// HPD changed.
+    Hpd {
+        /// Whether HPD is now high.
+        high: bool,
+    },
+    /// The sink was unplugged or plugged in.
+    Plug {
+        /// Whether the sink is now plugged in.
+        plugged: bool,
+    },
+    /// The adapter was detached or reattached.
+    Adapter {
+        /// Whether the adapter is now attached.
+        attached: bool,
     },
     /// A test's target's own event, recorded with [`Env::note`](crate::Env::note).
     Note {

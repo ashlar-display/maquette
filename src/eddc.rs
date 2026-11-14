@@ -3,7 +3,7 @@
 
 use hdmi_hal::ddc::{DISPLAYID, DdcErrorKind, EDID, NoAcknowledgeSource, SEGMENT_POINTER};
 
-use crate::config::{BlockBoundary, MissingSegment, PastStore, SinkConfig};
+use crate::config::{BlockBoundary, DuringHpdLow, MissingSegment, PastStore, SinkConfig};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Event, Ignored};
 
@@ -42,6 +42,7 @@ pub(crate) struct Eddc<'a> {
     past_store: PastStore,
     missing_segment: MissingSegment,
     block_boundary: BlockBoundary,
+    during_hpd_low: DuringHpdLow,
 }
 
 impl<'a> Eddc<'a> {
@@ -54,6 +55,7 @@ impl<'a> Eddc<'a> {
             past_store: config.past_store,
             missing_segment: config.missing_segment,
             block_boundary: config.block_boundary,
+            during_hpd_low: config.edid_during_hpd_low,
         }
     }
 
@@ -104,8 +106,9 @@ impl<'a> Eddc<'a> {
 }
 
 impl Target for Eddc<'_> {
-    fn answers(&self, addr: u8, _env: &Env<'_>) -> bool {
-        (addr == SEGMENT_POINTER && self.segment_pointer) || self.store(addr).is_some()
+    fn answers(&self, addr: u8, env: &Env<'_>) -> bool {
+        let awake = env.hpd() || self.during_hpd_low == DuringHpdLow::Answers;
+        awake && ((addr == SEGMENT_POINTER && self.segment_pointer) || self.store(addr).is_some())
     }
 
     fn transaction(
@@ -163,12 +166,13 @@ impl Target for Eddc<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::line::Line;
     use crate::transcript::Transcript;
     use hdmi_hal::time::Timestamp;
 
     fn run(eddc: &mut Eddc<'_>, ops: &mut [Operation<'_>]) -> Result<(), DdcErrorKind> {
         let mut transcript = Transcript::<8>::new();
-        let mut env = Env::new(Timestamp::from_micros(0), true, &mut transcript);
+        let mut env = Env::new(Timestamp::from_micros(0), true, Line::Off, &mut transcript);
         eddc.transaction(ops, &mut env)
     }
 

@@ -18,7 +18,7 @@
 
 use hdmi_hal::ddc::{DdcErrorKind, NoAcknowledgeSource};
 
-use crate::config::{OwnedWrite, ScdcPastEnd, SinkConfig};
+use crate::config::{DuringHpdLow, OwnedWrite, ScdcPastEnd, SinkConfig};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
 
@@ -73,6 +73,7 @@ pub(crate) struct Scdc {
     offset: u8,
     owned_write: OwnedWrite,
     past_end: ScdcPastEnd,
+    during_hpd_low: DuringHpdLow,
 }
 
 impl Scdc {
@@ -88,6 +89,7 @@ impl Scdc {
             offset: 0,
             owned_write: config.owned_scdc_write,
             past_end: config.scdc_past_end,
+            during_hpd_low: config.scdc_during_hpd_low,
         })
     }
 
@@ -146,8 +148,8 @@ impl Scdc {
 const NACK_DATA: DdcErrorKind = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data);
 
 impl Target for Scdc {
-    fn answers(&self, addr: u8, _env: &Env<'_>) -> bool {
-        addr == SCDC
+    fn answers(&self, addr: u8, env: &Env<'_>) -> bool {
+        addr == SCDC && (env.hpd() || self.during_hpd_low == DuringHpdLow::Answers)
     }
 
     /// A write sets the offset with its first byte, then writes from there; a read reads from
@@ -197,6 +199,7 @@ impl Target for Scdc {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::line::Line;
     use crate::transcript::Transcript;
     use hdmi_hal::time::Timestamp;
 
@@ -204,7 +207,7 @@ mod tests {
     fn run(ops: &mut [Operation<'_>]) -> (Scdc, Result<(), DdcErrorKind>) {
         let mut scdc = Scdc::new(&SinkConfig::new()).unwrap();
         let mut transcript = Transcript::<8>::new();
-        let mut env = Env::new(Timestamp::from_micros(0), true, &mut transcript);
+        let mut env = Env::new(Timestamp::from_micros(0), true, Line::Off, &mut transcript);
         let result = scdc.transaction(ops, &mut env);
         (scdc, result)
     }

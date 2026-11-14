@@ -10,7 +10,8 @@
 //! Built so far: [`SimClock`], hdmi-hal's `Clock` and `Delay` on simulated time; the
 //! conformance check for `Clock` and `Delay` implementations ([`check::clock`]); and the
 //! [`Bench`], whose DDC bus ([`Ddc`]) routes each call to a test's own [`Target`]s or the
-//! sink's SCDC registers, EDID and DisplayID, and records it in the transcript, with register presets and a view
+//! sink's SCDC registers, EDID and DisplayID, and records it in the transcript, with the
+//! line, HPD, unplug and detach as bench events and an operation budget, with register presets and a view
 //! of the registers ([`Sink`]). The rest of the design is in `doc/architecture.md`.
 //!
 //! # Features
@@ -31,6 +32,7 @@ mod clock;
 mod config;
 mod ddc;
 mod eddc;
+mod line;
 mod scdc;
 mod target;
 mod transcript;
@@ -40,20 +42,25 @@ mod transcript;
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
-pub use bench::{Bench, BenchBuilder, BenchError, Sink, Time};
+pub use bench::{Bench, BenchBuilder, BenchError, DEFAULT_BUDGET, Sink, Time};
 pub use clock::SimClock;
-pub use config::{BlockBoundary, MissingSegment, OwnedWrite, PastStore, ScdcPastEnd, SinkConfig};
+pub use config::{
+    BlockBoundary, DuringHpdLow, MissingSegment, OwnedWrite, PastStore, ScdcPastEnd, SinkConfig,
+};
 pub use ddc::{BusError, BusTiming, Ddc};
+pub use line::Line;
 pub use target::{Env, Operation, Target};
 pub use transcript::{Actor, BusOp, BusRecord, Event, Ignored, Record};
 
 /// hdmi-hal, whose types maquette's API is made of: a test names the same version through
 /// this re-export without depending on hdmi-hal itself.
 pub use hdmi_hal;
-/// The hdmi-hal DDC types the bench's bus implements and uses.
 pub use hdmi_hal::ddc::{
     DdcBus, DdcCapabilities, DdcError, DdcErrorKind, EddcTarget, NoAcknowledgeSource,
 };
+/// The hdmi-hal DDC types the bench's bus implements and uses.
+/// The hdmi-hal types the line is made of.
+pub use hdmi_hal::{HdmiForumFrl, phy::TmdsClockRatio};
 
 /// The hdmi-hal time types `SimClock` implements and returns, re-exported so a test names
 /// the same versions maquette does without depending on hdmi-hal itself.

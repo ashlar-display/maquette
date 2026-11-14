@@ -12,6 +12,7 @@ use crate::clock::SimClock;
 use crate::config::SinkConfig;
 use crate::ddc::{BusTiming, Ddc};
 use crate::eddc::Eddc;
+use crate::line::Line;
 use crate::scdc::Scdc;
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{BusRecord, Event, Record, Transcript};
@@ -35,6 +36,22 @@ type Targets<'a> = &'a mut [&'a mut (dyn Target + Send)];
 /// The largest EDID or DisplayID store: 256 blocks of 128 bytes.
 const MAX_STORE: usize = 256 * 128;
 
+/// The default operation budget (*chosen*): far more than a bring-up, a training run or a
+/// long session of polling takes, and spent within seconds by a loop that never ends.
+pub const DEFAULT_BUDGET: u64 = 1_000_000;
+
+/// Checks the stores' lengths: whole 128-byte blocks, up to 256.
+fn check_stores(edid: &[u8], displayid: Option<&[u8]>) -> Result<(), BenchError> {
+    let whole_blocks = |len: usize| len % 128 == 0 && len <= MAX_STORE;
+    if !whole_blocks(edid.len()) {
+        return Err(BenchError::EdidLength(edid.len()));
+    }
+    match displayid {
+        Some(store) if !whole_blocks(store.len()) => Err(BenchError::DisplayIdLength(store.len())),
+        _ => Ok(()),
+    }
+}
+
 /// A simulated sink, its clock and its line, and the handles a procedure runs over.
 ///
 /// The bench holds the whole simulation; the trait implementations are `Copy` handles
@@ -50,13 +67,17 @@ const MAX_STORE: usize = 256 * 128;
 /// handle `Send + Sync`; a host needs the `std` feature (or another critical-section
 /// implementation).
 ///
+/// Every operation through the handles counts against the bench's operation budget
+/// ([`BenchBuilder::budget`]); past it the bench panics, so a procedure that loops forever
+/// fails its test instead of hanging it.
+///
 /// ```
 /// use maquette::{Bench, DdcBus, SinkConfig};
 ///
 /// let edid = [0u8; 256];
 /// let bench = Bench::new(SinkConfig::new(), &edid).unwrap();
 /// let bus = bench.ddc();
-/// // Nothing answers yet at 0x37: no target there.
+/// // Nothing answers at 0x37: no target there.
 /// assert!(bus.write(0x37, &[0x51]).is_err());
 /// assert_eq!(bench.transcript().count(), 1);
 /// ```
@@ -64,6 +85,7 @@ pub struct Bench<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
     clock: SimClock,
     capabilities: DdcCapabilities,
     timing: BusTiming,
+    budget: Option<u64>,
     state: Mutex<RefCell<State<'a, LOG>>>,
 }
 
@@ -73,8 +95,103 @@ struct State<'a, const LOG: usize> {
     eddc: Eddc<'a>,
     targets: Targets<'a>,
     scdc: Option<Scdc>,
+    line: Line,
     hpd: bool,
+    plugged: bool,
+    attached: bool,
+    spent: u64,
     transcript: Transcript<LOG>,
+}
+
+impl<'a, const LOG: usize> State<'a, LOG> {
+    fn record(&mut self, at: Timestamp, event: Event) {
+        self.transcript.push(Record { at, event });
+    }
+
+    /// Lets every target see the bench at `at`, in routing order.
+    fn update(&mut self, at: Timestamp) {
+        let State {
+            targets,
+            eddc,
+            scdc,
+            transcript,
+            hpd,
+            line,
+            ..
+        } = self;
+        let mut env = Env::new(at, *hpd, *line, transcript);
+        for target in routed(targets, eddc, scdc) {
+            target.update(&mut env);
+        }
+    }
+
+    /// Records `record` at `at` and routes `ops` as one transaction.
+    fn transaction(
+        &mut self,
+        at: Timestamp,
+        record: BusRecord,
+        ops: &mut [Operation<'_>],
+    ) -> (Result<(), DdcErrorKind>, Reach) {
+        if !self.attached {
+            let result = Err(DdcErrorKind::Detached);
+            self.record(at, Event::Bus(BusRecord { result, ..record }));
+            return (result, Reach::Detached);
+        }
+        let index = self.transcript.push(Record {
+            at,
+            event: Event::Bus(record),
+        });
+        let unanswered = (
+            Err(DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)),
+            Reach::Unanswered,
+        );
+        let (result, reach) = if self.plugged {
+            let State {
+                targets,
+                eddc,
+                scdc,
+                transcript,
+                hpd,
+                line,
+                ..
+            } = self;
+            let addr = ops.first().map_or(0, Operation::addr);
+            let mut env = Env::new(at, *hpd, *line, transcript);
+            match routed(targets, eddc, scdc).find(|t| t.answers(addr, &env)) {
+                Some(target) => (target.transaction(ops, &mut env), Reach::Answered),
+                None => unanswered,
+            }
+        } else {
+            unanswered
+        };
+        self.transcript.set_result(index, result);
+        (result, reach)
+    }
+
+    /// Unplugs the sink at `at`, if it is plugged.
+    fn unplug(&mut self, at: Timestamp) {
+        if !self.plugged {
+            return;
+        }
+        self.plugged = false;
+        self.record(at, Event::Plug { plugged: false });
+        if self.hpd {
+            self.hpd = false;
+            self.record(at, Event::Hpd { high: false });
+        }
+        self.update(at);
+    }
+}
+
+/// How far a transaction got.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    /// A target took it.
+    Answered,
+    /// Nothing answered its first address: only that address byte went out.
+    Unanswered,
+    /// The adapter is gone: nothing went out.
+    Detached,
 }
 
 impl<'a> Bench<'a> {
@@ -93,12 +210,19 @@ impl<'a> Bench<'a> {
             capabilities: DdcCapabilities::general(),
             timing: BusTiming::STANDARD_MODE,
             clock: SimClock::new(),
+            budget: Some(DEFAULT_BUDGET),
             targets: Default::default(),
         }
     }
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    /// Runs `f` on the state under the lock, with the bench's time.
+    fn locked<R>(&self, f: impl FnOnce(&mut State<'a, LOG>, Timestamp) -> R) -> R {
+        let at = self.clock.now();
+        critical_section::with(|cs| f(&mut self.state.borrow_ref_mut(cs), at))
+    }
+
     /// The sink's DDC bus.
     pub fn ddc(&self) -> Ddc<'_> {
         Ddc::new(self)
@@ -106,29 +230,136 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 
     /// The bench's clock, as a `Clock` and a `Delay`: one value passed as both.
     pub fn time(&self) -> Time<'_> {
-        Time { clock: &self.clock }
+        Time { core: self }
+    }
+
+    /// The sink as the test sees it: its registers and HPD, read without a bus operation.
+    pub fn sink(&self) -> Sink<'_> {
+        Sink { core: self }
     }
 
     /// Moves the bench's time `duration` forward, then lets every target see the new time
     /// ([`Target::update`]), in routing order.
     pub fn advance(&self, duration: Duration) {
         self.clock.advance(duration);
-        let at = self.clock.now();
-        critical_section::with(|cs| {
-            let mut state = self.state.borrow_ref_mut(cs);
-            let State {
-                targets,
-                eddc,
-                scdc,
-                transcript,
-                hpd,
-                ..
-            } = &mut *state;
-            let mut env = Env::new(at, *hpd, transcript);
-            for target in routed(targets, eddc, scdc) {
-                target.update(&mut env);
+        self.locked(|state, at| state.update(at));
+    }
+
+    /// The bench's time.
+    pub fn now(&self) -> Timestamp {
+        self.clock.now()
+    }
+
+    /// Sets what the source transmits: a bench event, recorded as `Event::Line`. Setting the
+    /// line it already has changes nothing and records nothing.
+    pub fn set_line(&self, line: Line) {
+        self.locked(|state, at| {
+            if state.line != line {
+                state.line = line;
+                state.record(at, Event::Line(line));
+                state.update(at);
             }
         });
+    }
+
+    /// What the source transmits.
+    pub fn line(&self) -> Line {
+        self.locked(|state, _| state.line)
+    }
+
+    /// Sets HPD: a bench event, recorded as `Event::Hpd`; setting the level it already has
+    /// records nothing. The sink stays on the bus; what answers while HPD is low is each
+    /// target's.
+    ///
+    /// # Panics
+    ///
+    /// When raising HPD on an unplugged sink: a mistake in the test, which plugs it instead.
+    pub fn hpd(&self, high: bool) {
+        let unplugged = self.locked(|state, at| {
+            if high && !state.plugged {
+                return true;
+            }
+            if state.hpd != high {
+                state.hpd = high;
+                state.record(at, Event::Hpd { high });
+                state.update(at);
+            }
+            false
+        });
+        if unplugged {
+            panic!("HPD raised on an unplugged sink: plug it first");
+        }
+    }
+
+    /// HPD low, `low_for` on the bench's clock ([`advance`](Self::advance)), then HPD high.
+    pub fn hpd_pulse(&self, low_for: Duration) {
+        self.hpd(false);
+        self.advance(low_for);
+        self.hpd(true);
+    }
+
+    /// Unplugs the sink: HPD goes low, and nothing answers, the test's own targets included,
+    /// until [`plug`](Self::plug). Recorded as `Event::Plug`; unplugging an unplugged sink
+    /// records nothing.
+    pub fn unplug(&self) {
+        self.locked(|state, at| state.unplug(at));
+    }
+
+    /// Plugs a sink in: `edid`, `displayid` and `config`'s settings, its registers fresh, HPD
+    /// high. On a plugged sink it is an unplug first: a different sink, or the same one
+    /// after a power cycle. The test's own targets stay. Recorded as `Event::Plug` and
+    /// `Event::Hpd`.
+    pub fn plug(
+        &self,
+        edid: &'a [u8],
+        displayid: Option<&'a [u8]>,
+        config: SinkConfig,
+    ) -> Result<(), BenchError> {
+        check_stores(edid, displayid)?;
+        self.locked(|state, at| {
+            state.unplug(at);
+            state.config = config;
+            state.eddc = Eddc::new(&config, edid, displayid);
+            state.scdc = Scdc::new(&config);
+            state.plugged = true;
+            state.record(at, Event::Plug { plugged: true });
+            state.hpd = true;
+            state.record(at, Event::Hpd { high: true });
+            state.update(at);
+        });
+        Ok(())
+    }
+
+    /// Detaches the adapter: every `DdcBus` call that passes the argument and capability
+    /// checks fails `Detached`, reaches no target and takes no time, until
+    /// [`reattach`](Self::reattach). Recorded as `Event::Adapter`.
+    pub fn detach(&self) {
+        self.set_attached(false);
+    }
+
+    /// Reattaches the adapter.
+    pub fn reattach(&self) {
+        self.set_attached(true);
+    }
+
+    fn set_attached(&self, attached: bool) {
+        self.locked(|state, at| {
+            if state.attached != attached {
+                state.attached = attached;
+                state.record(at, Event::Adapter { attached });
+                state.update(at);
+            }
+        });
+    }
+
+    /// Whether the adapter is attached.
+    pub fn is_attached(&self) -> bool {
+        self.locked(|state, _| state.attached)
+    }
+
+    /// How many operations the handles have made: what the budget counts.
+    pub fn operations(&self) -> u64 {
+        self.locked(|state, _| state.spent)
     }
 
     /// Sets the SCDC register `reg` to `value`, whatever its role, the sink's own registers
@@ -138,30 +369,23 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     ///
     /// On a sink without SCDC: a preset there is a mistake in the test.
     pub fn preset_scdc(&self, reg: u8, value: u8) {
-        let at = self.clock.now();
-        critical_section::with(|cs| {
-            let mut state = self.state.borrow_ref_mut(cs);
+        let missing = self.locked(|state, at| {
             let State {
                 scdc,
                 transcript,
                 hpd,
+                line,
                 ..
-            } = &mut *state;
+            } = state;
             let Some(scdc) = scdc else {
-                panic!("preset of SCDC register {reg:#04x} on a sink without SCDC");
+                return true;
             };
-            scdc.preset(reg, value, &mut Env::new(at, *hpd, transcript));
+            scdc.preset(reg, value, &mut Env::new(at, *hpd, *line, transcript));
+            false
         });
-    }
-
-    /// The sink as the test sees it: its registers, read without a bus operation.
-    pub fn sink(&self) -> Sink<'_> {
-        Sink { core: self }
-    }
-
-    /// The bench's time.
-    pub fn now(&self) -> Timestamp {
-        self.clock.now()
+        if missing {
+            panic!("preset of SCDC register {reg:#04x} on a sink without SCDC");
+        }
     }
 
     /// The transcript's records, oldest first; each is copied out under the lock, so the
@@ -169,8 +393,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     pub fn transcript(&self) -> impl Iterator<Item = Record> + '_ {
         let mut index = 0;
         core::iter::from_fn(move || {
-            let record =
-                critical_section::with(|cs| self.state.borrow_ref(cs).transcript.get(index));
+            let record = self.locked(|state, _| state.transcript.get(index));
             index += 1;
             record
         })
@@ -178,27 +401,31 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 
     /// How many records did not fit in the transcript, past `LOG`.
     pub fn transcript_overflow(&self) -> usize {
-        critical_section::with(|cs| self.state.borrow_ref(cs).transcript.overflow())
+        self.locked(|state, _| state.transcript.overflow())
     }
 
     /// Empties the transcript, and its overflow count.
     pub fn clear_transcript(&self) {
-        critical_section::with(|cs| self.state.borrow_ref_mut(cs).transcript.clear());
+        self.locked(|state, _| state.transcript.clear());
     }
 }
 
 impl<const LOG: usize, const FAULTS: usize> fmt::Debug for Bench<'_, LOG, FAULTS> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        critical_section::with(|cs| {
-            let state = self.state.borrow_ref(cs);
+        self.locked(|state, now| {
             f.debug_struct("Bench")
-                .field("now", &self.clock.now())
+                .field("now", &now)
                 .field("config", &state.config)
                 .field("edid_len", &state.eddc.edid_len())
                 .field("displayid_len", &state.eddc.displayid_len())
                 .field("targets", &state.targets.len())
                 .field("scdc", &state.scdc.is_some())
+                .field("line", &state.line)
                 .field("hpd", &state.hpd)
+                .field("plugged", &state.plugged)
+                .field("attached", &state.attached)
+                .field("operations", &state.spent)
+                .field("budget", &self.budget)
                 .field("transcript_len", &state.transcript.len())
                 .field("transcript_overflow", &state.transcript.overflow())
                 .finish_non_exhaustive()
@@ -211,17 +438,23 @@ pub(crate) trait Core {
     fn capabilities(&self) -> DdcCapabilities;
     fn timing(&self) -> BusTiming;
     fn clock(&self) -> &SimClock;
+    /// Counts one operation against the budget; panics past it.
+    fn spend(&self);
     /// Records `record` at the bench's time, routes `ops` as one transaction and completes
-    /// the record with the result; returns the result and whether a target answered.
+    /// the record with the result; returns the result and how far the transaction got.
     fn transaction(
         &self,
         record: BusRecord,
         ops: &mut [Operation<'_>],
-    ) -> (Result<(), DdcErrorKind>, bool);
+    ) -> (Result<(), DdcErrorKind>, Reach);
     /// Records a call that reached no target.
     fn record(&self, record: BusRecord);
+    /// A delay on the bench's clock ended: a bench event.
+    fn after_delay(&self);
     /// The SCDC register `reg`; `None` for a sink without SCDC.
     fn scdc(&self, reg: u8) -> Option<u8>;
+    /// HPD, and whether the sink is plugged.
+    fn hpd(&self) -> (bool, bool);
 }
 
 impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
@@ -237,56 +470,41 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
         &self.clock
     }
 
+    fn spend(&self) {
+        let over = self.locked(|state, _| {
+            state.spent = state.spent.saturating_add(1);
+            self.budget.filter(|&budget| state.spent > budget)
+        });
+        if let Some(budget) = over {
+            panic!(
+                "the bench's operation budget of {budget} operations is spent: the code under \
+                 test may be looping (BenchBuilder::budget sets the budget)"
+            );
+        }
+    }
+
     fn transaction(
         &self,
         record: BusRecord,
         ops: &mut [Operation<'_>],
-    ) -> (Result<(), DdcErrorKind>, bool) {
-        let at = self.clock.now();
-        critical_section::with(|cs| {
-            let mut state = self.state.borrow_ref_mut(cs);
-            let State {
-                targets,
-                eddc,
-                scdc,
-                transcript,
-                hpd,
-                ..
-            } = &mut *state;
-            let index = transcript.push(Record {
-                at,
-                event: Event::Bus(record),
-            });
-            let addr = ops.first().map_or(0, Operation::addr);
-            let mut env = Env::new(at, *hpd, transcript);
-            let (result, answered) =
-                match routed(targets, eddc, scdc).find(|t| t.answers(addr, &env)) {
-                    Some(target) => (target.transaction(ops, &mut env), true),
-                    None => (
-                        Err(DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)),
-                        false,
-                    ),
-                };
-            transcript.set_result(index, result);
-            (result, answered)
-        })
-    }
-
-    fn scdc(&self, reg: u8) -> Option<u8> {
-        critical_section::with(|cs| {
-            let state = self.state.borrow_ref(cs);
-            state.scdc.as_ref().map(|scdc| scdc.get(reg))
-        })
+    ) -> (Result<(), DdcErrorKind>, Reach) {
+        self.locked(|state, at| state.transaction(at, record, ops))
     }
 
     fn record(&self, record: BusRecord) {
-        let at = self.clock.now();
-        critical_section::with(|cs| {
-            self.state.borrow_ref_mut(cs).transcript.push(Record {
-                at,
-                event: Event::Bus(record),
-            });
-        });
+        self.locked(|state, at| state.record(at, Event::Bus(record)));
+    }
+
+    fn after_delay(&self) {
+        self.locked(|state, at| state.update(at));
+    }
+
+    fn scdc(&self, reg: u8) -> Option<u8> {
+        self.locked(|state, _| state.scdc.as_ref().map(|scdc| scdc.get(reg)))
+    }
+
+    fn hpd(&self) -> (bool, bool) {
+        self.locked(|state, _| (state.hpd, state.plugged))
     }
 }
 
@@ -300,6 +518,7 @@ pub struct BenchBuilder<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
     capabilities: DdcCapabilities,
     timing: BusTiming,
     clock: SimClock,
+    budget: Option<u64>,
     targets: Targets<'a>,
 }
 
@@ -336,6 +555,13 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
         Self { timing, ..self }
     }
 
+    /// The operation budget: how many operations the handles may make (bus calls, refused
+    /// ones included, PHY calls, clock reads and delays) before the bench panics; by default
+    /// [`DEFAULT_BUDGET`], `None` for none.
+    pub fn budget(self, budget: Option<u64>) -> Self {
+        Self { budget, ..self }
+    }
+
     /// The test's own targets, routed to before the built-in ones, in this order.
     pub fn targets(self, targets: &'a mut [&'a mut (dyn Target + Send)]) -> Self {
         Self { targets, ..self }
@@ -350,31 +576,30 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
             capabilities: self.capabilities,
             timing: self.timing,
             clock: self.clock,
+            budget: self.budget,
             targets: self.targets,
         }
     }
 
-    /// The bench, or why the stores cannot be its sink's.
+    /// The bench, or why the stores cannot be its sink's. The sink is plugged in with HPD
+    /// high, the adapter attached, and nothing on the line.
     pub fn build(self) -> Result<Bench<'a, LOG, FAULTS>, BenchError> {
-        let whole_blocks = |len: usize| len % 128 == 0 && len <= MAX_STORE;
-        if !whole_blocks(self.edid.len()) {
-            return Err(BenchError::EdidLength(self.edid.len()));
-        }
-        if let Some(store) = self.displayid {
-            if !whole_blocks(store.len()) {
-                return Err(BenchError::DisplayIdLength(store.len()));
-            }
-        }
+        check_stores(self.edid, self.displayid)?;
         Ok(Bench {
             clock: self.clock,
             capabilities: self.capabilities,
             timing: self.timing,
+            budget: self.budget,
             state: Mutex::new(RefCell::new(State {
                 config: self.config,
                 eddc: Eddc::new(&self.config, self.edid, self.displayid),
                 scdc: Scdc::new(&self.config),
                 targets: self.targets,
+                line: Line::Off,
                 hpd: true,
+                plugged: true,
+                attached: true,
+                spent: 0,
                 transcript: Transcript::new(),
             })),
         })
@@ -390,12 +615,13 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for BenchBuilder<'_, LOG,
             .field("capabilities", &self.capabilities)
             .field("timing", &self.timing)
             .field("clock", &self.clock)
+            .field("budget", &self.budget)
             .field("targets", &self.targets.len())
             .finish()
     }
 }
 
-/// Why a bench cannot be built.
+/// Why a bench cannot be built, or a sink plugged in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BenchError {
@@ -425,32 +651,57 @@ impl core::error::Error for BenchError {}
 
 /// The bench's clock as a `Clock` and a `Delay`, a `Copy` handle borrowed from the bench
 /// ([`Bench::time`]): one value passed as both.
-#[derive(Debug, Clone, Copy)]
+///
+/// Each read and each delay counts against the bench's operation budget; a delay is a bench
+/// event, after which every target sees the new time.
+#[derive(Clone, Copy)]
 pub struct Time<'b> {
-    clock: &'b SimClock,
+    core: &'b (dyn Core + Sync + 'b),
 }
 
 impl Clock for Time<'_> {
     fn now(&self) -> Timestamp {
-        self.clock.now()
+        self.core.spend();
+        self.core.clock().now()
     }
 }
 
 impl Delay for Time<'_> {
     fn delay(&mut self, duration: Duration) {
-        Delay::delay(&mut self.clock, duration);
+        self.core.spend();
+        let mut clock = self.core.clock();
+        Delay::delay(&mut clock, duration);
+        self.core.after_delay();
+    }
+}
+
+impl fmt::Debug for Time<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Time")
+            .field("clock", self.core.clock())
+            .finish()
     }
 }
 
 /// The sink as the test sees it, a `Copy` handle borrowed from the bench ([`Bench::sink`]):
-/// its registers, read without a bus operation, so reading them changes nothing and takes no
-/// time.
+/// its registers and HPD, read without a bus operation, so reading them changes nothing and
+/// takes no time.
 #[derive(Clone, Copy)]
 pub struct Sink<'b> {
     core: &'b (dyn Core + Sync + 'b),
 }
 
 impl Sink<'_> {
+    /// Whether HPD is high.
+    pub fn hpd(&self) -> bool {
+        self.core.hpd().0
+    }
+
+    /// Whether the sink is plugged in.
+    pub fn is_plugged(&self) -> bool {
+        self.core.hpd().1
+    }
+
     /// The SCDC register `reg`; `None` for a sink without SCDC.
     pub fn scdc(&self, reg: u8) -> Option<u8> {
         self.core.scdc(reg)

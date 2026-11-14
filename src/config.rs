@@ -28,6 +28,8 @@ pub struct SinkConfig {
     pub(crate) past_store: PastStore,
     pub(crate) missing_segment: MissingSegment,
     pub(crate) block_boundary: BlockBoundary,
+    pub(crate) scdc_during_hpd_low: DuringHpdLow,
+    pub(crate) edid_during_hpd_low: DuringHpdLow,
 }
 
 impl SinkConfig {
@@ -42,6 +44,8 @@ impl SinkConfig {
             past_store: PastStore::Fill,
             missing_segment: MissingSegment::Nack,
             block_boundary: BlockBoundary::Continue,
+            scdc_during_hpd_low: DuringHpdLow::Answers,
+            edid_during_hpd_low: DuringHpdLow::Answers,
         }
     }
 
@@ -113,6 +117,26 @@ impl SinkConfig {
         }
     }
 
+    /// Whether SCDC answers while HPD is low; by default [`DuringHpdLow::Answers`]
+    /// (*chosen*: no source says a sink's SCDC stops answering, and its registers are kept
+    /// until a long HPD low resets them).
+    pub const fn with_scdc_during_hpd_low(self, scdc_during_hpd_low: DuringHpdLow) -> Self {
+        Self {
+            scdc_during_hpd_low,
+            ..self
+        }
+    }
+
+    /// Whether the EDID, the DisplayID and the segment pointer answer while HPD is low; by
+    /// default [`DuringHpdLow::Answers`] (*chosen*, after VESA E-DDC 1.3's rule that the EDID
+    /// is readable with the display powered off, 9.2, 9.5.3).
+    pub const fn with_edid_during_hpd_low(self, edid_during_hpd_low: DuringHpdLow) -> Self {
+        Self {
+            edid_during_hpd_low,
+            ..self
+        }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -151,6 +175,16 @@ impl SinkConfig {
     /// What a read across a 128-byte block boundary does.
     pub const fn block_boundary(&self) -> BlockBoundary {
         self.block_boundary
+    }
+
+    /// Whether SCDC answers while HPD is low.
+    pub const fn scdc_during_hpd_low(&self) -> DuringHpdLow {
+        self.scdc_during_hpd_low
+    }
+
+    /// Whether the EDID, the DisplayID and the segment pointer answer while HPD is low.
+    pub const fn edid_during_hpd_low(&self) -> DuringHpdLow {
+        self.edid_during_hpd_low
     }
 }
 
@@ -218,4 +252,14 @@ pub enum BlockBoundary {
     Continue,
     /// Wraps to the start of the same block.
     Wrap,
+}
+
+/// Whether a built-in target answers while HPD is low. No public source covers HPD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DuringHpdLow {
+    /// It answers as with HPD high (*chosen* default).
+    Answers,
+    /// Nothing answers its addresses: `NoAcknowledge(Address)`.
+    Silent,
 }

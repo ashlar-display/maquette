@@ -62,6 +62,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `with_past_store` (`PastStore::Fill`, reading 0xFF, by default; `Wrap`, `Nack`),
   `with_missing_segment` (`MissingSegment::Nack` by default; `Ack`) and
   `with_block_boundary` (`BlockBoundary::Continue` by default; `Wrap`), with getters.
+- **The line and the sink's events:** `Line` (`Off`, `Tmds` with rate, ratio and
+  scrambling, `Frl`), set by `Bench::set_line` and seen by targets through `Env::line`;
+  `Bench::hpd` and `hpd_pulse`; `unplug` and `plug` (a fresh sink with new stores and
+  settings; nothing answers while unplugged, the test's own targets included); `detach` and
+  `reattach` (every call that passes the checks fails `Detached`, taking no time). Each is a
+  bench event after which every target sees the bench (`Target::update`), recorded as
+  `Event::Line`, `Hpd`, `Plug` or `Adapter`; a delay on the bench's time handle is an event
+  too. `Sink::hpd` and `Sink::is_plugged`, `Bench::line` and `Bench::is_attached` read the
+  state. `SinkConfig::with_scdc_during_hpd_low` and `with_edid_during_hpd_low` say whether
+  the built-in targets answer while HPD is low (`DuringHpdLow::Answers` by default, or
+  `Silent`).
+- **The operation budget:** every bus call (refused ones included), clock read and delay
+  through the bench's handles counts; past `BenchBuilder::budget` (by default
+  `DEFAULT_BUDGET`, 1 000 000; `None` for none) the bench panics, naming the budget, so a
+  procedure that loops forever fails its test. `Bench::operations` says how many were made.
 - **`Bench::preset_scdc`**, which sets any SCDC register, recorded as by `Actor::Test`, and
   **`Bench::sink`**, a `Sink` view of the registers (`scdc`, `tmds_config`,
   `scrambling_status`, `sink_version`, `source_version`, `update_0`, `config_0`, `config_1`)
