@@ -6,17 +6,12 @@ what comes next. Today `maquette` is its design ([`architecture.md`](architectur
 for `Clock` and `Delay` implementations, and the bench: its DDC bus routed to a test's own
 targets, the sink's SCDC registers and its EDID and DisplayID behind the E-DDC segment
 pointer, register presets, and the transcript; the line, HPD, unplug and detach as bench
-events; the sink's scrambling lock and the registers a long HPD low resets; and the
-operation budget.
+events; the sink's scrambling lock and the registers a long HPD low resets; the operation
+budget; scheduled faults; and a fuzz target checking the simulator's invariants.
 
 ## Planned
 
 In the order they are built:
-
-### Faults and fuzzing
-
-Faults that strike before, after or partway through an operation, and a fuzz target that
-checks the simulator's invariants.
 
 ### The line and the simulated PHY
 

@@ -61,6 +61,18 @@ cargo msrv verify --target thumbv7em-none-eabi \
   -- cargo build --locked --features async --target thumbv7em-none-eabi
 ```
 
+## Fuzzing
+
+Fuzzing requires nightly and [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz):
+
+```sh
+cargo install cargo-fuzz --locked
+cargo +nightly fuzz run bench -- -max_total_time=60
+```
+
+The fuzz crate is its own workspace with its own `Cargo.lock`. See
+[`doc/testing.md`](testing.md) for what the target checks and how CI runs it.
+
 ## Measuring coverage
 
 Coverage requires [`cargo-llvm-cov`](https://github.com/taiki-e/cargo-llvm-cov):

@@ -96,11 +96,25 @@ the EDID read) live with those crates, which use maquette as a dev-dependency.
 
 ## Fuzzing
 
-A fuzz target drives the bench with arbitrary sequences of bus and PHY calls, line changes,
-faults, controls and clock advances, and checks the simulator's invariants: the same input
-gives the same transcript; nothing panics and no arithmetic overflows; `Scrambling_Status`
-is set only under the coupling's conditions; registers the sink owns change only by the
-sink's rules; the segment pointer never outlives its command sequence.
+`fuzz/fuzz_targets/bench.rs` drives a bench with arbitrary sequences of bus calls, line
+changes, HPD, plug and adapter changes, presets, faults and clock advances, on a sink whose
+settings and bus capabilities the input chooses; it decodes the input bytes itself. After
+every action it checks the invariants a simulator must keep:
+
+- the same input gives the same transcript (each input runs twice);
+- nothing panics and no arithmetic overflows (the budget is off; an input runs at most 256
+  actions);
+- `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
+  scrambled TMDS at the matching ratio (no action presets the status);
+- no `Register` event changes a register the sink owns by `Actor::Source`;
+- the segment pointer never outlives its command sequence: the EDID's segment 0 holds
+  0x00–0x7F and segment 1 0x80–0xBF, so every EDID read at 0x50 that succeeds must hold no
+  byte of segment 1;
+- the transcript's times never go backwards.
+
+CI runs the target for 60 seconds on every push and pull request, and for an hour weekly
+and on demand; the weekly run minimises the corpus and opens a `ci/fuzz-corpus` pull
+request with it. A crash is uploaded as an artifact.
 
 ## Coverage
 

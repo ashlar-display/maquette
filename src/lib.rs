@@ -9,11 +9,12 @@
 //!
 //! Built so far: [`SimClock`], hdmi-hal's `Clock` and `Delay` on simulated time; the
 //! conformance check for `Clock` and `Delay` implementations ([`check::clock`]); and the
-//! [`Bench`], whose DDC bus ([`Ddc`]) routes each call to a test's own [`Target`]s or the
-//! sink's SCDC registers, EDID and DisplayID, and records it in the transcript, with the
-//! line, HPD, unplug and detach as bench events, the sink's scrambling lock and the
-//! registers a long HPD low resets, an operation budget, and scheduled [`Fault`]s, with register presets and a view
-//! of the registers ([`Sink`]). The rest of the design is in `doc/architecture.md`.
+//! [`Bench`]. Its DDC bus ([`Ddc`]) routes each call to a test's own [`Target`]s or the
+//! sink's SCDC registers, EDID and DisplayID, and records it in the transcript. The line,
+//! HPD, unplug and detach are bench events; the sink keeps a scrambling lock and resets its
+//! registers after a long HPD low; register presets and a view of the registers ([`Sink`])
+//! serve the test; scheduled [`Fault`]s fail operations; an operation budget ends a test
+//! that loops forever. The rest of the design is in `doc/architecture.md`.
 //!
 //! # Features
 //!

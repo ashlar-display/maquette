@@ -1,0 +1,28 @@
+[package]
+name = "maquette-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.maquette]
+path = ".."
+features = ["std"]
+
+[[bin]]
+name = "bench"
+path = "fuzz_targets/bench.rs"
+test = false
+doc = false
+bench = false
+
+# The fuzz crate is its own workspace, so the parent's [patch] does not reach it: the same
+# pushed commit of hdmi-hal's feat/tmds-phy branch, moved with it (the fuzz target does not
+# use the async feature, so hdmi-hal-async is not in its graph).
+[patch.crates-io]
+hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "29754ce9ec60c54f86170ebd43729e7fbaee043f" }
