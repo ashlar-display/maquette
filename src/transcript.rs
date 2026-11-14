@@ -4,6 +4,7 @@ use hdmi_hal::ddc::{DdcErrorKind, EddcTarget};
 use hdmi_hal::time::Timestamp;
 
 use crate::config::RefusalKind;
+use crate::fault::{Effect, FaultId, Point};
 use crate::line::Line;
 
 /// One entry of the transcript: what happened, and when.
@@ -71,6 +72,15 @@ pub enum Event {
         attempt: u32,
         /// How it refused.
         kind: RefusalKind,
+    },
+    /// A scheduled fault struck the bus operation recorded before it.
+    Fault {
+        /// The fault.
+        id: FaultId,
+        /// What it did.
+        effect: Effect,
+        /// Where it struck.
+        point: Point,
     },
     /// A test's target's own event, recorded with [`Env::note`](crate::Env::note).
     Note {

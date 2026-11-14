@@ -12,6 +12,7 @@ use crate::clock::SimClock;
 use crate::config::SinkConfig;
 use crate::ddc::{BusTiming, Ddc};
 use crate::eddc::Eddc;
+use crate::fault::{Effect, Fault, FaultId, Schedule, ScheduleFull, Strike};
 use crate::line::Line;
 use crate::scdc::Scdc;
 use crate::target::{Env, Operation, Target};
@@ -86,11 +87,11 @@ pub struct Bench<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
     capabilities: DdcCapabilities,
     timing: BusTiming,
     budget: Option<u64>,
-    state: Mutex<RefCell<State<'a, LOG>>>,
+    state: Mutex<RefCell<State<'a, LOG, FAULTS>>>,
 }
 
 /// What the lock guards.
-struct State<'a, const LOG: usize> {
+struct State<'a, const LOG: usize, const FAULTS: usize> {
     config: SinkConfig,
     eddc: Eddc<'a>,
     targets: Targets<'a>,
@@ -101,9 +102,10 @@ struct State<'a, const LOG: usize> {
     attached: bool,
     spent: u64,
     transcript: Transcript<LOG>,
+    faults: Schedule<FAULTS>,
 }
 
-impl<'a, const LOG: usize> State<'a, LOG> {
+impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
     fn record(&mut self, at: Timestamp, event: Event) {
         self.transcript.push(Record { at, event });
     }
@@ -125,12 +127,42 @@ impl<'a, const LOG: usize> State<'a, LOG> {
         }
     }
 
-    /// Records `record` at `at` and routes `ops` as one transaction.
+    /// Counts `record`'s operation for the scheduled faults and returns the one that
+    /// strikes, if any. While detached nothing goes out, so nothing is counted.
+    fn strike(&mut self, record: &BusRecord) -> Option<Strike> {
+        if self.attached {
+            self.faults.strike(record)
+        } else {
+            None
+        }
+    }
+
+    /// Records `record` failed by a fault that struck before the sink saw it.
+    fn struck_before(
+        &mut self,
+        at: Timestamp,
+        record: BusRecord,
+        strike: Strike,
+        kind: DdcErrorKind,
+    ) {
+        self.record(
+            at,
+            Event::Bus(BusRecord {
+                result: Err(kind),
+                ..record
+            }),
+        );
+        self.record(at, fault_event(strike));
+    }
+
+    /// Records `record` at `at` and routes `ops` as one transaction; a fault that strikes
+    /// after or partway replaces its result.
     fn transaction(
         &mut self,
         at: Timestamp,
         record: BusRecord,
         ops: &mut [Operation<'_>],
+        fault: Option<Strike>,
     ) -> (Result<(), DdcErrorKind>, Reach) {
         if !self.attached {
             let result = Err(DdcErrorKind::Detached);
@@ -164,7 +196,17 @@ impl<'a, const LOG: usize> State<'a, LOG> {
         } else {
             unanswered
         };
+        let result = match fault {
+            Some(Strike {
+                effect: Effect::Fail(kind),
+                ..
+            }) => Err(kind),
+            _ => result,
+        };
         self.transcript.set_result(index, result);
+        if let Some(strike) = fault {
+            self.record(at, fault_event(strike));
+        }
         (result, reach)
     }
 
@@ -180,6 +222,15 @@ impl<'a, const LOG: usize> State<'a, LOG> {
             self.record(at, Event::Hpd { high: false });
         }
         self.update(at);
+    }
+}
+
+/// The transcript's record of a fault that struck.
+fn fault_event(strike: Strike) -> Event {
+    Event::Fault {
+        id: strike.id,
+        effect: strike.effect,
+        point: strike.point,
     }
 }
 
@@ -218,7 +269,7 @@ impl<'a> Bench<'a> {
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// Runs `f` on the state under the lock, with the bench's time.
-    fn locked<R>(&self, f: impl FnOnce(&mut State<'a, LOG>, Timestamp) -> R) -> R {
+    fn locked<R>(&self, f: impl FnOnce(&mut State<'a, LOG, FAULTS>, Timestamp) -> R) -> R {
         let at = self.clock.now();
         critical_section::with(|cs| f(&mut self.state.borrow_ref_mut(cs), at))
     }
@@ -362,8 +413,31 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
         self.locked(|state, _| state.spent)
     }
 
+    /// Schedules `fault`; it counts the operations from now. `ScheduleFull` when the bench's
+    /// `FAULTS` faults are scheduled.
+    pub fn schedule(&self, fault: Fault) -> Result<FaultId, ScheduleFull> {
+        self.locked(|state, _| state.faults.add(fault))
+    }
+
+    /// Removes a scheduled fault; whether it was still scheduled.
+    pub fn clear_fault(&self, id: FaultId) -> bool {
+        self.locked(|state, _| state.faults.remove(id))
+    }
+
+    /// Removes every scheduled fault.
+    pub fn clear_faults(&self) {
+        self.locked(|state, _| state.faults.clear());
+    }
+
+    /// How many faults are scheduled.
+    pub fn scheduled_faults(&self) -> usize {
+        self.locked(|state, _| state.faults.len())
+    }
+
     /// Sets the SCDC register `reg` to `value`, whatever its role, the sink's own registers
-    /// included; recorded as a `Register` event by `Actor::Test`.
+    /// included; recorded as a `Register` event by `Actor::Test`. A bench event: the sink
+    /// evaluates its behaviour after it, so a preset of `TMDS_Config` can lose or start the
+    /// scrambling lock; a preset of the status holds until the lock is gained or lost.
     ///
     /// # Panics
     ///
@@ -376,11 +450,12 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
                 hpd,
                 line,
                 ..
-            } = state;
+            } = &mut *state;
             let Some(scdc) = scdc else {
                 return true;
             };
             scdc.preset(reg, value, &mut Env::new(at, *hpd, *line, transcript));
+            state.update(at);
             false
         });
         if missing {
@@ -425,6 +500,7 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for Bench<'_, LOG, FAULTS
                 .field("plugged", &state.plugged)
                 .field("attached", &state.attached)
                 .field("operations", &state.spent)
+                .field("faults", &state.faults.len())
                 .field("budget", &self.budget)
                 .field("transcript_len", &state.transcript.len())
                 .field("transcript_overflow", &state.transcript.overflow())
@@ -440,12 +516,19 @@ pub(crate) trait Core {
     fn clock(&self) -> &SimClock;
     /// Counts one operation against the budget; panics past it.
     fn spend(&self);
+    /// Counts the operation `record` describes for the scheduled faults; the one that
+    /// strikes, if any.
+    fn strike(&self, record: &BusRecord) -> Option<Strike>;
+    /// Records `record` failed with `kind` by `strike`, before the sink saw it.
+    fn struck_before(&self, record: BusRecord, strike: Strike, kind: DdcErrorKind);
     /// Records `record` at the bench's time, routes `ops` as one transaction and completes
-    /// the record with the result; returns the result and how far the transaction got.
+    /// the record with the result, which `fault` replaces when it fails the call; returns
+    /// the result and how far the transaction got.
     fn transaction(
         &self,
         record: BusRecord,
         ops: &mut [Operation<'_>],
+        fault: Option<Strike>,
     ) -> (Result<(), DdcErrorKind>, Reach);
     /// Records a call that reached no target.
     fn record(&self, record: BusRecord);
@@ -483,12 +566,21 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
         }
     }
 
+    fn strike(&self, record: &BusRecord) -> Option<Strike> {
+        self.locked(|state, _| state.strike(record))
+    }
+
+    fn struck_before(&self, record: BusRecord, strike: Strike, kind: DdcErrorKind) {
+        self.locked(|state, at| state.struck_before(at, record, strike, kind));
+    }
+
     fn transaction(
         &self,
         record: BusRecord,
         ops: &mut [Operation<'_>],
+        fault: Option<Strike>,
     ) -> (Result<(), DdcErrorKind>, Reach) {
-        self.locked(|state, at| state.transaction(at, record, ops))
+        self.locked(|state, at| state.transaction(at, record, ops, fault))
     }
 
     fn record(&self, record: BusRecord) {
@@ -601,6 +693,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
                 attached: true,
                 spent: 0,
                 transcript: Transcript::new(),
+                faults: Schedule::new(),
             })),
         })
     }

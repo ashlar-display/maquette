@@ -91,6 +91,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   100 ms for the first three and on every HPD low for `Config`, set by
   `SinkConfig::with_hpd_reset`. Each reset register is a `Register` event by `Actor::Sink`;
   resetting `TMDS_Config` loses the scrambling lock.
+- **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
+  written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
+  (`Fail(kind)`, or `Slow(d)`) and a `Point` (`Before` the sink sees it, `After` it applied
+  it, `Partway { byte }`) — and returns a `FaultId` for `clear_fault`, or `ScheduleFull`
+  past `FAULTS`. An operation is one transaction; refused, empty and detached calls do not
+  count. A timeout charges the bus's stretch timeout; a struck operation is charged for
+  the bytes that went out; each strike is an `Event::Fault` after its bus record.
+  `clear_faults` and `scheduled_faults` manage the schedule. A preset is now a bench event,
+  so a preset of `TMDS_Config` can lose or start the scrambling lock.
 - **The operation budget:** every bus call (refused ones included), clock read and delay
   through the bench's handles counts; past `BenchBuilder::budget` (by default
   `DEFAULT_BUDGET`, 1 000 000; `None` for none) the bench panics, naming the budget, so a

@@ -9,6 +9,7 @@ use hdmi_hal::ddc::{
 };
 
 use crate::bench::{Core, Reach};
+use crate::fault::{Effect, Point, Strike};
 use crate::target::Operation;
 use crate::transcript::{BusOp, BusRecord};
 
@@ -56,22 +57,52 @@ impl<'b> Ddc<'b> {
 
     /// Runs one transaction, charges it, and returns its result as the call's.
     fn run(&self, record: BusRecord, ops: &mut [Operation<'_>]) -> Result<(), BusError> {
-        let (result, reach) = self.core.transaction(record, ops);
-        let timing = self.core.timing();
-        let wire_bytes = match reach {
-            Reach::Answered => ops
-                .iter()
-                .map(|op| op.len().saturating_add(1))
-                .sum::<usize>(),
-            Reach::Unanswered => 1,
-            Reach::Detached => 0,
+        let strike = self.core.strike(&record);
+        let data: usize = ops.iter().map(Operation::len).sum();
+        // The result, and how many bytes went out (`None`: nothing, the adapter is gone).
+        let (result, wire_bytes) = match strike {
+            Some(
+                strike @ Strike {
+                    effect: Effect::Fail(kind),
+                    point: Point::Before,
+                    ..
+                },
+            ) => {
+                self.core.struck_before(record, strike, kind);
+                (Err(kind), Some(1))
+            }
+            Some(
+                strike @ Strike {
+                    effect: Effect::Fail(_),
+                    point: Point::Partway { byte },
+                    ..
+                },
+            ) if usize::from(byte) < data => {
+                let (mut cut, n) = cut(ops, usize::from(byte));
+                let (result, reach) = self.core.transaction(record, &mut cut[..n], Some(strike));
+                (result, wire(reach, &cut[..n]))
+            }
+            _ => {
+                let (result, reach) = self.core.transaction(record, ops, strike);
+                (result, wire(reach, ops))
+            }
         };
-        if reach != Reach::Detached {
-            let bytes = u32::try_from(wire_bytes).unwrap_or(u32::MAX);
+        if let Some(bytes) = wire_bytes {
+            let timing = self.core.timing();
+            let bytes = u32::try_from(bytes).unwrap_or(u32::MAX);
+            let extra = match strike.map(|strike| strike.effect) {
+                Some(Effect::Slow(longer)) => longer,
+                Some(Effect::Fail(DdcErrorKind::Timeout)) => self
+                    .capabilities()
+                    .stretch_timeout_us()
+                    .map_or(Duration::ZERO, |us| Duration::from_micros(u64::from(us))),
+                _ => Duration::ZERO,
+            };
             self.core.clock().advance(
                 timing
                     .per_transaction
-                    .saturating_add(timing.per_byte.saturating_mul(bytes)),
+                    .saturating_add(timing.per_byte.saturating_mul(bytes))
+                    .saturating_add(extra),
             );
         }
         result.map_err(|kind| {
@@ -83,6 +114,60 @@ impl<'b> Ddc<'b> {
             BusError::from_record(&record, kind)
         })
     }
+}
+
+/// How many bytes a transaction put on the wire, address bytes included: all of them when a
+/// target answered, the first address byte when none did, none when the adapter is gone.
+fn wire(reach: Reach, ops: &[Operation<'_>]) -> Option<usize> {
+    match reach {
+        Reach::Answered => Some(ops.iter().map(|op| op.len().saturating_add(1)).sum()),
+        Reach::Unanswered => Some(1),
+        Reach::Detached => None,
+    }
+}
+
+/// The transaction `ops` cut at data byte `byte`, counted across its operations: the
+/// operations up to the one that holds it, that one shortened to the bytes before it. A
+/// transaction is at most three operations (the pointer, the offset, the read).
+fn cut<'s>(ops: &'s mut [Operation<'_>], byte: usize) -> ([Operation<'s>; 3], usize) {
+    let mut cut = [
+        Operation::Write {
+            addr: 0,
+            bytes: &[],
+        },
+        Operation::Write {
+            addr: 0,
+            bytes: &[],
+        },
+        Operation::Write {
+            addr: 0,
+            bytes: &[],
+        },
+    ];
+    let mut left = byte;
+    let mut n = 0;
+    for op in ops.iter_mut() {
+        if n == cut.len() {
+            break;
+        }
+        let take = op.len().min(left);
+        cut[n] = match op {
+            Operation::Write { addr, bytes } => Operation::Write {
+                addr: *addr,
+                bytes: &bytes[..take],
+            },
+            Operation::Read { addr, buf } => Operation::Read {
+                addr: *addr,
+                buf: &mut buf[..take],
+            },
+        };
+        n += 1;
+        left -= take;
+        if left == 0 {
+            break;
+        }
+    }
+    (cut, n)
 }
 
 impl fmt::Debug for Ddc<'_> {

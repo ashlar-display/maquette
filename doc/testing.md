@@ -65,6 +65,13 @@ parts are built.
   default; a reset taken at the first event after it is due, and when HPD rises; a group
   that never resets; a reset after zero; one reset per low; a `TMDS_Config` reset losing
   the lock; the groups and their defaults.
+- **`tests/faults.rs`** — faults: before (nothing applied, the address byte charged), after
+  (the write latched), partway through a write and a read (the buffer the pattern) and past
+  the last byte; `nth` with a count and until cleared; filters; refused, empty and detached
+  calls not counting, unplugged ones counting; each piece of a split read an operation;
+  the first scheduled fault striking while every fault counts; a full schedule; a fault
+  that never strikes; the stretch timeout, slow operations, `Detached` and `Unsupported`
+  effects; a preset as an event the lock answers.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

@@ -28,7 +28,8 @@ In development. Built so far: `SimClock`, hdmi-hal's clock and delay on simulate
 conformance check for clock and delay implementations; and the bench, with its DDC bus routed
 to a test's own targets, the sink's SCDC registers and its EDID and DisplayID behind the
 E-DDC segment pointer, register presets and the transcript; the line, HPD, unplug and detach;
-the sink's scrambling lock and its HPD resets; and an operation budget. Faults come next. The
+the sink's scrambling lock and its HPD resets; an operation budget; and scheduled faults.
+The fuzz target comes next. The
 design is in [`doc/architecture.md`](doc/architecture.md), and the order in which the rest is
 built is on the [roadmap](doc/roadmap.md).
 

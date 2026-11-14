@@ -732,6 +732,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     pub fn schedule(&self, fault: Fault) -> Result<FaultId, ScheduleFull>;
     pub fn clear_fault(&self, id: FaultId) -> bool;
     pub fn clear_faults(&self);
+    pub fn scheduled_faults(&self) -> usize;
 }
 ```
 
@@ -742,7 +743,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 - **Counting:** each fault counts the matching operations from when it is scheduled, and
   strikes the `nth` and, by `times`, the `k - 1` after it or every one until cleared. Faults
   are checked in the order scheduled; the first that strikes applies, and every fault
-  counts the operation. A fault that has struck its last time leaves the schedule.
+  counts the operation. A fault leaves the schedule once its last operation has passed,
+  struck or not (an earlier fault may have taken it); `Times::Count(0)` never strikes.
   `FAULTS` is the schedule's capacity; a full schedule refuses with `ScheduleFull`, so the
   test knows its fault is not there.
 - **Points:**

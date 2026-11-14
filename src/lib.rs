@@ -12,7 +12,7 @@
 //! [`Bench`], whose DDC bus ([`Ddc`]) routes each call to a test's own [`Target`]s or the
 //! sink's SCDC registers, EDID and DisplayID, and records it in the transcript, with the
 //! line, HPD, unplug and detach as bench events, the sink's scrambling lock and the
-//! registers a long HPD low resets, and an operation budget, with register presets and a view
+//! registers a long HPD low resets, an operation budget, and scheduled [`Fault`]s, with register presets and a view
 //! of the registers ([`Sink`]). The rest of the design is in `doc/architecture.md`.
 //!
 //! # Features
@@ -33,6 +33,7 @@ mod clock;
 mod config;
 mod ddc;
 mod eddc;
+mod fault;
 mod line;
 mod scdc;
 mod target;
@@ -50,6 +51,7 @@ pub use config::{
     RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, Trigger,
 };
 pub use ddc::{BusError, BusTiming, Ddc};
+pub use fault::{Effect, Fault, FaultId, Filter, OpKind, Point, ScheduleFull, Times};
 pub use line::Line;
 pub use target::{Env, Operation, Target};
 pub use transcript::{Actor, BusOp, BusRecord, Event, Ignored, Record};
