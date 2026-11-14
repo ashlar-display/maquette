@@ -151,8 +151,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     pub fn time(&self) -> Time<'_>;    // Clock, Delay
     pub fn sink(&self) -> Sink<'_>;    // reads the sink's registers and state
 
-    /// Sets an SCDC register, the sink's own included; recorded as by `Actor::Test`.
-    /// Panics on a sink without SCDC.
+    /// Sets an SCDC register, the sink's own included; recorded as by `Actor::Test`. A bench
+    /// event: the sink evaluates its behaviour after it. Panics on a sink without SCDC.
     pub fn preset_scdc(&self, reg: u8, value: u8);
 
     /// Moves the bench's time forward, then lets every target see it (`Target::update`).
@@ -281,12 +281,13 @@ can tear — the CED counters and FRL's LTP requests — so the setting arrives 
 
 **The operation budget.** A bench counts every operation through its handles — bus calls,
 refused ones included, PHY calls, clock reads and delays — against a budget,
-`BenchBuilder::budget(Option<u64>)`: by default `DEFAULT_BUDGET`, 1 000 000 operations (*chosen*: far more
-than a bring-up, a training run or a long session of polling takes, and spent within
-seconds by a loop that never ends), `None` for none. Past it the bench panics, naming the
-budget and how many operations it allowed: a procedure that loops forever fails its test
-instead of hanging CI. A budget that failed operations instead could let the procedure end
-quietly and the test pass. A `SimClock` standing alone counts nothing.
+`BenchBuilder::budget(Option<u64>)`: by default `DEFAULT_BUDGET`, 1 000 000 operations
+(*chosen*: far more than a bring-up, a training run or a long session of polling takes,
+and spent within seconds by a loop that never ends), `None` for none. Past it the bench
+panics, naming the budget and how many operations it allowed: a procedure that loops
+forever fails its test instead of hanging CI. A budget that failed operations instead could
+let the procedure end quietly and the test pass. A `SimClock` standing alone counts
+nothing.
 
 ### Settings
 
@@ -517,7 +518,9 @@ pub enum Event {
     Adapter { attached: bool },
     /// The sink refused to set the scrambling bit right away, at this attempt.
     Refusal { attempt: u32, kind: RefusalKind },
-    // PHY calls and faults: added with them.
+    /// A scheduled fault struck the bus operation recorded before it.
+    Fault { id: FaultId, effect: Effect, point: Point },
+    // PHY calls: added with the PHY.
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -685,20 +688,87 @@ not judge order, which a test checks from the transcript.
 
 ## Faults
 
-A test schedules faults: *on the n-th operation matching a filter* (an address, an operation
-kind, a register; operations the capabilities refuse do not count), *for k operations* or
-*until cleared*. A fault strikes at a point:
+A test schedules faults, each striking bus operations that match a filter, at a point of the
+operation, with an effect:
 
-- **before** the sink sees the operation;
-- **after** the sink applied it (a write latched, the error still returned);
-- **partway:** a NACK on data byte *k*, the bytes before it applied.
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Fault {
+    pub filter: Filter,
+    /// The first matching operation it strikes, counted from 1 from when it is scheduled.
+    pub nth: u32,
+    pub times: Times,
+    pub effect: Effect,
+    pub point: Point,
+}
 
-A fault fails with a `DdcErrorKind`; a NACK carries its `NoAcknowledgeSource`; a timeout
-charges the clock. An `Unsupported` fault breaks the `DdcBus` contract on purpose, to test
-code against a misbehaving backend, and its documentation says so. A failed read fills the
-buffer with a pattern, so a caller that uses it after an error fails (the contract leaves the
-contents unspecified). PHY faults use `PhyError`, with a kind and whether the call took
-effect. Faults are applied after the capability check and recorded in the transcript.
+impl Fault {
+    /// Strikes the first operation, once, before the sink sees it.
+    pub const fn new(effect: Effect) -> Self;
+    pub const fn on(self, filter: Filter) -> Self;
+    pub const fn nth(self, n: u32) -> Self;
+    pub const fn times(self, times: Times) -> Self;
+    pub const fn at(self, point: Point) -> Self;
+}
+
+/// Which operations a fault counts: every field that is set must match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Filter {
+    /// The operation's address; for `read_segmented`, the target's.
+    pub addr: Option<u8>,
+    pub op: Option<OpKind>,          // Write, WriteRead, Read, ReadSegmented
+    /// The first byte written: the register or offset.
+    pub first: Option<u8>,
+}
+// Filter::ANY, with const `with_addr`, `with_op`, `with_first` builders.
+
+pub enum Times { Count(u32), UntilCleared }
+pub enum Effect { Fail(DdcErrorKind), Slow(Duration) }
+pub enum Point { Before, After, Partway { byte: u16 } }
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn schedule(&self, fault: Fault) -> Result<FaultId, ScheduleFull>;
+    pub fn clear_fault(&self, id: FaultId) -> bool;
+    pub fn clear_faults(&self);
+}
+```
+
+- **What an operation is:** one transaction — a `DdcBus` call, or one piece of a split
+  `read_segmented`. Calls refused by the argument or capability checks, empty buffers and
+  calls while detached do not count: nothing went out. Calls while unplugged count: they
+  reach the wire, and nothing answers.
+- **Counting:** each fault counts the matching operations from when it is scheduled, and
+  strikes the `nth` and, by `times`, the `k - 1` after it or every one until cleared. Faults
+  are checked in the order scheduled; the first that strikes applies, and every fault
+  counts the operation. A fault that has struck its last time leaves the schedule.
+  `FAULTS` is the schedule's capacity; a full schedule refuses with `ScheduleFull`, so the
+  test knows its fault is not there.
+- **Points:**
+  - **before** the sink sees the operation: no target sees it, and only its address byte
+    goes out;
+  - **after** the sink applied it: the transaction runs as usual (a write latched), and the
+    fault's error is returned in place of its result;
+  - **partway**, at data byte *k* of the transaction, counted across its operations: the
+    target sees the transaction cut there (a write's first *k* bytes; a read shortened; the
+    operations after it dropped), then the fault's error is returned. A transaction of *k*
+    data bytes or fewer is struck after.
+- **Effects:**
+  - `Fail(kind)`: the call fails with `kind`. A NACK carries its `NoAcknowledgeSource`; a
+    timeout also charges the bus's `stretch_timeout_us` where its capabilities give one; a
+    `Detached` fault fails that operation only, the adapter staying attached. An
+    `Unsupported` fault breaks the `DdcBus` contract on purpose (`Unsupported` means
+    refused before bus activity), to test code against a misbehaving backend.
+  - `Slow(d)`: the operation succeeds and takes `d` longer.
+- **Time:** a faulted operation is charged for the bytes that went out: its address byte
+  before, all of it after, up to byte *k* partway.
+- **Records:** the bus record carries the call's result; an `Event::Fault { id, effect,
+  point }` follows it. A failed read fills the buffer with the pattern, so a caller that
+  uses it after an error fails.
+
+PHY faults use `PhyError`, with a kind and whether the call took effect; their schedule is
+designed with the PHY.
 
 ---
 
@@ -864,12 +934,23 @@ without `std` does not prove `no_std`, because `std` is still available to depen
 
 See [`testing.md`](testing.md). maquette's own tests check its implementations against the
 conformance checks, the checks' negative cases against broken doubles, and the sink's rules
-against the sources above. A fuzz target drives the bench with arbitrary sequences of bus and
-PHY calls, line changes, faults, controls and clock advances, and checks the invariants a
-simulator must keep: the same input gives the same transcript; nothing panics and no
-arithmetic overflows; the status is set only under the coupling's conditions; registers the
-sink owns change only by the sink's rules; the segment pointer never outlives its command
-sequence.
+against the sources above.
+
+A fuzz target drives the bench with arbitrary sequences of bus calls (and PHY calls, once
+the PHY exists), line changes, HPD, plug and adapter changes, presets, faults and clock
+advances, on a sink whose settings and bus capabilities the input also chooses. It decodes
+the input bytes itself, as the stack's other fuzz targets do. After every action it checks
+the invariants a simulator must keep:
+
+- the same input gives the same transcript (the input is run twice);
+- nothing panics and no arithmetic overflows (the target builds with overflow checks; the
+  budget is off and the input bounds the actions);
+- `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
+  scrambled TMDS at the matching ratio (the input presets any register but the status);
+- no `Register` event changes a register the sink owns by `Actor::Source`;
+- the segment pointer never outlives its command sequence: every EDID read at 0x50 that
+  succeeds reads segment 0;
+- the transcript's times never go backwards.
 
 ---
 
