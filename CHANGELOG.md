@@ -154,6 +154,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   0xFF returning, and, with a `check::FailNext` hook (implemented by `Bench`), an error
   reaching the caller with its kind and the transport working after it. `run_async` over
   hdmi-hal-async's `ScdcTransport`. Failures are `check::ScdcTransportFailure`s.
+- **The PHY check** (`check::PhyCheck`): hdmi-hal's PHY contracts with a configuration the
+  PHY can do and a `check::OutputProbe` (implemented by `Bench`) for whether its output
+  runs. `run_tmds` (`TmdsPhy` alone, a fresh PHY), `run_powered` (with `PhyPower`, from a
+  power cycle) and `run_frl` (with `FrlPhy`: the mode rule), and their async forms. Failures
+  are `check::PhyFailure`s naming a `check::PhyPoint`.
 - **`check::Report`**, what every check returns: the points run, every failed point counted,
   the first 16 recorded in the order found, and `assert_ok`, which panics listing them. A
   check of another crate's own trait that runs against the bench builds one with

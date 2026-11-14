@@ -102,6 +102,12 @@ parts are built.
   transports broken one way each caught with exact counts — block reads from the wrong
   register, no 16-byte reads, hidden errors, stuck after an error, failing an empty buffer —
   and a sink without SCDC failing every read; the failures printed.
+- **`tests/phy_check.rs`** — the PHY check: the bench's PHY passing every run under both
+  `configure`-while-running settings and both rates, a PHY coupled to the bench passing,
+  capabilities refusing or skipping `set_scrambling(true)`, a probe that cannot tell
+  skipping its points, the async forms; and PHYs broken one way each caught at their point —
+  starting unconfigured, `configure` keeping the output running, `stop_output` failing
+  while off, `configure` not leaving FRL, `power_on` remembering the configuration.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

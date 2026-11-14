@@ -24,16 +24,16 @@ conformance checks that an implementation of hdmi-hal's traits runs in its own t
 
 ## Status
 
-In development. Built so far: `SimClock`, hdmi-hal's clock and delay on simulated time; the
-conformance check for clock and delay implementations; and the bench, with its DDC bus routed
-to a test's own targets, the sink's SCDC registers and its EDID and DisplayID behind the
-E-DDC segment pointer, register presets and the transcript; the line, HPD, unplug and detach;
-the sink's scrambling lock and its HPD resets; an operation budget; and scheduled faults,
-with a fuzz target checking the simulator's invariants; and a simulated PHY, or any PHY
-coupled to the bench, driving the line; and, with the `async` feature, hdmi-hal-async's
-traits on the same handles. Testing the stack's procedures against the bench comes next. The
-design is in [`doc/architecture.md`](doc/architecture.md), and the order in which the rest is
-built is on the [roadmap](doc/roadmap.md).
+In development, before its first release. Built: `SimClock`, hdmi-hal's clock and delay on
+simulated time; the bench, with its DDC bus routed to a test's own targets, the sink's SCDC
+registers and its EDID and DisplayID behind the E-DDC segment pointer, register presets and
+the transcript; the line, HPD, unplug and detach; the sink's scrambling lock and its HPD
+resets; scheduled faults and an operation budget; a simulated PHY, or any PHY coupled to the
+bench, driving the line; hdmi-hal-async's traits on the same handles (`async` feature); a
+fuzz target checking the simulator's invariants; and conformance checks for implementations
+of hdmi-hal's `Clock` and `Delay`, `DdcBus`, `ScdcTransport`, `TmdsPhy`, `FrlPhy` and
+`PhyPower`. The design is in [`doc/architecture.md`](doc/architecture.md), and what comes
+before the first release is on the [roadmap](doc/roadmap.md).
 
 ## Usage
 

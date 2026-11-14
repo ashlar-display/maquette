@@ -23,10 +23,12 @@
 
 mod clock;
 mod ddc;
+mod phy;
 mod report;
 mod scdc;
 
 pub use clock::{ClockCheck, ClockFailure, clock};
 pub use ddc::{DdcBusCheck, DdcBusFailure, DdcDevice};
+pub use phy::{OutputProbe, PhyCheck, PhyFailure, PhyPoint};
 pub use report::Report;
 pub use scdc::{FailNext, ScdcImage, ScdcOp, ScdcTransportCheck, ScdcTransportFailure};

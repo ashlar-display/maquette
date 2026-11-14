@@ -9,17 +9,10 @@ pointer, register presets, and the transcript; the line, HPD, unplug and detach 
 events; the sink's scrambling lock and the registers a long HPD low resets; the operation
 budget; scheduled faults; the simulated PHY (`TmdsPhy`, `FrlPhy`, `PhyPower`) and
 `Coupled<P>`, any PHY, driving the line; hdmi-hal-async's traits on the same handles; a
-fuzz target checking the simulator's invariants; and the conformance checks for `DdcBus` and
-`ScdcTransport`.
+fuzz target checking the simulator's invariants; and the conformance checks for `DdcBus`,
+`ScdcTransport`, `TmdsPhy`, `FrlPhy` and `PhyPower`.
 
 ## Planned
-
-In the order they are built:
-
-### The conformance checks
-
-Checks for implementations of `TmdsPhy`, `FrlPhy` and `PhyPower`, returning a report of
-every point that failed, as the `DdcBus` and `ScdcTransport` checks do.
 
 ### Before the first release
 

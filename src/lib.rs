@@ -7,17 +7,15 @@
 //! asserts on one ordered transcript of everything that happened. It also carries
 //! conformance checks that an implementation of hdmi-hal's traits runs in its own tests.
 //!
-//! Built so far: [`SimClock`], hdmi-hal's `Clock` and `Delay` on simulated time; the
-//! conformance check for `Clock` and `Delay` implementations ([`check::clock`]); and the
-//! [`Bench`]. Its DDC bus ([`Ddc`]) routes each call to a test's own [`Target`]s or the
-//! sink's SCDC registers, EDID and DisplayID, and records it in the transcript. The line,
-//! HPD, unplug and detach are bench events; the sink keeps a scrambling lock and resets its
-//! registers after a long HPD low; register presets and a view of the registers ([`Sink`])
-//! serve the test; the simulated [`Phy`], or any PHY [`Coupled`] to the bench, drives the
-//! line; scheduled [`Fault`]s fail
-//! operations; an operation budget ends a test
-//! that loops forever. With the `async` feature the handles implement hdmi-hal-async's
-//! traits too. The rest of the design is in `doc/architecture.md`.
+//! The [`Bench`] holds the simulation. Its DDC bus ([`Ddc`]) routes each call to a test's own
+//! [`Target`]s or the sink's SCDC registers, EDID and DisplayID, and records it in the
+//! transcript. The line, HPD, unplug and detach are bench events; the sink keeps a scrambling
+//! lock and resets its registers after a long HPD low; register presets and a view of the
+//! registers ([`Sink`]) serve the test; the simulated [`Phy`], or any PHY [`Coupled`] to the
+//! bench, drives the line; scheduled [`Fault`]s fail operations; an operation budget ends a
+//! test that loops forever; [`SimClock`] keeps the time. The [`check`] module holds the
+//! conformance checks for hdmi-hal's traits. With the `async` feature the handles implement
+//! hdmi-hal-async's traits too. The design is in `doc/architecture.md`.
 //!
 //! # Features
 //!
