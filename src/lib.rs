@@ -10,7 +10,7 @@
 //! Built so far: [`SimClock`], hdmi-hal's `Clock` and `Delay` on simulated time; the
 //! conformance check for `Clock` and `Delay` implementations ([`check::clock`]); and the
 //! [`Bench`], whose DDC bus ([`Ddc`]) routes each call to a test's own [`Target`]s or the
-//! sink's SCDC registers and records it in the transcript, with register presets and a view
+//! sink's SCDC registers, EDID and DisplayID, and records it in the transcript, with register presets and a view
 //! of the registers ([`Sink`]). The rest of the design is in `doc/architecture.md`.
 //!
 //! # Features
@@ -30,6 +30,7 @@ pub mod check;
 mod clock;
 mod config;
 mod ddc;
+mod eddc;
 mod scdc;
 mod target;
 mod transcript;
@@ -41,7 +42,7 @@ struct ReadmeDoctests;
 
 pub use bench::{Bench, BenchBuilder, BenchError, Sink, Time};
 pub use clock::SimClock;
-pub use config::{OwnedWrite, ScdcPastEnd, SinkConfig};
+pub use config::{BlockBoundary, MissingSegment, OwnedWrite, PastStore, ScdcPastEnd, SinkConfig};
 pub use ddc::{BusError, BusTiming, Ddc};
 pub use target::{Env, Operation, Target};
 pub use transcript::{Actor, BusOp, BusRecord, Event, Ignored, Record};

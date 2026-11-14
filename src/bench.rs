@@ -11,6 +11,7 @@ use hdmi_hal::time::{Clock, Delay, Timestamp};
 use crate::clock::SimClock;
 use crate::config::SinkConfig;
 use crate::ddc::{BusTiming, Ddc};
+use crate::eddc::Eddc;
 use crate::scdc::Scdc;
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{BusRecord, Event, Record, Transcript};
@@ -18,11 +19,13 @@ use crate::transcript::{BusRecord, Event, Record, Transcript};
 /// The targets in routing order: the test's, in the order given, then the built-in ones.
 fn routed<'s>(
     targets: &'s mut Targets<'_>,
+    eddc: &'s mut Eddc<'_>,
     scdc: &'s mut Option<Scdc>,
 ) -> impl Iterator<Item = &'s mut dyn Target> {
     targets
         .iter_mut()
         .map(|target| &mut **target as &mut dyn Target)
+        .chain(core::iter::once(eddc as &mut dyn Target))
         .chain(scdc.as_mut().map(|scdc| scdc as &mut dyn Target))
 }
 
@@ -67,7 +70,7 @@ pub struct Bench<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
 /// What the lock guards.
 struct State<'a, const LOG: usize> {
     config: SinkConfig,
-    edid: &'a [u8],
+    eddc: Eddc<'a>,
     targets: Targets<'a>,
     scdc: Option<Scdc>,
     hpd: bool,
@@ -85,6 +88,7 @@ impl<'a> Bench<'a> {
     pub fn builder(edid: &'a [u8]) -> BenchBuilder<'a> {
         BenchBuilder {
             edid,
+            displayid: None,
             config: SinkConfig::new(),
             capabilities: DdcCapabilities::general(),
             timing: BusTiming::STANDARD_MODE,
@@ -114,13 +118,14 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
             let mut state = self.state.borrow_ref_mut(cs);
             let State {
                 targets,
+                eddc,
                 scdc,
                 transcript,
                 hpd,
                 ..
             } = &mut *state;
             let mut env = Env::new(at, *hpd, transcript);
-            for target in routed(targets, scdc) {
+            for target in routed(targets, eddc, scdc) {
                 target.update(&mut env);
             }
         });
@@ -189,7 +194,8 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for Bench<'_, LOG, FAULTS
             f.debug_struct("Bench")
                 .field("now", &self.clock.now())
                 .field("config", &state.config)
-                .field("edid_len", &state.edid.len())
+                .field("edid_len", &state.eddc.edid_len())
+                .field("displayid_len", &state.eddc.displayid_len())
                 .field("targets", &state.targets.len())
                 .field("scdc", &state.scdc.is_some())
                 .field("hpd", &state.hpd)
@@ -241,6 +247,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
             let mut state = self.state.borrow_ref_mut(cs);
             let State {
                 targets,
+                eddc,
                 scdc,
                 transcript,
                 hpd,
@@ -252,13 +259,14 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
             });
             let addr = ops.first().map_or(0, Operation::addr);
             let mut env = Env::new(at, *hpd, transcript);
-            let (result, answered) = match routed(targets, scdc).find(|t| t.answers(addr, &env)) {
-                Some(target) => (target.transaction(ops, &mut env), true),
-                None => (
-                    Err(DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)),
-                    false,
-                ),
-            };
+            let (result, answered) =
+                match routed(targets, eddc, scdc).find(|t| t.answers(addr, &env)) {
+                    Some(target) => (target.transaction(ops, &mut env), true),
+                    None => (
+                        Err(DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address)),
+                        false,
+                    ),
+                };
             transcript.set_result(index, result);
             (result, answered)
         })
@@ -287,6 +295,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
 #[must_use]
 pub struct BenchBuilder<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
     edid: &'a [u8],
+    displayid: Option<&'a [u8]>,
     config: SinkConfig,
     capabilities: DdcCapabilities,
     timing: BusTiming,
@@ -298,6 +307,15 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
     /// The sink's settings.
     pub fn sink(self, config: SinkConfig) -> Self {
         Self { config, ..self }
+    }
+
+    /// The sink's DisplayID store, at 0x52: a whole number of 128-byte blocks, up to 256.
+    /// Without one, or with an empty one, nothing answers 0x52.
+    pub fn displayid(self, store: &'a [u8]) -> Self {
+        Self {
+            displayid: Some(store),
+            ..self
+        }
     }
 
     /// What the bench's DDC bus can do; by default `DdcCapabilities::general()`.
@@ -327,6 +345,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
     pub fn capacities<const L: usize, const F: usize>(self) -> BenchBuilder<'a, L, F> {
         BenchBuilder {
             edid: self.edid,
+            displayid: self.displayid,
             config: self.config,
             capabilities: self.capabilities,
             timing: self.timing,
@@ -337,9 +356,14 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
 
     /// The bench, or why the stores cannot be its sink's.
     pub fn build(self) -> Result<Bench<'a, LOG, FAULTS>, BenchError> {
-        let len = self.edid.len();
-        if len % 128 != 0 || len > MAX_STORE {
-            return Err(BenchError::EdidLength(len));
+        let whole_blocks = |len: usize| len % 128 == 0 && len <= MAX_STORE;
+        if !whole_blocks(self.edid.len()) {
+            return Err(BenchError::EdidLength(self.edid.len()));
+        }
+        if let Some(store) = self.displayid {
+            if !whole_blocks(store.len()) {
+                return Err(BenchError::DisplayIdLength(store.len()));
+            }
         }
         Ok(Bench {
             clock: self.clock,
@@ -347,7 +371,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
             timing: self.timing,
             state: Mutex::new(RefCell::new(State {
                 config: self.config,
-                edid: self.edid,
+                eddc: Eddc::new(&self.config, self.edid, self.displayid),
                 scdc: Scdc::new(&self.config),
                 targets: self.targets,
                 hpd: true,
@@ -361,6 +385,7 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for BenchBuilder<'_, LOG,
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BenchBuilder")
             .field("edid_len", &self.edid.len())
+            .field("displayid_len", &self.displayid.map(<[u8]>::len))
             .field("config", &self.config)
             .field("capabilities", &self.capabilities)
             .field("timing", &self.timing)

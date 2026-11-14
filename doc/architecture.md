@@ -372,14 +372,25 @@ The built-in targets:
   is 256 bytes (E-DDC 1.3 §2.2.5).
   - The pointer is 0 at the start of every transaction: it resets on a NACK or STOP
     (§8.1.1, Table 9-1) and at the end of each command sequence (§2.2.5), so a write to
-    0x30 matters only to the reads in the same transaction.
-  - The word offset persists between transactions and advances with every byte read: a
-    read with no offset written reads at the current address (§6.1, §6.3).
-  - For segment 1 and higher the sink acknowledges the pointer value (§6.4–§6.5).
+    0x30 matters only to the reads in the same transaction. It is effectively write-only
+    (§2.2.5): a read at 0x30 is refused, `NoAcknowledge(Address)`; of several bytes written
+    to it, the first counts (*chosen*).
+  - Each structure's word offset persists between transactions and advances with every
+    byte read: a read with no offset written reads at the current address (§6.1, §6.3).
+    Past 0xFF it wraps within the segment.
+  - For segment 1 and higher the sink acknowledges the pointer value (§6.4–§6.5). A segment
+    is present when either store has bytes in it, the pointer being shared; a store that
+    lacks a present segment reads past its end.
   - A sink without a segment pointer does not answer 0x30, `NoAcknowledge(Address)`, and
     answers segment 0 reads (§8.1.2, Table 9-1).
-  - A write to 0x50 or 0x52 after the offset byte is acknowledged and ignored, recorded in
-    the transcript: E-DDC does not require a display to support one (§6).
+  - A write to 0x50 or 0x52 sets the word offset with its first byte; the bytes after it
+    are acknowledged and ignored without moving the offset, and recorded as `IgnoredWrite`:
+    E-DDC does not require a display to support writes there (§6).
+  - An empty store does not answer its address (*chosen*: a sink without that structure);
+    without a DisplayID store, nothing answers 0x52.
+  - The settings in "Sink behaviour" govern reads past the store, segments the sink does
+    not have and the 128-byte boundary: `with_past_store`, `with_missing_segment`,
+    `with_block_boundary`, and `without_segment_pointer`.
 
 A test adds targets: DDC/CI at 0x37, an HDCP port, a vendor's register quirk. Register
 presets set any register, the sink-owned ones too.

@@ -175,7 +175,12 @@ fn the_target_that_takes_a_transaction_takes_all_of_it() {
     // 0x50 answers; 0x30 is not this target's, but it is given the whole transaction.
     let mut edid = Device::new(&[EDID]);
     let mut targets: [&mut (dyn Target + Send); 1] = [&mut edid];
-    let bench = Bench::builder(&[]).targets(&mut targets).build().unwrap();
+    // A sink without a segment pointer: nothing else answers 0x30.
+    let bench = Bench::builder(&[])
+        .sink(SinkConfig::new().without_segment_pointer())
+        .targets(&mut targets)
+        .build()
+        .unwrap();
     let mut buf = [0u8; 2];
     bench
         .ddc()

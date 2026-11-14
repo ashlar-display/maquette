@@ -37,6 +37,15 @@ parts are built.
   back; the sink's registers ignored or refused; registers outside the modelled set; bursts
   past 0xFF wrapping or refused; presets; the `Sink_Version` setting; a sink without SCDC; a
   test's target at 0x54 replacing the built-in one; the settings and the `Sink` view.
+- **`src/eddc.rs`** — the E-DDC transactions the bus never makes: several pointer bytes,
+  empty writes, a second address; a missing DisplayID store.
+- **`tests/eddc.rs`** — the built-in EDID and DisplayID target: segment 0 and higher segments
+  through the pointer, whole and split into pieces; the word offset persisting for
+  current-address reads; the pointer reset between transactions and not readable; a sink
+  without a pointer (E-DDC 8.1.2); missing segments refused or read past the store, and a
+  segment present in one store only; reads past the store filled, wrapped or refused; the
+  128-byte boundary continued or wrapped; writes after the offset ignored and recorded; an
+  empty EDID; the DisplayID's own store and offset, and its length check.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

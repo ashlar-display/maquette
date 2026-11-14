@@ -52,6 +52,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manufacturer's block) follow `OwnedWrite`; any other register is stored. Addresses, bits
   and roles are cited in the code from Linux, amdgpu, Xilinx and Amlogic. Every byte written
   is a `Register` or `IgnoredWrite` event in the transcript.
+- **The sink's EDID at 0x50 and DisplayID at 0x52, behind the E-DDC segment pointer at
+  0x30** (VESA E-DDC 1.3), the built-in target routed after a test's own. The pointer is 0
+  at the start of every transaction and acknowledged for segments the sink has; each
+  structure's word offset persists, for current-address reads; writes after the offset are
+  ignored and recorded; a sink without a pointer answers segment 0 only; an empty store does
+  not answer. `BenchBuilder::displayid` gives the DisplayID store, checked like the EDID's
+  (`BenchError::DisplayIdLength`). `SinkConfig` gains `without_segment_pointer`,
+  `with_past_store` (`PastStore::Fill`, reading 0xFF, by default; `Wrap`, `Nack`),
+  `with_missing_segment` (`MissingSegment::Nack` by default; `Ack`) and
+  `with_block_boundary` (`BlockBoundary::Continue` by default; `Wrap`), with getters.
 - **`Bench::preset_scdc`**, which sets any SCDC register, recorded as by `Actor::Test`, and
   **`Bench::sink`**, a `Sink` view of the registers (`scdc`, `tmds_config`,
   `scrambling_status`, `sink_version`, `source_version`, `update_0`, `config_0`, `config_1`)
