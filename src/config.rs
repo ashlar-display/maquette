@@ -36,6 +36,7 @@ pub struct SinkConfig {
     pub(crate) strict_lock: bool,
     pub(crate) refusal: Refusal,
     pub(crate) enable_timeout: Option<Duration>,
+    pub(crate) hpd_resets: [HpdReset; 4],
 }
 
 impl SinkConfig {
@@ -56,6 +57,12 @@ impl SinkConfig {
             strict_lock: false,
             refusal: Refusal::NONE,
             enable_timeout: None,
+            hpd_resets: [
+                HpdReset::After(Duration::from_millis(100)),
+                HpdReset::After(Duration::from_millis(100)),
+                HpdReset::After(Duration::from_millis(100)),
+                HpdReset::OnHpdLow,
+            ],
         }
     }
 
@@ -182,6 +189,15 @@ impl SinkConfig {
         }
     }
 
+    /// When `group`'s registers reset to 0 while HPD is low. By default (*chosen*: sources
+    /// restore `TMDS_Config` after a reconnect, but no public source says when a sink
+    /// resets it) after 100 ms of HPD low for `TMDS_Config`, the status and update flags and
+    /// `Source_Version`, and on every HPD low for `Config_0` and `Config_1`.
+    pub const fn with_hpd_reset(mut self, group: RegisterGroup, reset: HpdReset) -> Self {
+        self.hpd_resets[group.index()] = reset;
+        self
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -240,6 +256,11 @@ impl SinkConfig {
     /// How long the sink waits for scrambled TMDS before clearing `Scrambling_Enable`.
     pub const fn enable_timeout(&self) -> Option<Duration> {
         self.enable_timeout
+    }
+
+    /// When `group`'s registers reset while HPD is low.
+    pub const fn hpd_reset(&self, group: RegisterGroup) -> HpdReset {
+        self.hpd_resets[group.index()]
     }
 
     /// Whether SCDC answers while HPD is low.
@@ -373,4 +394,61 @@ pub enum RefusalKind {
     WithholdStatus,
     /// The write is stored without `Scrambling_Enable`.
     DropEnable,
+}
+
+/// A group of SCDC registers that a long HPD low resets together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RegisterGroup {
+    /// `TMDS_Config` (0x20).
+    TmdsConfig,
+    /// The sink's status: `Scrambling_Status` (0x21), the update flags (0x10, 0x11) and the
+    /// status flags (0x40–0x42).
+    Status,
+    /// `Source_Version` (0x02).
+    SourceVersion,
+    /// `Config_0` (0x30) and `Config_1` (0x31).
+    Config,
+}
+
+impl RegisterGroup {
+    /// Every group.
+    pub const ALL: [Self; 4] = [
+        Self::TmdsConfig,
+        Self::Status,
+        Self::SourceVersion,
+        Self::Config,
+    ];
+
+    pub(crate) const fn index(self) -> usize {
+        match self {
+            Self::TmdsConfig => 0,
+            Self::Status => 1,
+            Self::SourceVersion => 2,
+            Self::Config => 3,
+        }
+    }
+
+    /// The group's registers.
+    pub const fn registers(self) -> &'static [u8] {
+        match self {
+            Self::TmdsConfig => &[0x20],
+            Self::Status => &[0x21, 0x10, 0x11, 0x40, 0x41, 0x42],
+            Self::SourceVersion => &[0x02],
+            Self::Config => &[0x30, 0x31],
+        }
+    }
+}
+
+/// When a group of registers resets to 0 while HPD is low.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum HpdReset {
+    /// Once HPD has been low this long: at the first bench event at or after that moment
+    /// while HPD is still low, or when HPD rises if it was low that long.
+    After(Duration),
+    /// As HPD goes low.
+    OnHpdLow,
+    /// Never: the registers survive any HPD low.
+    Never,
 }

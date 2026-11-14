@@ -84,6 +84,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `RefusalKind::WithholdStatus` or `DropEnable` for the first attempts; none by default,
   each refusal an `Event::Refusal`) and `with_enable_timeout` (off by default), with
   getters.
+- **HPD resets:** while HPD is low the SCDC target resets each `RegisterGroup`
+  (`TmdsConfig`, `Status` — `Scrambling_Status`, the update and status flags —
+  `SourceVersion`, `Config`) to 0 once, as its `HpdReset` says: `After(d)`, taken at the
+  first event at or after it or when HPD rises; `OnHpdLow`; or `Never`. By default after
+  100 ms for the first three and on every HPD low for `Config`, set by
+  `SinkConfig::with_hpd_reset`. Each reset register is a `Register` event by `Actor::Sink`;
+  resetting `TMDS_Config` loses the scrambling lock.
 - **The operation budget:** every bus call (refused ones included), clock read and delay
   through the bench's handles counts; past `BenchBuilder::budget` (by default
   `DEFAULT_BUDGET`, 1 000 000; `None` for none) the bench panics, naming the budget, so a

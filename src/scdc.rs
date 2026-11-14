@@ -23,7 +23,8 @@ use hdmi_hal::phy::TmdsClockRatio;
 use hdmi_hal::time::Timestamp;
 
 use crate::config::{
-    DuringHpdLow, OwnedWrite, Refusal, RefusalKind, ScdcPastEnd, SinkConfig, Trigger,
+    DuringHpdLow, HpdReset, OwnedWrite, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd,
+    SinkConfig, Trigger,
 };
 use crate::line::Line;
 use crate::target::{Env, Operation, Target};
@@ -113,6 +114,10 @@ pub(crate) struct Scdc {
     lock_from: Option<Timestamp>,
     reads: u32,
     locked: bool,
+    hpd_resets: [HpdReset; 4],
+    /// When HPD went low, while it is low, and which groups this low has reset.
+    hpd_low_since: Option<Timestamp>,
+    reset_done: [bool; 4],
 }
 
 impl Scdc {
@@ -142,6 +147,9 @@ impl Scdc {
             lock_from: None,
             reads: 0,
             locked: false,
+            hpd_resets: config.hpd_resets,
+            hpd_low_since: None,
+            reset_done: [false; 4],
         })
     }
 
@@ -176,9 +184,44 @@ impl Scdc {
         }
     }
 
+    /// The resets of a long HPD low: each group once per low, when its rule says.
+    fn hpd_resets(&mut self, env: &mut Env<'_>) {
+        let now = env.now();
+        let low_since = match (self.hpd_low_since, env.hpd()) {
+            (None, true) => return,
+            (None, false) => {
+                self.hpd_low_since = Some(now);
+                self.reset_done = [false; 4];
+                now
+            }
+            (Some(since), _) => since,
+        };
+        for group in RegisterGroup::ALL {
+            let due = match self.hpd_resets[group.index()] {
+                HpdReset::OnHpdLow => true,
+                HpdReset::After(low_for) => {
+                    low_since.checked_add(low_for).is_some_and(|due| now >= due)
+                }
+                HpdReset::Never => false,
+            };
+            if due && !self.reset_done[group.index()] {
+                self.reset_done[group.index()] = true;
+                for &reg in group.registers() {
+                    if self.get(reg) != 0 {
+                        self.set(reg, 0, Actor::Sink, env);
+                    }
+                }
+            }
+        }
+        if env.hpd() {
+            self.hpd_low_since = None;
+        }
+    }
+
     /// The sink evaluates its behaviour at `env`'s time; `reading_status` when the source is
     /// about to read `Scrambling_Status`, which counts toward `Trigger::AfterReads`.
     fn evaluate(&mut self, env: &mut Env<'_>, reading_status: bool) {
+        self.hpd_resets(env);
         let now = env.now();
         let line = env.line();
         if line != self.line {

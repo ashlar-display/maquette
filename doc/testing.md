@@ -61,6 +61,10 @@ parts are built.
   refusals of both kinds; the enable timeout, with and without output in time; a delay on
   the time handle as the event that sets it; a preset status holding until the lock
   changes; the defaults.
+- **`tests/hpd.rs`** — the HPD resets: `Config` on every low and the rest after 100 ms by
+  default; a reset taken at the first event after it is due, and when HPD rises; a group
+  that never resets; a reset after zero; one reset per low; a `TMDS_Config` reset losing
+  the lock; the groups and their defaults.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

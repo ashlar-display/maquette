@@ -5,17 +5,13 @@ what comes next. Today `maquette` is its design ([`architecture.md`](architectur
 `SimClock`, hdmi-hal's `Clock` and `Delay` on simulated time, with the conformance check
 for `Clock` and `Delay` implementations, and the bench: its DDC bus routed to a test's own
 targets, the sink's SCDC registers and its EDID and DisplayID behind the E-DDC segment
-pointer, register presets, and the transcript.
+pointer, register presets, and the transcript; the line, HPD, unplug and detach as bench
+events; the sink's scrambling lock and the registers a long HPD low resets; and the
+operation budget.
 
 ## Planned
 
 In the order they are built:
-
-### The sink's behaviour
-
-`TMDS_Config`, `Scrambling_Status` and their settings; HPD, unplug and detach;
-`Source_Version` and `Sink_Version`; the update flags; behaviour triggered by a count of
-operations; the operation budget.
 
 ### Faults and fuzzing
 
