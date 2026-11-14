@@ -147,6 +147,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   description skipped. `run_threads` (with `std`) runs it from several threads at once;
   `run_async` (with `async`) over hdmi-hal-async's `DdcBus`. Failures are
   `check::DdcBusFailure`s.
+- **The `ScdcTransport` check** (`check::ScdcTransportCheck`): over a register image the
+  test knows (`check::ScdcImage`, or `ScdcImage::of(&bench)`: the bench's registers but the
+  ones that change by themselves), `read` of every known register, `read_block` of 16
+  registers wherever they fit agreeing register by register, empty buffers `Ok`, reads past
+  0xFF returning, and, with a `check::FailNext` hook (implemented by `Bench`), an error
+  reaching the caller with its kind and the transport working after it. `run_async` over
+  hdmi-hal-async's `ScdcTransport`. Failures are `check::ScdcTransportFailure`s.
 - **`check::Report`**, what every check returns: the points run, every failed point counted,
   the first 16 recorded in the order found, and `assert_ok`, which panics listing them. A
   check of another crate's own trait that runs against the bench builds one with

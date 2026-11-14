@@ -24,7 +24,9 @@
 mod clock;
 mod ddc;
 mod report;
+mod scdc;
 
 pub use clock::{ClockCheck, ClockFailure, clock};
 pub use ddc::{DdcBusCheck, DdcBusFailure, DdcDevice};
 pub use report::Report;
+pub use scdc::{FailNext, ScdcImage, ScdcOp, ScdcTransportCheck, ScdcTransportFailure};

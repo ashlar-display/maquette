@@ -97,6 +97,11 @@ parts are built.
   they claim, accepting an empty write, writing the pointer for segment 0, corrupting what
   they read, answering where nothing does, panicking; unreachable addresses and no
   segmented reads refused; failures from several threads counted; every failure printed.
+- **`tests/scdc_check.rs`** — the `ScdcTransport` check: hdmi-hal's `ScdcOverDdc` over the
+  bench passing, block and bytewise, behind a 16-byte bus, without faults and async; and
+  transports broken one way each caught with exact counts — block reads from the wrong
+  register, no 16-byte reads, hidden errors, stuck after an error, failing an empty buffer —
+  and a sink without SCDC failing every read; the failures printed.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed
