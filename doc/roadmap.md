@@ -8,16 +8,12 @@ targets, the sink's SCDC registers and its EDID and DisplayID behind the E-DDC s
 pointer, register presets, and the transcript; the line, HPD, unplug and detach as bench
 events; the sink's scrambling lock and the registers a long HPD low resets; the operation
 budget; scheduled faults; the simulated PHY (`TmdsPhy`, `FrlPhy`, `PhyPower`) and
-`Coupled<P>`, any PHY, driving the line; and a fuzz target checking the simulator's
-invariants.
+`Coupled<P>`, any PHY, driving the line; hdmi-hal-async's traits on the same handles; and
+a fuzz target checking the simulator's invariants.
 
 ## Planned
 
 In the order they are built:
-
-### The async handles
-
-hdmi-hal-async's traits and their `Send` twins on the same handles.
 
 ### The conformance checks
 

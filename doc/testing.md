@@ -86,6 +86,11 @@ parts are built.
   budget; FRL and power passing through by the contract; the last change to the line
   winning, with the simulated PHY and the test's own line; scheduled PHY faults left to the
   simulated PHY; reaching and taking back the PHY; a TMDS-only PHY.
+- **`tests/asynch.rs`** (with `async`) — an async bring-up bounded on the `Send` twins alone,
+  its future proved `Send` and run on another thread, locking the sink; the plain async
+  traits through the blanket implementations; hdmi-hal-async's `SendScdcOverDdc` over the
+  bench's bus; errors and records as the sync handles make them; nothing happening until a
+  future is polled.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

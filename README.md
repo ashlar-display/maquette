@@ -30,7 +30,8 @@ to a test's own targets, the sink's SCDC registers and its EDID and DisplayID be
 E-DDC segment pointer, register presets and the transcript; the line, HPD, unplug and detach;
 the sink's scrambling lock and its HPD resets; an operation budget; and scheduled faults,
 with a fuzz target checking the simulator's invariants; and a simulated PHY, or any PHY
-coupled to the bench, driving the line. The async handles come next. The
+coupled to the bench, driving the line; and, with the `async` feature, hdmi-hal-async's
+traits on the same handles. Testing the stack's procedures against the bench comes next. The
 design is in [`doc/architecture.md`](doc/architecture.md), and the order in which the rest is
 built is on the [roadmap](doc/roadmap.md).
 

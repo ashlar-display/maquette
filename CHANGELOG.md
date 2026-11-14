@@ -111,6 +111,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   after `configure` until `set_scrambling`); every call is an `Event::Phy` (a failure as
   `PhyErrorKind::Coupled`), a bench event, and counts against the budget. `get_ref`,
   `get_mut` and `into_inner` reach `P`.
+- **The async handles** (`async` feature): `Ddc` implements hdmi-hal-async's `SendDdcBus`,
+  `Time` its `SendDelay`, and `Phy` its `SendTmdsPhy`, `SendFrlPhy` and `SendPhyPower`; the
+  plain async traits follow through hdmi-hal-async's blanket implementations. Each async
+  method runs its sync counterpart when first polled, so the futures are `Send` and complete
+  with any executor. hdmi-hal-async is re-exported as `maquette::hdmi_hal_async`.
 - **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
   written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
   (`Fail(kind)`, or `Slow(d)`) and a `Point` (`Before` the sink sees it, `After` it applied

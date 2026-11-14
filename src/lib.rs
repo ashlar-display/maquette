@@ -16,7 +16,8 @@
 //! serve the test; the simulated [`Phy`], or any PHY [`Coupled`] to the bench, drives the
 //! line; scheduled [`Fault`]s fail
 //! operations; an operation budget ends a test
-//! that loops forever. The rest of the design is in `doc/architecture.md`.
+//! that loops forever. With the `async` feature the handles implement hdmi-hal-async's
+//! traits too. The rest of the design is in `doc/architecture.md`.
 //!
 //! # Features
 //!
@@ -30,6 +31,8 @@
 #![deny(missing_docs)]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "async")]
+mod asynch;
 mod bench;
 pub mod check;
 mod clock;
@@ -81,6 +84,9 @@ pub use hdmi_hal::phy::{
     TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo,
 };
 pub use hdmi_hal::{ColorBitDepth, ColorFormat, HdmiForumFrl};
+/// hdmi-hal-async, whose traits the handles implement with the `async` feature.
+#[cfg(feature = "async")]
+pub use hdmi_hal_async;
 
 /// The hdmi-hal time types `SimClock` implements and returns, re-exported so a test names
 /// the same versions maquette does without depending on hdmi-hal itself.

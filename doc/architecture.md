@@ -1016,8 +1016,14 @@ a platform whose real delays should be few or short.
 
 - **`std`:** critical-section's `std` implementation, and the concurrent-call `DdcBus`
   check (threads). Not a default feature, as across the stack: a host test enables it.
-- **`async`:** hdmi-hal-async's traits and their `Send` twins on the same handles; the
-  cancellation harness when it comes.
+- **`async`:** hdmi-hal-async's traits on the same handles: `Ddc` implements `SendDdcBus`,
+  `Time` `SendDelay`, and `Phy` `SendTmdsPhy`, `SendFrlPhy` and `SendPhyPower`, and the
+  plain async traits come through hdmi-hal-async's blanket implementations. The bench is
+  synchronous: each async method runs its sync counterpart when its future is first
+  polled, and the future is then ready, so an async procedure runs with any executor and
+  its futures are `Send`. hdmi-hal-async is re-exported as `maquette::hdmi_hal_async`.
+  `Coupled<P>` stays synchronous: an async PHY coupled to the line would need a coupling of
+  its own. The cancellation harness comes with this feature before the first release.
 - **`embedded-hal`** (planned): the message-level sink.
 
 CI builds each `no_std` feature set for a bare target (`thumbv7em-none-eabi`): a host build
