@@ -173,7 +173,7 @@ impl Run {
         let earlier = self.last;
         let later = clock.now();
         self.report
-            .point((later < earlier).then_some(ClockFailure::WentBackwards { earlier, later }));
+            .record((later < earlier).then_some(ClockFailure::WentBackwards { earlier, later }));
         self.last = later;
         later
     }
@@ -184,7 +184,7 @@ impl Run {
         let before = self.last;
         let after = self.read(clock);
         let elapsed = after.saturating_duration_since(before);
-        self.report.point(
+        self.report.record(
             (elapsed < requested).then_some(ClockFailure::DelayTooShort { requested, elapsed }),
         );
     }

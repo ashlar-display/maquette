@@ -140,7 +140,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Re-exports of `hdmi_hal` itself and its DDC types (`DdcBus`, `DdcCapabilities`,
   `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`).
 - **`check::Report`**, what every check returns: the points run, every failed point counted,
-  the first 16 recorded in the order found, and `assert_ok`, which panics listing them.
+  the first 16 recorded in the order found, and `assert_ok`, which panics listing them. A
+  check of another crate's own trait that runs against the bench builds one with
+  `Report::new` and `record`, so its users get the same report.
 
 ### Internal
 

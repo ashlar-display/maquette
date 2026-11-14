@@ -17,8 +17,10 @@ pub struct Report<F, const N: usize = 16> {
 }
 
 impl<F, const N: usize> Report<F, N> {
-    /// An empty report: no points run.
-    pub(crate) fn new() -> Self {
+    /// An empty report: no points run. For a check of its own: a crate whose trait runs its
+    /// conformance check against the bench builds its report with this and
+    /// [`record`](Self::record), so its users get the same report maquette's checks give.
+    pub fn new() -> Self {
         Self {
             recorded: core::array::from_fn(|_| None),
             len: 0,
@@ -27,8 +29,8 @@ impl<F, const N: usize> Report<F, N> {
         }
     }
 
-    /// Records a point: passed when `failure` is `None`.
-    pub(crate) fn point(&mut self, failure: Option<F>) {
+    /// Records a point: passed when `failure` is `None`, failed with it otherwise.
+    pub fn record(&mut self, failure: Option<F>) {
         self.points = self.points.saturating_add(1);
         if let Some(failure) = failure {
             self.failed = self.failed.saturating_add(1);
@@ -76,6 +78,12 @@ impl<F, const N: usize> Report<F, N> {
     }
 }
 
+impl<F, const N: usize> Default for Report<F, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<F: fmt::Display, const N: usize> fmt::Display for Report<F, N> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if self.is_ok() {
@@ -102,7 +110,7 @@ mod tests {
     fn report<const N: usize>(results: &[Option<u32>]) -> Report<u32, N> {
         let mut report = Report::new();
         for &result in results {
-            report.point(result);
+            report.record(result);
         }
         report
     }
@@ -154,7 +162,7 @@ mod tests {
     fn the_default_capacity_is_16() {
         let mut report: Report<u32> = Report::new();
         for n in 0..20 {
-            report.point(Some(n));
+            report.record(Some(n));
         }
         assert_eq!(report.failures().count(), 16);
         assert_eq!(report.overflow(), 4);

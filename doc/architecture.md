@@ -917,6 +917,10 @@ values a procedure would get, and returns a `Report` of its own failure type:
 pub struct Report<F, const N: usize = 16> { /* private */ }
 
 impl<F, const N: usize> Report<F, N> {
+    /// An empty report, and a point recorded in it: for a check of a crate's own trait
+    /// that runs against the bench, so its users get the report maquette's checks give.
+    pub fn new() -> Self;
+    pub fn record(&mut self, failure: Option<F>);
     /// Whether every point passed.
     pub fn is_ok(&self) -> bool;
     /// How many points the check ran.
