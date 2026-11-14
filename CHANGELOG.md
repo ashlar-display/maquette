@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `d` later. `Sync`, `const`-constructible, and implemented for `&SimClock` too, so one
   clock is passed as both clock and delay.
 - Re-exports of hdmi-hal's `Clock`, `Delay` and `Timestamp`.
+- **The clock check** (`check::clock`): the conformance check for implementations of
+  hdmi-hal's `Clock` and `Delay`, passed as two values. Every read of the clock must be no
+  earlier than the one before it, and every delay must advance the clock by at least its
+  duration, so a frozen clock fails. `check::ClockCheck` sets the delays (by default 0, 1 ns,
+  1 µs, 999 µs, 1 ms, 1.001 ms and 10 ms) and the reads in a row (1000); with `async`,
+  `run_async` checks an async delay, its `Send` twin included. Failures are
+  `check::ClockFailure` values.
+- **`check::Report`**, what every check returns: the points run, every failed point counted,
+  the first 16 recorded in the order found, and `assert_ok`, which panics listing them.
 
 ### Internal
 

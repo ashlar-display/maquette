@@ -10,6 +10,14 @@ parts are built.
   a tick waits at least its duration, saturation at the largest `Timestamp`, monotonic
   reads over mixed delays and advances, the reference implementations, `Send` and `Sync`,
   sharing between threads, and use in a `static`.
+- **`src/check/report.rs`** — `Report`: points and failures counted, failures recorded in
+  order up to the capacity and counted past it (a capacity of 0 included), the default
+  capacity, the printed form, `Display` on a failing writer, and `assert_ok`'s panic.
+- **`src/check/clock.rs`** — the clock check: `SimClock` passes with the defaults and with
+  coarse ticks and overshoots; broken doubles fail with the points expected — a frozen
+  clock, a delay that waits half, a clock that counts down on every read, a delay that moves
+  the clock back; the settings; the async form, through `Delay` and through the `Send` twin
+  (with `async`).
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed

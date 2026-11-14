@@ -24,7 +24,8 @@ conformance checks that an implementation of hdmi-hal's traits runs in its own t
 
 ## Status
 
-In development. Built so far: `SimClock`, hdmi-hal's clock and delay on simulated time. The
+In development. Built so far: `SimClock`, hdmi-hal's clock and delay on simulated time, and
+the conformance check for clock and delay implementations. The
 design is in [`doc/architecture.md`](doc/architecture.md), and the order in which the rest is
 built is on the [roadmap](doc/roadmap.md).
 
@@ -70,6 +71,21 @@ assert_eq!(clock.now(), Timestamp::from_micros(3_300));
 
 `SimClock` is `Sync` and can be a `static`. With the `std` feature a host supplies its
 critical section; on a bare target the application supplies one.
+
+An implementation of hdmi-hal's clock and delay runs the conformance check in its own tests.
+It reports every point that failed, not just the first:
+
+```rust
+use maquette::{SimClock, check};
+
+// Your platform's clock and delay; one `SimClock` serves as both here.
+let clock = SimClock::new();
+let report = check::clock(&clock, &mut &clock);
+report.assert_ok(); // panics listing every failed point
+```
+
+`check::ClockCheck` chooses the delays and reads the check runs, for a platform whose real
+delays should be few or short; with the `async` feature, `run_async` checks an async delay.
 
 ## Features
 
