@@ -92,7 +92,6 @@ impl<'a> Eddc<'a> {
             None => match self.past_store {
                 PastStore::Fill => Ok(FILL),
                 PastStore::Wrap => Ok(store[index % store.len()]),
-                PastStore::Nack => Err(NACK_DATA),
             },
         }
     }

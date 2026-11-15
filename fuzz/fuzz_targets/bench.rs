@@ -155,10 +155,10 @@ impl Input<'_> {
         if a & 0x80 != 0 {
             config = config.with_enable_timeout(None);
         }
-        config = config.with_past_store(match b % 3 {
-            0 => PastStore::Fill,
-            1 => PastStore::Wrap,
-            _ => PastStore::Nack,
+        config = config.with_past_store(if b % 2 == 0 {
+            PastStore::Fill
+        } else {
+            PastStore::Wrap
         });
         config = config.with_scrambling_lock(match (b >> 2) % 3 {
             0 => Trigger::After(Duration::from_millis(1)),

@@ -420,7 +420,8 @@ impl Target for Scdc {
     /// the offset. The offset advances with every byte and persists between transactions,
     /// so a read with no offset written reads where the last transaction stopped (*chosen*:
     /// every source surveyed writes the offset first).
-    /// Past 0xFF a burst wraps to 0x00, or with `ScdcPastEnd::Nack` fails on the next byte.
+    /// Past 0xFF a burst wraps to 0x00, or with `ScdcPastEnd::Nack` a write fails on the next
+    /// byte; a read always wraps.
     fn transaction(
         &mut self,
         ops: &mut [Operation<'_>],
@@ -440,7 +441,6 @@ impl Scdc {
         mut hook: Option<&mut (dyn ScdcHook + Send)>,
     ) -> Result<(), DdcErrorKind> {
         self.evaluate(env, false);
-        let mut past_end = false;
         let refuse_past_end = self.past_end == ScdcPastEnd::Nack;
         for op in ops.iter_mut() {
             match op {
@@ -449,7 +449,7 @@ impl Scdc {
                         continue;
                     };
                     self.offset = offset;
-                    past_end = false;
+                    let mut past_end = false;
                     for &value in data {
                         if past_end && refuse_past_end {
                             return Err(NACK_DATA);
@@ -485,9 +485,6 @@ impl Scdc {
                 }
                 Operation::Read { addr: SCDC, buf } => {
                     for byte in buf.iter_mut() {
-                        if past_end && refuse_past_end {
-                            return Err(NACK_DATA);
-                        }
                         if self.offset == SCRAMBLING_STATUS {
                             self.evaluate(env, true);
                         }
@@ -498,7 +495,8 @@ impl Scdc {
                             }
                             None => value,
                         };
-                        past_end |= self.advance();
+                        // A read wraps past 0xFF: the sink cannot refuse a byte it sends.
+                        self.advance();
                     }
                 }
                 _ => {

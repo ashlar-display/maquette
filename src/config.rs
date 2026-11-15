@@ -318,12 +318,15 @@ pub enum OwnedWrite {
 pub enum ScdcPastEnd {
     /// The offset wraps to 0x00, as an 8-bit offset register does (*chosen* default).
     Wrap,
-    /// The byte past 0xFF fails `NoAcknowledge(Data)`, the bytes before it done.
+    /// A write's byte past 0xFF fails `NoAcknowledge(Data)`, the bytes before it done; a
+    /// read wraps, since the sink cannot refuse a byte it sends (DDC/CI 1.1 §1.6).
     Nack,
 }
 
 /// What a read past the end of the EDID or DisplayID store does, in a segment the sink has.
-/// VESA E-DDC 1.3 covers only the data a display has.
+/// VESA E-DDC 1.3 covers only the data a display has. A read goes on with data: the host
+/// acknowledges each byte it reads, so the display cannot refuse one (DDC/CI 1.1 §1.6: the
+/// acknowledge bit goes the other way to the data).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum PastStore {
@@ -331,8 +334,6 @@ pub enum PastStore {
     Fill,
     /// Wraps to the start of the store.
     Wrap,
-    /// The first byte past the store fails `NoAcknowledge(Data)`, the bytes before it read.
-    Nack,
 }
 
 /// What the sink does with a segment pointer value for a segment it does not have. VESA

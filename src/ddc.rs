@@ -87,7 +87,15 @@ impl<'b> Ddc<'b> {
                     ..
                 },
             ) if usize::from(byte) < data => {
-                let (mut cut, n) = cut(ops, usize::from(byte));
+                let byte = match strike.effect {
+                    // The host acknowledges each byte it reads, so a NACK cannot fall in a
+                    // read's data (DDC/CI 1.1 §1.6): it falls on the read's address byte.
+                    Effect::Fail(DdcErrorKind::NoAcknowledge(_)) => {
+                        read_start(ops, usize::from(byte))
+                    }
+                    _ => usize::from(byte),
+                };
+                let (mut cut, n) = cut(ops, byte);
                 let (result, reach) = self.core.transaction(record, &mut cut[..n], Some(strike));
                 (result, wire(reach, &cut[..n]))
             }
@@ -134,6 +142,23 @@ impl<'b> Ddc<'b> {
             BusError::from_record(&record, kind)
         })
     }
+}
+
+/// Where data byte `byte`, counted across the operations, is cut for a NACK: at the start of
+/// its operation's data when it falls in a read, as is.
+fn read_start(ops: &[Operation<'_>], byte: usize) -> usize {
+    let mut before = 0;
+    for op in ops {
+        let len = op.len();
+        if byte < before + len {
+            return match op {
+                Operation::Read { .. } => before,
+                Operation::Write { .. } => byte,
+            };
+        }
+        before += len;
+    }
+    byte
 }
 
 /// XORs read byte `byte`, counted across the operations' read data, with `xor`, if the

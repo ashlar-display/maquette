@@ -186,7 +186,7 @@ fn reads_past_the_store_fill_with_0xff_by_default() {
 }
 
 #[test]
-fn reads_past_the_store_can_wrap_or_be_refused() {
+fn reads_past_the_store_can_wrap() {
     let edid: [u8; 128] = store();
     let config = SinkConfig::new().with_past_store(PastStore::Wrap);
     assert_eq!(config.past_store(), PastStore::Wrap);
@@ -197,17 +197,6 @@ fn reads_past_the_store_can_wrap_or_be_refused() {
         .read_segmented(EddcTarget::Edid, 0, 0x7E, &mut buf)
         .unwrap();
     assert_eq!(buf, [edid[0x7E], edid[0x7F], edid[0], edid[1]]);
-
-    let bench = Bench::new(SinkConfig::new().with_past_store(PastStore::Nack), &edid).unwrap();
-    let error = bench
-        .ddc()
-        .read_segmented(EddcTarget::Edid, 0, 0x7E, &mut buf)
-        .unwrap_err();
-    assert_eq!(error.kind, NACK_DATA);
-    // The bytes before the store's end were read; the offset stopped at the end.
-    let mut next = [0u8; 1];
-    let error = bench.ddc().read(EDID, &mut next).unwrap_err();
-    assert_eq!(error.kind, NACK_DATA);
 }
 
 #[test]

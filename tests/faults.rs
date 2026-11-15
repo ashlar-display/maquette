@@ -97,18 +97,36 @@ fn partway_the_bytes_before_it_go_through() {
 
 #[test]
 fn partway_through_a_read_the_whole_buffer_is_the_pattern() {
+    // A timeout (a clock stretched too long) can cut a read.
+    let bench = bench();
+    bench
+        .schedule(fail(DdcErrorKind::Timeout).at(Point::Partway { byte: 3 }))
+        .unwrap();
+    let mut buf = [0u8; 4];
+    // One byte written (the offset), then the read cut after two bytes.
+    let error = bench.ddc().write_read(EDID, &[0x10], &mut buf).unwrap_err();
+    assert_eq!(error.kind, DdcErrorKind::Timeout);
+    assert_eq!(buf, [0xA5; 4]);
+    // The sink's offset advanced past the two bytes it sent.
+    bench.ddc().read(EDID, &mut buf[..1]).unwrap();
+    assert_eq!(buf[0], 0x12);
+}
+
+#[test]
+fn a_nack_partway_through_a_read_falls_on_its_address_byte() {
+    // The host acknowledges the bytes it reads: the display can refuse only the read's
+    // address byte, so none of the read's data goes out.
     let bench = bench();
     bench
         .schedule(fail(NACK_DATA).at(Point::Partway { byte: 3 }))
         .unwrap();
     let mut buf = [0u8; 4];
-    // One byte written (the offset), then the read cut after two bytes.
     let error = bench.ddc().write_read(EDID, &[0x10], &mut buf).unwrap_err();
     assert_eq!(error.kind, NACK_DATA);
     assert_eq!(buf, [0xA5; 4]);
-    // The sink's offset advanced past the two bytes it sent.
+    // The sink sent nothing: its offset is where the write set it.
     bench.ddc().read(EDID, &mut buf[..1]).unwrap();
-    assert_eq!(buf[0], 0x12);
+    assert_eq!(buf[0], 0x10);
 }
 
 #[test]

@@ -38,7 +38,7 @@ parts are built.
   the offset persisting; SCDC through `ScdcOverDdc`; update flags cleared by writing them
   back; the sink's registers ignored or refused; the manufacturer's block past its
   identification stored; registers outside the modelled set; bursts
-  past 0xFF wrapping or refused; presets; the `Sink_Version` setting; a sink without SCDC; a
+  past 0xFF wrapping or, for writes, refused, reads wrapping either way; presets; the `Sink_Version` setting; a sink without SCDC; a
   test's target at 0x54 replacing the built-in one; the settings and the `Sink` view.
 - **`src/eddc.rs`** — the E-DDC transactions the bus never makes: several pointer bytes,
   empty writes, a second address; a missing DisplayID store.
@@ -51,7 +51,7 @@ parts are built.
   through the pointer, whole and split into pieces; the word offset persisting for
   current-address reads; the pointer reset between transactions and not readable; a sink
   without a pointer (E-DDC 8.1.2); missing segments refused or read past the store, and a
-  segment present in one store only; reads past the store filled, wrapped or refused; the
+  segment present in one store only; reads past the store filled or wrapped; the
   128-byte boundary continued or wrapped; writes after the offset ignored and recorded; an
   empty EDID; the DisplayID's own store and offset, and its length check.
 - **`tests/events.rs`** — bench events: the line starting off and its changes recorded once
@@ -81,7 +81,8 @@ parts are built.
   the lock; a status reset re-arming it while a preset still holds; each change of the
   status recorded once; the groups and their defaults.
 - **`tests/faults.rs`** — faults: before (nothing applied, the address byte charged), after
-  (the write latched), partway through a write and a read (the buffer the pattern) and past
+  (the write latched), partway through a write and a read (the buffer the pattern), a NACK
+  partway through a read falling on its address byte, and past
   the last byte; `nth` with a count and until cleared; filters; refused, empty and detached
   calls not counting, unplugged ones counting; each piece of a split read an operation;
   the first scheduled fault striking while every fault counts; a full schedule; a fault

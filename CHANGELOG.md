@@ -73,7 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ignored and recorded; a sink without a pointer answers segment 0 only; an empty store does
   not answer. `BenchBuilder::displayid` gives the DisplayID store, checked like the EDID's
   (`BenchError::DisplayIdLength`). `SinkConfig` gains `without_segment_pointer`,
-  `with_past_store` (`PastStore::Fill`, reading 0xFF, by default; `Wrap`, `Nack`),
+  `with_past_store` (`PastStore::Fill`, reading 0xFF, by default; `Wrap`: the display
+  cannot refuse a byte it sends),
   `with_missing_segment` (`MissingSegment::Nack` by default; `Ack`) and
   `with_block_boundary` (`BlockBoundary::Continue` by default; `Wrap`), with getters.
 - **The line and the sink's events:** `Line` (`Off`, `Tmds` with rate, ratio and
@@ -143,7 +144,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
   written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
   (`Fail(kind)`, `Slow(d)`, or `Corrupt { byte, xor }`, a read byte garbled under an `Ok`) and a `Point` (`Before` the sink sees it, `After` it applied
-  it, `Partway { byte }`) — and returns a `FaultId` for `clear_fault`, or `ScheduleFull`
+  it, `Partway { byte }`; a NACK partway through a read falls on the read's address byte) —
+  and returns a `FaultId` for `clear_fault`, or `ScheduleFull`
   past `FAULTS`. An operation is one transaction; refused, empty and detached calls do not
   count. A timeout charges the bus's stretch timeout; a struck operation is charged for
   the bytes that went out; each strike is an `Event::Fault` after its bus record.
@@ -166,7 +168,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`SinkConfig`**, the sink's settings, with `const` builders and getters: `without_scdc`
   (nothing answers 0x54), `with_sink_version` (1 by default), `with_owned_scdc_writes`
   (`OwnedWrite::Ignore` by default, or `Nack`) and `with_scdc_past_end`
-  (`ScdcPastEnd::Wrap` by default, or `Nack`).
+  (`ScdcPastEnd::Wrap` by default, or `Nack`, which refuses a write's byte past 0xFF; a read
+  wraps either way).
 - Re-exports of `hdmi_hal` itself and its DDC types (`DdcBus`, `DdcCapabilities`,
   `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`). Every hdmi-hal type
   maquette's API names is re-exported, and listed as a re-export with hdmi-hal's own docs.

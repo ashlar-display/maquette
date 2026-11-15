@@ -254,19 +254,18 @@ fn bursts_past_0xff_wrap_by_default() {
 }
 
 #[test]
-fn bursts_past_0xff_can_be_refused() {
+fn write_bursts_past_0xff_can_be_refused_and_reads_wrap() {
     let bench = bench(SinkConfig::new().with_scdc_past_end(ScdcPastEnd::Nack));
     let bus = bench.ddc();
     bench.preset_scdc(0xFF, 0x07);
-    let mut buf = [0u8; 2];
-    bus.write_read(SCDC, &[0xFE], &mut buf).unwrap();
-    assert_eq!(buf, [0x00, 0x07]);
+    bench.preset_scdc(0x00, 0x09);
+    // A read wraps: the sink cannot refuse a byte it sends.
     let mut buf = [0u8; 3];
-    let error = bus.write_read(SCDC, &[0xFE], &mut buf).unwrap_err();
-    assert_eq!(error.kind, NACK_DATA);
+    bus.write_read(SCDC, &[0xFE], &mut buf).unwrap();
+    assert_eq!(buf, [0x00, 0x07, 0x09]);
     let error = bus.write(SCDC, &[0xFF, 0x11, 0x22]).unwrap_err();
     assert_eq!(error.kind, NACK_DATA);
-    assert_eq!(bench.sink().scdc(0x00), Some(0));
+    assert_eq!(bench.sink().scdc(0x00), Some(0x09));
     // A new transaction starts again at its own offset.
     bus.write(SCDC, &[0x00, 0x33]).unwrap();
     assert_eq!(bench.sink().scdc(0x00), Some(0x33));

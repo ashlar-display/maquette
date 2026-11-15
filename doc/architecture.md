@@ -623,8 +623,8 @@ source settles is marked *chosen*.
 | Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset; the rule that sets them a setting, with the status flags and FRL responses they report |
 | A sink without SCDC | one source: a failed `Source_Version` write means no SCDC [7] | NACKs 0x54 (*chosen*) |
 | A write to an SCDC register the sink owns | no source | a setting: acknowledged and ignored, recorded (*chosen*), or `NoAcknowledge(Data)` at that byte |
-| An SCDC read or write past 0xFF | left to the sink: hdmi-hal's `ScdcTransport` leaves it open, and no source covers it | a setting: the offset wraps to 0x00 (*chosen*, an 8-bit offset register), or `NoAcknowledge(Data)` past 0xFF |
-| A read past the end of the EDID or DisplayID store, in a segment the sink has | E-DDC covers only the data a display has | a setting: reads 0xFF (*chosen*), wraps to the start of the store, or `NoAcknowledge(Data)` |
+| An SCDC read or write past 0xFF | left to the sink: hdmi-hal's `ScdcTransport` leaves it open, and no source covers it | a setting: the offset wraps to 0x00 (*chosen*, an 8-bit offset register), or a write's byte past 0xFF fails `NoAcknowledge(Data)`; a read always wraps, since the host acknowledges the bytes it reads (DDC/CI 1.1 §1.6) |
+| A read past the end of the EDID or DisplayID store, in a segment the sink has | E-DDC covers only the data a display has; the host acknowledges the bytes it reads, so the display cannot refuse one (DDC/CI 1.1 §1.6) | a setting: reads 0xFF (*chosen*), or wraps to the start of the store |
 | A segment the sink does not have | E-DDC requires an acknowledge of the pointer for segments that exist (§6.4–§6.5), not what follows for others | a setting: `NoAcknowledge(Data)` at the pointer value (*chosen*, as hdmi-hal's `DdcBus` contract reads it), or acknowledged and read as past the store |
 | Reading across the 128-byte boundary at 0x50 or 0x52 | "some implementations may support" it (E-DDC 1.3 §2.2.6) | a setting: continues into the next block (*chosen*), or wraps to the start of the block |
 
@@ -920,7 +920,9 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
   - **partway**, at data byte *k* of the transaction, counted across its operations: the
     target sees the transaction cut there (a write's first *k* bytes; a read shortened; the
     operations after it dropped), then the fault's error is returned. A transaction of *k*
-    data bytes or fewer is struck after.
+    data bytes or fewer is struck after. A `NoAcknowledge` cannot fall in a read's data, the
+    host acknowledging the bytes it reads (DDC/CI 1.1 §1.6): it falls on the read's address
+    byte, before any of its data; a timeout, busy or other kind cuts the read where it is.
 - **Effects:**
   - `Fail(kind)`: the call fails with `kind`. A NACK carries its `NoAcknowledgeSource`; a
     timeout also charges the bus's `stretch_timeout_us` where its capabilities give one; a
