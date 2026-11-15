@@ -27,6 +27,8 @@ mod phy;
 mod report;
 mod scdc;
 
+#[cfg(feature = "std")]
+pub use clock::HostClock;
 pub use clock::{ClockCheck, ClockFailure, clock};
 pub use ddc::{DdcBusCheck, DdcBusFailure, DdcDevice};
 pub use phy::{NoProbe, OutputProbe, PhyCheck, PhyFailure, PhyPoint};

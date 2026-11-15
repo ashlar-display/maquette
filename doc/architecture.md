@@ -1019,7 +1019,16 @@ impl<'a> ClockCheck<'a> {
     where
         C: Clock + ?Sized,
         D: hdmi_hal_async::time::Delay + ?Sized;
+
+    /// Each delay measured on `reference` too, a clock the test trusts.
+    pub fn run_with_reference<C, D, R>(&self, clock: &C, delay: &mut D, reference: &R,
+        tolerance: Duration) -> Report<ClockFailure>
+    where C: Clock + ?Sized, D: Delay + ?Sized, R: Clock;
+    // run_with_reference_async with the `async` feature.
 }
+
+/// With `std`: `std::time::Instant` from its creation, a reference on a host.
+pub struct HostClock { /* … */ }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1028,6 +1037,10 @@ pub enum ClockFailure {
     WentBackwards { earlier: Timestamp, later: Timestamp },
     /// Across `delay(requested)`, the clock advanced only `elapsed`.
     DelayTooShort { requested: Duration, elapsed: Duration },
+    /// The reference advanced short of `requested` by more than the tolerance.
+    DelayTooShortOnReference { requested: Duration, elapsed: Duration },
+    /// The clock and the reference advanced further apart than the tolerance.
+    Drift { requested: Duration, clock: Duration, reference: Duration },
 }
 ```
 
@@ -1037,6 +1050,13 @@ the read after it (`DelayTooShort`). A clock that never advances fails every del
 zero one. The delays run in the order given, so a coarse clock or a timer with a long
 minimum delay is checked at the durations its procedures use; `with_delays` sets them, for
 a platform whose real delays should be few or short.
+
+The clock alone cannot show its rate: a wrong timer frequency scales the clock and every
+delay measured on it alike, so a clock and delay 1000 times fast pass. `run_with_reference`
+reads a clock the test trusts around each delay too (on a host, `HostClock`; on a board,
+another timer): the delay must take at least the time asked on it (`DelayTooShortOnReference`),
+and the clock must advance as far as the reference (`Drift`), each within a tolerance for
+the reads between them and the reference's resolution.
 
 ### The checks for hdmi-hal's traits
 

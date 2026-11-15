@@ -17,7 +17,8 @@ parts are built.
   coarse ticks and overshoots; broken doubles fail with the points expected — a frozen
   clock, a delay that waits half, a clock that counts down on every read, a delay that moves
   the clock back; the settings; the async form, through `Delay` and through the `Send` twin
-  (with `async`).
+  (with `async`); against the host's clock (with `std`), a host clock passing, a clock 1000
+  times fast and simulated time caught, the async form; the reference's failures printed.
 - **`src/transcript.rs`** — the transcript's storage: order, overflow past the capacity
   (a capacity of 0 included), clearing, and completing a bus record's result.
 - **`tests/bus.rs`** — the bench's DDC bus over targets the test defines: routing to the

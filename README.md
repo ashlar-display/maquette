@@ -92,6 +92,8 @@ report.assert_ok(); // panics listing every failed point
 
 `check::ClockCheck` chooses the delays and reads the check runs, for a platform whose real
 delays should be few or short; with the `async` feature, `run_async` checks an async delay.
+The clock alone cannot show its rate: `run_with_reference` measures each delay on a clock
+the test trusts too, such as `check::HostClock` on a host (with `std`).
 
 ## Features
 

@@ -32,6 +32,12 @@ pub fn clock<C: Clock + ?Sized, D: Delay + ?Sized>(
 /// The delays run in the order given. On a real timer they take real time, so a platform
 /// whose delays should be few or short sets its own with [`with_delays`](Self::with_delays),
 /// for instance the durations its procedures use.
+///
+/// The clock alone cannot show that it runs at the right rate: a wrong timer frequency
+/// scales the clock and the delays measured on it alike. With a clock the test trusts,
+/// [`run_with_reference`](Self::run_with_reference) measures each delay on it too
+/// ([`ClockFailure::DelayTooShortOnReference`], [`ClockFailure::Drift`]); on a host, the
+/// `HostClock` the `std` feature adds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct ClockCheck<'a> {
@@ -80,12 +86,40 @@ impl<'a> ClockCheck<'a> {
         clock: &C,
         delay: &mut D,
     ) -> Report<ClockFailure> {
-        let mut run = Run::start(clock);
+        self.run_measured(clock, delay, None)
+    }
+
+    /// Runs the check against `clock` and `delay`, measuring each delay on `reference` too,
+    /// a clock the test trusts: the delay must take at least the time asked on it, and
+    /// `clock` must advance as far as it does, each within `tolerance` (the reads around a
+    /// delay take time, and a reference has its own resolution).
+    pub fn run_with_reference<C, D, R>(
+        &self,
+        clock: &C,
+        delay: &mut D,
+        reference: &R,
+        tolerance: Duration,
+    ) -> Report<ClockFailure>
+    where
+        C: Clock + ?Sized,
+        D: Delay + ?Sized,
+        R: Clock,
+    {
+        self.run_measured(clock, delay, Some((reference, tolerance)))
+    }
+
+    fn run_measured<C: Clock + ?Sized, D: Delay + ?Sized>(
+        &self,
+        clock: &C,
+        delay: &mut D,
+        reference: Option<(&dyn Clock, Duration)>,
+    ) -> Report<ClockFailure> {
+        let mut run = Run::start(clock, reference);
         for _ in 0..self.reads {
             run.read(clock);
         }
         for &duration in self.delays {
-            run.read(clock);
+            run.before_delay(clock);
             delay.delay(duration);
             run.after_delay(clock, duration);
         }
@@ -104,12 +138,44 @@ impl<'a> ClockCheck<'a> {
         C: Clock + ?Sized,
         D: hdmi_hal_async::time::Delay + ?Sized,
     {
-        let mut run = Run::start(clock);
+        self.run_measured_async(clock, delay, None).await
+    }
+
+    /// [`run_with_reference`](Self::run_with_reference) with an async `delay`.
+    #[cfg(feature = "async")]
+    pub async fn run_with_reference_async<C, D, R>(
+        &self,
+        clock: &C,
+        delay: &mut D,
+        reference: &R,
+        tolerance: Duration,
+    ) -> Report<ClockFailure>
+    where
+        C: Clock + ?Sized,
+        D: hdmi_hal_async::time::Delay + ?Sized,
+        R: Clock,
+    {
+        self.run_measured_async(clock, delay, Some((reference, tolerance)))
+            .await
+    }
+
+    #[cfg(feature = "async")]
+    async fn run_measured_async<C, D>(
+        &self,
+        clock: &C,
+        delay: &mut D,
+        reference: Option<(&dyn Clock, Duration)>,
+    ) -> Report<ClockFailure>
+    where
+        C: Clock + ?Sized,
+        D: hdmi_hal_async::time::Delay + ?Sized,
+    {
+        let mut run = Run::start(clock, reference);
         for _ in 0..self.reads {
             run.read(clock);
         }
         for &duration in self.delays {
-            run.read(clock);
+            run.before_delay(clock);
             delay.delay(duration).await;
             run.after_delay(clock, duration);
         }
@@ -135,6 +201,24 @@ pub enum ClockFailure {
         /// How far the clock advanced across it.
         elapsed: Duration,
     },
+    /// Across `delay(requested)`, the reference advanced only `elapsed`, short of it by
+    /// more than the tolerance.
+    DelayTooShortOnReference {
+        /// The duration asked of the delay.
+        requested: Duration,
+        /// How far the reference advanced across it.
+        elapsed: Duration,
+    },
+    /// Across `delay(requested)`, the clock and the reference advanced by amounts further
+    /// apart than the tolerance: the clock runs at the wrong rate.
+    Drift {
+        /// The duration asked of the delay.
+        requested: Duration,
+        /// How far the clock advanced.
+        clock: Duration,
+        /// How far the reference advanced.
+        reference: Duration,
+    },
 }
 
 impl fmt::Display for ClockFailure {
@@ -150,21 +234,46 @@ impl fmt::Display for ClockFailure {
                 f,
                 "delay({requested:?}) advanced the clock only {elapsed:?}"
             ),
+            Self::DelayTooShortOnReference { requested, elapsed } => write!(
+                f,
+                "delay({requested:?}) took only {elapsed:?} on the reference"
+            ),
+            Self::Drift {
+                requested,
+                clock,
+                reference,
+            } => write!(
+                f,
+                "across delay({requested:?}) the clock advanced {clock:?}, the reference {reference:?}"
+            ),
         }
     }
 }
 
-/// The state of one run: the last read and the report so far.
-struct Run {
+/// The state of one run: the last read, the reference with its tolerance and its read before
+/// the delay running, and the report so far.
+struct Run<'r> {
     last: Timestamp,
+    reference: Option<(&'r dyn Clock, Duration)>,
+    reference_before: Timestamp,
     report: Report<ClockFailure>,
 }
 
-impl Run {
-    fn start<C: Clock + ?Sized>(clock: &C) -> Self {
+impl<'r> Run<'r> {
+    fn start<C: Clock + ?Sized>(clock: &C, reference: Option<(&'r dyn Clock, Duration)>) -> Self {
         Self {
             last: clock.now(),
+            reference,
+            reference_before: Timestamp::from_micros(0),
             report: Report::new(),
+        }
+    }
+
+    /// Reads the clock, then the reference, before a delay.
+    fn before_delay<C: Clock + ?Sized>(&mut self, clock: &C) {
+        self.read(clock);
+        if let Some((reference, _)) = self.reference {
+            self.reference_before = reference.now();
         }
     }
 
@@ -182,11 +291,62 @@ impl Run {
     /// since the read before the delay.
     fn after_delay<C: Clock + ?Sized>(&mut self, clock: &C, requested: Duration) {
         let before = self.last;
+        let reference_after = self.reference.map(|(reference, _)| reference.now());
         let after = self.read(clock);
         let elapsed = after.saturating_duration_since(before);
         self.report.record(
             (elapsed < requested).then_some(ClockFailure::DelayTooShort { requested, elapsed }),
         );
+        if let (Some((_, tolerance)), Some(reference_after)) = (self.reference, reference_after) {
+            let measured = reference_after.saturating_duration_since(self.reference_before);
+            self.report
+                .record((measured.saturating_add(tolerance) < requested).then_some(
+                    ClockFailure::DelayTooShortOnReference {
+                        requested,
+                        elapsed: measured,
+                    },
+                ));
+            let apart = elapsed.abs_diff(measured);
+            self.report
+                .record((apart > tolerance).then_some(ClockFailure::Drift {
+                    requested,
+                    clock: elapsed,
+                    reference: measured,
+                }));
+        }
+    }
+}
+
+/// The host's clock, `std::time::Instant` from its creation: a reference for
+/// [`ClockCheck::run_with_reference`].
+#[cfg(feature = "std")]
+#[derive(Debug, Clone, Copy)]
+pub struct HostClock {
+    start: std::time::Instant,
+}
+
+#[cfg(feature = "std")]
+impl HostClock {
+    /// A clock reading 0 now.
+    pub fn new() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+        }
+    }
+}
+
+#[cfg(feature = "std")]
+impl Default for HostClock {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "std")]
+impl Clock for HostClock {
+    fn now(&self) -> Timestamp {
+        let micros = self.start.elapsed().as_micros();
+        Timestamp::from_micros(u64::try_from(micros).unwrap_or(u64::MAX))
     }
 }
 
@@ -465,5 +625,140 @@ mod tests {
             let report = pollster::block_on(ClockCheck::DEFAULT.run_async(&clock, &mut Frozen));
             assert_eq!(report.failed(), 6);
         }
+    }
+
+    #[cfg(feature = "std")]
+    mod reference {
+        use super::*;
+        use std::time::Instant;
+
+        /// The host's clock, and a delay that sleeps on it; reading nanoseconds as
+        /// microseconds when `fast`, a timer with the wrong frequency.
+        struct Host {
+            start: Instant,
+            fast: bool,
+        }
+
+        impl Clock for Host {
+            fn now(&self) -> Timestamp {
+                let elapsed = self.start.elapsed();
+                let micros = if self.fast {
+                    elapsed.as_nanos()
+                } else {
+                    elapsed.as_micros()
+                };
+                Timestamp::from_micros(micros as u64)
+            }
+        }
+
+        impl Delay for &Host {
+            fn delay(&mut self, duration: Duration) {
+                let until = self.now().checked_add(duration).unwrap();
+                while self.now() < until {
+                    std::thread::yield_now();
+                }
+            }
+        }
+
+        fn host(fast: bool) -> Host {
+            Host {
+                start: Instant::now(),
+                fast,
+            }
+        }
+
+        /// Wide enough for a busy host between two reads; the cases caught miss by ~10 ms.
+        const TOLERANCE: Duration = Duration::from_millis(5);
+
+        #[test]
+        fn a_host_clock_passes_against_the_host() {
+            let clock = host(false);
+            let report = ClockCheck::DEFAULT.run_with_reference(
+                &clock,
+                &mut &clock,
+                &HostClock::new(),
+                TOLERANCE,
+            );
+            report.assert_ok();
+            // Each delay adds the reference's two points.
+            assert_eq!(report.points(), DEFAULT_POINTS + 2 * 7);
+        }
+
+        #[test]
+        fn a_clock_1000_times_fast_is_caught() {
+            let clock = host(true);
+            let failures: std::vec::Vec<_> = ClockCheck::DEFAULT
+                .run_with_reference(&clock, &mut &clock, &HostClock::new(), TOLERANCE)
+                .failures()
+                .copied()
+                .collect();
+            // Its 10 ms delay takes about 10 µs.
+            assert!(failures.iter().any(|failure| matches!(
+                failure,
+                ClockFailure::DelayTooShortOnReference { requested, .. }
+                    if *requested == Duration::from_millis(10)
+            )));
+            assert!(failures.iter().any(|failure| matches!(
+                failure,
+                ClockFailure::Drift { requested, .. } if *requested == Duration::from_millis(10)
+            )));
+        }
+
+        #[cfg(feature = "async")]
+        #[test]
+        fn the_async_form_measures_on_the_reference_too() {
+            let bench = crate::Bench::new(crate::SinkConfig::new(), &[]).unwrap();
+            let delays = [Duration::from_millis(10)];
+            let check = ClockCheck::DEFAULT.with_delays(&delays);
+            let report = pollster::block_on(check.run_with_reference_async(
+                &bench.time(),
+                &mut bench.time(),
+                &HostClock::new(),
+                TOLERANCE,
+            ));
+            // The bench's time is simulated: its delay takes no host time.
+            assert!(
+                report.failures().any(|failure| matches!(
+                    failure,
+                    ClockFailure::DelayTooShortOnReference { .. }
+                ))
+            );
+        }
+
+        #[test]
+        fn simulated_time_is_not_host_time() {
+            let clock = SimClock::new();
+            let report = ClockCheck::DEFAULT
+                .with_delays(&[Duration::from_millis(10)])
+                .run_with_reference(&clock, &mut &clock, &HostClock::new(), TOLERANCE);
+            assert!(
+                report.failures().any(|failure| matches!(
+                    failure,
+                    ClockFailure::DelayTooShortOnReference { .. }
+                ))
+            );
+            assert!(HostClock::default().now() < Timestamp::from_micros(1_000_000));
+        }
+    }
+
+    #[test]
+    fn reference_failures_print_what_went_wrong() {
+        let short = ClockFailure::DelayTooShortOnReference {
+            requested: us(10_000),
+            elapsed: us(10),
+        };
+        assert_eq!(
+            short.to_string(),
+            "delay(10ms) took only 10µs on the reference"
+        );
+        let drift = ClockFailure::Drift {
+            requested: us(10_000),
+            clock: us(10_000),
+            reference: us(10),
+        };
+        assert_eq!(
+            drift.to_string(),
+            "across delay(10ms) the clock advanced 10ms, the reference 10µs"
+        );
     }
 }

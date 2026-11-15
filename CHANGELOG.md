@@ -22,8 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   earlier than the one before it, and every delay must advance the clock by at least its
   duration, so a frozen clock fails. `check::ClockCheck` sets the delays (by default 0, 1 ns,
   1 µs, 999 µs, 1 ms, 1.001 ms and 10 ms) and the reads in a row (1000); with `async`,
-  `run_async` checks an async delay, its `Send` twin included. Failures are
-  `check::ClockFailure` values.
+  `run_async` checks an async delay, its `Send` twin included.
+  `run_with_reference` (and its async form) measures each delay on a clock the test trusts
+  too, within a tolerance, so a clock running at the wrong rate fails; with `std`,
+  `check::HostClock` is one over `std::time::Instant`. Failures are `check::ClockFailure`
+  values.
 - **`Bench`**, the simulation a procedure runs against, built with `Bench::new` or
   `Bench::builder` (the sink's settings, the bus's capabilities and timing, the clock, the
   test's own targets, and the capacities, which default to 256 records and 16 faults). Its
