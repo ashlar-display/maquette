@@ -55,8 +55,16 @@ impl<'b> Ddc<'b> {
         Err(BusError::from_record(&record, DdcErrorKind::Unsupported))
     }
 
-    /// Runs one transaction, charges it, and returns its result as the call's.
+    /// Runs one transaction, charges it, and returns its result as the call's: one step,
+    /// which no other handle's call interleaves with.
     fn run(&self, record: BusRecord, ops: &mut [Operation<'_>]) -> Result<(), BusError> {
+        let mut result = None;
+        self.core
+            .serialized(&mut || result = Some(self.run_serialized(record, ops)));
+        result.expect("the step ran")
+    }
+
+    fn run_serialized(&self, record: BusRecord, ops: &mut [Operation<'_>]) -> Result<(), BusError> {
         let strike = self.core.strike(&record);
         let data: usize = ops.iter().map(Operation::len).sum();
         // The result, and how many bytes went out (`None`: nothing, the adapter is gone).

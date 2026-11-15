@@ -28,8 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Bench::builder` (the sink's settings, the bus's capabilities and timing, the clock, the
   test's own targets, and the capacities, which default to 256 records and 16 faults). Its
   handles are `Copy`, `Send` and `Sync` and name no capacity: `ddc()`, the sink's DDC bus, and
-  `time()`, its clock as one `Clock` and `Delay`. `advance` moves its time and lets every
-  target see it. `BenchError` refuses an EDID store that is not whole 128-byte blocks, up
+  `time()`, its clock as one `Clock` and `Delay`. Calls from several threads are
+  serialized: each bus call, and each delay with the event after it, is one step, so the
+  transcript is in time order and faults count calls in its order. `advance` moves its time
+  and lets every target see it. `BenchError` refuses an EDID store that is not whole 128-byte blocks, up
   to 256; an empty one is accepted.
 - **`Ddc`, the bench's `DdcBus`:** each call is one transaction, routed to the first target
   that answers the address of its first operation, or `NoAcknowledge(Address)`. It refuses

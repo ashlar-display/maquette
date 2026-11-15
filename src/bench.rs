@@ -314,10 +314,9 @@ impl<'a> Bench<'a> {
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
-    /// Runs `f` on the state under the lock, with the bench's time.
+    /// Runs `f` on the state under the lock, with the bench's time read under it.
     fn locked<R>(&self, f: impl FnOnce(&mut State<'a, LOG, FAULTS>, Timestamp) -> R) -> R {
-        let at = self.clock.now();
-        critical_section::with(|cs| f(&mut self.state.borrow_ref_mut(cs), at))
+        critical_section::with(|cs| f(&mut self.state.borrow_ref_mut(cs), self.clock.now()))
     }
 
     /// The sink's DDC bus.
@@ -570,6 +569,10 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for Bench<'_, LOG, FAULTS
 
 /// What the handles reach the bench through, whatever its capacities.
 pub(crate) trait Core {
+    /// Runs `f` as one step no other handle's call interleaves with: a bus call, or a delay
+    /// and the event after it, takes the lock several times, and its records, the fault
+    /// counts and the clock must follow the calls' order. A critical section, which nests.
+    fn serialized(&self, f: &mut dyn FnMut());
     fn capabilities(&self) -> DdcCapabilities;
     fn timing(&self) -> BusTiming;
     fn clock(&self) -> &SimClock;
@@ -610,6 +613,10 @@ pub(crate) trait Core {
 impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
     fn capabilities(&self) -> DdcCapabilities {
         self.capabilities
+    }
+
+    fn serialized(&self, f: &mut dyn FnMut()) {
+        critical_section::with(|_| f());
     }
 
     fn timing(&self) -> BusTiming {
@@ -875,9 +882,12 @@ impl Clock for Time<'_> {
 impl Delay for Time<'_> {
     fn delay(&mut self, duration: Duration) {
         self.core.spend();
-        let mut clock = self.core.clock();
-        Delay::delay(&mut clock, duration);
-        self.core.after_delay();
+        let core = self.core;
+        core.serialized(&mut || {
+            let mut clock = core.clock();
+            Delay::delay(&mut clock, duration);
+            core.after_delay();
+        });
     }
 }
 

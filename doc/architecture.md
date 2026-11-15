@@ -223,6 +223,13 @@ a bare target the user supplies one. The state is borrowed only inside
 `critical_section::with`, a synchronous closure, so no borrow is ever held across an
 `.await`.
 
+Calls from several threads are serialized: a bus call (the fault count, the routing, the
+records and the clock's charge) and a delay with the event after it each run in one
+critical section, which nests, so no other handle's call falls between their steps. The
+transcript is in time order and the *n*-th matching call a fault counts is the *n*-th in
+the transcript, whichever thread made it. A PHY call already runs under one lock; a call
+through `Coupled` runs the test's own PHY outside it, since that PHY may call the bench.
+
 ### Time
 
 `SimClock`'s `now` starts at zero and moves only when something advances it:

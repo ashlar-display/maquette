@@ -28,7 +28,8 @@ parts are built.
   what it applied kept and the read filled with the pattern; notes and `Env`; `advance`
   updating every target; the transcript's overflow; the EDID store's lengths; SCDC through
   hdmi-hal's `ScdcOverDdc`; the time handle passing the clock check; `Send`, `Sync` and
-  threads.
+  threads; calls from several threads following one another in time, a fault counting them
+  in the transcript's order.
 - **`src/scdc.rs`** — the SCDC register roles, and the transactions the bus never makes: an
   empty write, a second address.
 - **`tests/scdc.rs`** — the built-in SCDC target: the default registers; source writes

@@ -679,3 +679,48 @@ fn debug_output_names_the_parts() {
         "Write at 0x37 failed: NoAcknowledge(Address)"
     );
 }
+
+#[cfg(feature = "std")]
+#[test]
+fn calls_from_several_threads_follow_one_another_in_time() {
+    use maquette::{Effect, Fault};
+    static STORE: [u8; 128] = [0; 128];
+    let bench = Bench::builder(&STORE)
+        .budget(None)
+        .capacities::<1024, 16>()
+        .build()
+        .unwrap();
+    // The 50th call fails, whichever thread makes it.
+    bench
+        .schedule(Fault::new(Effect::Fail(DdcErrorKind::Busy)).nth(50))
+        .unwrap();
+    std::thread::scope(|s| {
+        for _ in 0..4 {
+            s.spawn(|| {
+                let bus = bench.ddc();
+                let mut block = [0; 16];
+                for _ in 0..100 {
+                    let _ = bus.write_read(EDID, &[0], &mut block);
+                }
+            });
+        }
+    });
+    let records = bus_records(&bench);
+    assert_eq!(records.len(), 400);
+    // Each call is charged before the next starts: no two at one time, none going back.
+    assert!(
+        records.windows(2).all(|pair| pair[0].0 < pair[1].0),
+        "calls overlapped in time"
+    );
+    let failed: Vec<usize> = records
+        .iter()
+        .enumerate()
+        .filter(|(_, (_, record))| record.result.is_err())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(
+        failed,
+        [49],
+        "the fault counted the calls in the transcript's order"
+    );
+}
