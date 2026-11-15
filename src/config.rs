@@ -57,12 +57,7 @@ impl SinkConfig {
             strict_lock: false,
             refusal: Refusal::NONE,
             enable_timeout: Some(Duration::from_millis(100)),
-            hpd_resets: [
-                HpdReset::After(Duration::from_millis(100)),
-                HpdReset::After(Duration::from_millis(100)),
-                HpdReset::After(Duration::from_millis(100)),
-                HpdReset::OnHpdLow,
-            ],
+            hpd_resets: [HpdReset::OnHpdLow; 4],
         }
     }
 
@@ -135,8 +130,7 @@ impl SinkConfig {
     }
 
     /// Whether SCDC answers while HPD is low; by default [`DuringHpdLow::Answers`]
-    /// (*chosen*: no source says a sink's SCDC stops answering, and its registers are kept
-    /// until a long HPD low resets them).
+    /// (*chosen*: no source says a sink's SCDC stops answering).
     pub const fn with_scdc_during_hpd_low(self, scdc_during_hpd_low: DuringHpdLow) -> Self {
         Self {
             scdc_during_hpd_low,
@@ -145,8 +139,10 @@ impl SinkConfig {
     }
 
     /// Whether the EDID, the DisplayID and the segment pointer answer while HPD is low; by
-    /// default [`DuringHpdLow::Answers`] (*chosen*, after VESA E-DDC 1.3's rule that the EDID
-    /// is readable with the display powered off, 9.2, 9.5.3).
+    /// default [`DuringHpdLow::Answers`]: VESA E-DDC 1.3 makes the EDID available whenever
+    /// +5 V is present (§4.2.2), and readable with the display powered off (§9.2, §9.5.3).
+    /// [`DuringHpdLow::Silent`] is a sink whose EDID is unavailable while HPD is low (DVI
+    /// 1.0 has HPD high only while the EDID can be read, §2.2.9.2).
     pub const fn with_edid_during_hpd_low(self, edid_during_hpd_low: DuringHpdLow) -> Self {
         Self {
             edid_during_hpd_low,
@@ -194,10 +190,13 @@ impl SinkConfig {
         }
     }
 
-    /// When `group`'s registers reset to 0 while HPD is low. By default (*chosen*: sources
-    /// restore `TMDS_Config` after a reconnect, but no public source says when a sink
-    /// resets it) after 100 ms of HPD low for `TMDS_Config`, the status and update flags and
-    /// `Source_Version`, and on every HPD low for `Config_0` and `Config_1`.
+    /// When `group`'s registers reset to 0 around an HPD low. By default every group resets
+    /// as HPD goes low, the least forgiving rule: sources restore `TMDS_Config` after a
+    /// reconnect, and the public sinks reset it as HPD falls. Xilinx's receiver clears
+    /// `TMDS_Config` bits 1:0 as it lowers HPD and `FRL_Rate` as it raises it, and Amlogic's
+    /// clears its whole SCDC with HPD low (on T7 and later chips); for the status, the
+    /// update flags and `Source_Version`, only Amlogic's says (*chosen* after it). A sink
+    /// whose 5 V goes away loses everything: [`Bench::unplug`](crate::Bench::unplug).
     pub const fn with_hpd_reset(mut self, group: RegisterGroup, reset: HpdReset) -> Self {
         self.hpd_resets[group.index()] = reset;
         self
@@ -346,7 +345,8 @@ pub enum BlockBoundary {
     Wrap,
 }
 
-/// Whether a built-in target answers while HPD is low. No public source covers HPD.
+/// Whether a built-in target answers while HPD is low. For the EDID VESA E-DDC 1.3 §4.2.2
+/// settles it; for SCDC no public source says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DuringHpdLow {
@@ -402,7 +402,7 @@ pub enum RefusalKind {
     DropEnable,
 }
 
-/// A group of SCDC registers that a long HPD low resets together.
+/// A group of SCDC registers that an HPD low resets together.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RegisterGroup {
@@ -446,7 +446,7 @@ impl RegisterGroup {
     }
 }
 
-/// When a group of registers resets to 0 while HPD is low.
+/// When a group of registers resets to 0 around an HPD low.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HpdReset {
@@ -455,6 +455,9 @@ pub enum HpdReset {
     After(Duration),
     /// As HPD goes low.
     OnHpdLow,
+    /// As HPD rises: what was written while it was low is lost too, as Xilinx's receiver
+    /// does with `FRL_Rate`.
+    OnHpdRise,
     /// Never: the registers survive any HPD low.
     Never,
 }

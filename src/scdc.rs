@@ -224,7 +224,16 @@ impl Scdc {
         }
     }
 
-    /// The resets of a long HPD low: each group once per low, when its rule says.
+    /// The resets around an HPD low: each group once per low, when its rule says.
+    ///
+    /// The public sinks: Xilinx embeddedsw `97f2baf7f69e`,
+    /// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:740–765` (lowering HPD
+    /// resets FRL, raising it clears `FRL_Rate`), `xv_hdmirx1_frl.c:76`, `1480–1502` (the
+    /// reset clears `TMDS_Config` bits 1:0), `xv_hdmirx1_intr.c:1168–1182` (the cable's 5 V
+    /// lost clears all of SCDC); Amlogic, github.com/CoreELEC/common_drivers `8ca9b6c3b715`,
+    /// `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw.c:2045–2069`, `2854–2870` (SCDC cleared, or
+    /// the HPD state handed to the IP's SCDC block), called with HPD low from
+    /// `hdmi_rx_wrapper.c:3663`, `4794–4797`.
     fn hpd_resets(&mut self, env: &mut Env<'_>) {
         let now = env.now();
         let low_since = match (self.hpd_low_since, env.hpd()) {
@@ -239,6 +248,7 @@ impl Scdc {
         for group in RegisterGroup::ALL {
             let due = match self.hpd_resets[group.index()] {
                 HpdReset::OnHpdLow => true,
+                HpdReset::OnHpdRise => env.hpd(),
                 HpdReset::After(low_for) => {
                     low_since.checked_add(low_for).is_some_and(|due| now >= due)
                 }

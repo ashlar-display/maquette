@@ -464,11 +464,12 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 - **HPD:** the sink stays on the bus; `bench.sink().hpd()` and `is_plugged()` read it.
   Raising HPD on an unplugged sink panics: the test plugs it in instead. What answers during
   HPD low is a setting per built-in
-  target (`DuringHpdLow::{Answers, Silent}`): the EDID answers by default (*chosen*, after
-  E-DDC's rule that the EDID is readable with the display powered off, §9.2, §9.5.3), and so
-  does SCDC (*chosen*: no source says a sink's SCDC stops answering, and its registers are
-  kept until the reset below). A test's own target decides with `Env::hpd()`. What a long
-  HPD low resets is a setting per register group ("Sink behaviour").
+  target (`DuringHpdLow::{Answers, Silent}`): the EDID answers by default (settled: E-DDC
+  1.3 §4.2.2 makes it available whenever +5 V is present, and DVI 1.0 §2.2.9.2 has HPD high
+  only while it can be read, which does not forbid answering with HPD low; `Silent` is a
+  sink whose EDID is unavailable), and so does SCDC (*chosen*: no source says a sink's SCDC
+  stops answering). A test's own target decides with `Env::hpd()`. What an HPD low resets
+  is a setting per register group ("Sink behaviour").
 - **Unplug and replug:** while unplugged HPD is low and nothing answers, the test's own
   targets included: `NoAcknowledge(Address)` on every address, charging the address byte.
   `plug` brings a sink back — new stores and new settings, its registers fresh, HPD high:
@@ -568,7 +569,7 @@ source settles is marked *chosen*.
 | "Some displays refuse to set the scrambling bit right away" | one source, which reads two ways [4] | a setting in both readings: the status withheld, or `Scrambling_Enable` dropped from the write; for the first *n* attempts, an attempt being a write that sets `Scrambling_Enable`; default none (*chosen*) |
 | The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5]; settled that a source resumes within 100 ms of a ratio change [11] | a setting, default 100 ms (the least forgiving), counted from the write that set `Scrambling_Enable` or one that changed `TMDS_Bit_Clock_Ratio` while it was set; `None` never gives up |
 | A ratio change: the source suspends the TMDS clock and data, writes `TMDS_Bit_Clock_Ratio`, and resumes 1 to 100 ms after | settled [11] | the strict sink (below) does not take output resumed sooner than 1 ms after the write; the 100 ms is the timeout's |
-| `TMDS_Config` and other registers reset after a long HPD low | settled that sources restore it [6]; when the sink resets it has no public source | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config}`): `HpdReset::After(d)`, *chosen* default 100 ms for `TMDS_Config`, the status and update flags and `Source_Version`; `HpdReset::OnHpdLow`, *chosen* default for `Config_0` and `Config_1`; or `HpdReset::Never`. The `Status` group is `Scrambling_Status`, the update flags and the status flags (0x40–0x42). Each group resets once per HPD low, before the lock is evaluated; only registers that change are recorded |
+| `TMDS_Config` and other registers reset around an HPD low | settled that sources restore it [6]; the public sinks reset `TMDS_Config` as HPD falls [13]; for the other registers one sink each way [13] | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config}`): `HpdReset::OnHpdLow`, the default for every group (the least forgiving; *chosen* after Amlogic for all but `TMDS_Config`); `HpdReset::After(d)`; `HpdReset::OnHpdRise`, as Xilinx clears `FRL_Rate`, losing what was written during the low too; or `HpdReset::Never`. The `Status` group is `Scrambling_Status`, the update flags and the status flags (0x40–0x42). Each group resets once per HPD low, before the lock is evaluated; only registers that change are recorded |
 | `Source_Version` written by the source, `Sink_Version` reported | [7] | `Sink_Version` a setting (default 1); `Source_Version` stored |
 | Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset; the rule that sets them a setting, with the status flags and FRL responses they report |
 | A sink without SCDC | no source for its answer | NACKs 0x54 (*chosen*) |
@@ -1220,11 +1221,16 @@ Driver source read at these commits; line numbers refer to them.
 | [10] | 1/40 and scrambling above 340 Mcsc, 1/10 at or below | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:262–267` (comment); i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2437–2440` (`port_clock > 340000`); amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:575`, `604–605` (`pix_clk > 340000` writes `TMDS_Config` 3); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:740–743` (the ratio bit above 3.4 Gbps) |
 | [11] | A ratio change: suspend, write `TMDS_Bit_Clock_Ratio`, resume 1 to 100 ms after | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:300–305` (waits 1–2 ms after the write); dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:1407–1419`; Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:510–517` |
 | [12] | The sink's test and manufacturer registers | `Source_Test_Configuration` (0x35) read by the source: amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:58`, `98`, `220`, `310`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1_frl.c:360`, `538` (`xv_hdmitx1_hw.h:44`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_scdc.c:198–200`, and not marked `RW` in `hw/hdmi_tx_ddc.h:56`. Amlogic marks 0xC0 and 0xDE–0xFF `RW` (`hw/hdmi_tx_ddc.h:85`, `93`), not 0xD0–0xDD |
+| [13] | What the sink resets around HPD | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:740–765` (lowering HPD resets FRL, raising it clears `FRL_Rate`), `xv_hdmirx1_frl.c:76`, `1480–1502` (the reset clears `TMDS_Config` bits 1:0, in FRL builds), `xv_hdmirx1_intr.c:1168–1182` (the cable's 5 V lost clears all of SCDC); Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw.c:2045–2069`, `2854–2870` (SCDC cleared on T7 and later chips, or the HPD state handed to the IP's SCDC block), called with HPD low from `hdmi_rx_wrapper.c:3663`, `4794–4797` |
 
 Standards (VESA, public):
 
 - **E-DDC 1.3:** the segment pointer (§2.2.5) and its reset on NACK or STOP (§8.1.1,
   Table 9-1); a display without one (§8.1.2, §9.5.1); the current-address read (§6.1);
-  segments (§6.4–§6.5); reading across 128 bytes (§2.2.6); the EDID readable with the
-  display powered off (§9.2, §9.5.3).
+  segments (§6.4–§6.5); reading across 128 bytes (§2.2.6); the EDID available whenever +5 V
+  is present (§4.2.2), and readable with the display powered off (§9.2, §9.5.3).
 - **DDC/CI 1.1:** I²C standard mode, at most 100 kHz.
+
+Standards (DDWG, public):
+
+- **DVI 1.0:** HPD high only while the EDID can be read (§2.2.9.2).

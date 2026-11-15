@@ -119,12 +119,13 @@ impl Input<'_> {
         let b = self.byte();
         let c = self.byte();
         let mut config = SinkConfig::new();
-        // Each group's HPD reset: the default, never, on any low, or after 50 ms.
+        // Each group's HPD reset: the default (on any low), never, as HPD rises, or after
+        // 50 ms.
         for (i, group) in RegisterGroup::ALL.into_iter().enumerate() {
             let reset = match (c >> (2 * i)) & 0b11 {
                 0 => continue,
                 1 => HpdReset::Never,
-                2 => HpdReset::OnHpdLow,
+                2 => HpdReset::OnHpdRise,
                 _ => HpdReset::After(Duration::from_millis(50)),
             };
             config = config.with_hpd_reset(group, reset);

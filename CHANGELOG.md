@@ -91,11 +91,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each refusal an `Event::Refusal`) and `with_enable_timeout` (100 ms by default, from the
   write that set `Scrambling_Enable` or one that changed the ratio while it was set; output
   that starts at or after the deadline is late; `None` never gives up), with getters.
-- **HPD resets:** while HPD is low the SCDC target resets each `RegisterGroup`
+- **HPD resets:** around an HPD low the SCDC target resets each `RegisterGroup`
   (`TmdsConfig`, `Status` — `Scrambling_Status`, the update and status flags —
-  `SourceVersion`, `Config`) to 0 once, as its `HpdReset` says: `After(d)`, taken at the
-  first event at or after it or when HPD rises; `OnHpdLow`; or `Never`. By default after
-  100 ms for the first three and on every HPD low for `Config`, set by
+  `SourceVersion`, `Config`) to 0 once, as its `HpdReset` says: `OnHpdLow`, the default for
+  every group; `After(d)`, taken at the first event at or after it or when HPD rises;
+  `OnHpdRise`, losing what was written during the low too; or `Never`. Set by
   `SinkConfig::with_hpd_reset`. Each reset register is a `Register` event by `Actor::Sink`;
   resetting `TMDS_Config` loses the scrambling lock.
 - **The simulated PHY**, `Bench::phy`: a `Copy` handle implementing hdmi-hal's `TmdsPhy`,

@@ -44,9 +44,37 @@ fn resets(bench: &Bench<'_>) -> Vec<(u64, u8)> {
         .collect()
 }
 
+/// A sink whose groups but `Config` reset after 100 ms of HPD low.
+fn after_100_ms() -> SinkConfig {
+    SinkConfig::new()
+        .with_hpd_reset(RegisterGroup::TmdsConfig, HpdReset::After(ms(100)))
+        .with_hpd_reset(RegisterGroup::Status, HpdReset::After(ms(100)))
+        .with_hpd_reset(RegisterGroup::SourceVersion, HpdReset::After(ms(100)))
+}
+
 #[test]
-fn config_resets_on_any_hpd_low_and_the_rest_after_100_ms() {
+fn by_default_every_group_resets_as_hpd_falls() {
     let bench = bench(SinkConfig::new());
+    fill(&bench);
+    let start = bench.now().as_micros();
+    bench.hpd_pulse(ms(1));
+    // Each group in order, and only the registers that change.
+    assert_eq!(
+        resets(&bench),
+        [
+            (start, 0x20),
+            (start, 0x21),
+            (start, 0x10),
+            (start, 0x02),
+            (start, 0x30),
+            (start, 0x31)
+        ]
+    );
+}
+
+#[test]
+fn a_group_can_reset_on_any_hpd_low_or_after_100_ms() {
+    let bench = bench(after_100_ms());
     fill(&bench);
     let start = bench.now().as_micros();
     bench.hpd_pulse(ms(50));
@@ -77,7 +105,7 @@ fn config_resets_on_any_hpd_low_and_the_rest_after_100_ms() {
 
 #[test]
 fn a_reset_is_taken_at_the_first_event_after_it_is_due() {
-    let bench = bench(SinkConfig::new());
+    let bench = bench(after_100_ms());
     fill(&bench);
     bench.hpd(false);
     let low = bench.now().as_micros();
@@ -103,7 +131,11 @@ fn a_reset_is_taken_at_the_first_event_after_it_is_due() {
 fn a_reset_due_while_nothing_happened_is_taken_when_hpd_rises() {
     // A long transaction moves the clock without an event: it is charged after it ran.
     let timing = BusTiming::STANDARD_MODE.with_per_transaction(ms(200));
-    let bench = Bench::builder(&[]).bus_timing(timing).build().unwrap();
+    let bench = Bench::builder(&[])
+        .bus_timing(timing)
+        .sink(after_100_ms())
+        .build()
+        .unwrap();
     bench.preset_scdc(0x20, 0x03);
     bench.hpd(false);
     bench.ddc().write(0x37, &[0]).unwrap_err();
@@ -190,7 +222,7 @@ fn locked(config: SinkConfig) -> Bench<'static> {
 
 #[test]
 fn the_sinks_own_reset_of_the_status_re_arms_the_lock() {
-    let config = SinkConfig::new().with_hpd_reset(RegisterGroup::TmdsConfig, HpdReset::Never);
+    let config = after_100_ms().with_hpd_reset(RegisterGroup::TmdsConfig, HpdReset::Never);
     let bench = locked(config);
     bench.hpd_pulse(ms(200));
     // The reset was taken at the end of the low; the lock holds again 1 ms after it.
@@ -240,12 +272,28 @@ fn the_groups_and_their_defaults() {
     assert_eq!(RegisterGroup::SourceVersion.registers(), [0x02]);
     assert_eq!(RegisterGroup::Config.registers(), [0x30, 0x31]);
     let config = SinkConfig::new();
-    for group in [
-        RegisterGroup::TmdsConfig,
-        RegisterGroup::Status,
-        RegisterGroup::SourceVersion,
-    ] {
-        assert_eq!(config.hpd_reset(group), HpdReset::After(ms(100)));
+    for group in RegisterGroup::ALL {
+        assert_eq!(config.hpd_reset(group), HpdReset::OnHpdLow);
     }
-    assert_eq!(config.hpd_reset(RegisterGroup::Config), HpdReset::OnHpdLow);
+}
+
+#[test]
+fn a_group_can_reset_as_hpd_rises() {
+    let config = SinkConfig::new().with_hpd_reset(RegisterGroup::Config, HpdReset::OnHpdRise);
+    let bench = bench(config);
+    fill(&bench);
+    bench.hpd(false);
+    assert_eq!(bench.sink().config_1(), Some(0x35), "kept while HPD is low");
+    // Written while HPD is low: lost as it rises.
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    bench.advance(ms(10));
+    assert_eq!(bench.sink().config_1(), Some(0x03));
+    let risen = bench.now().as_micros();
+    bench.hpd(true);
+    assert_eq!(bench.sink().config_1(), Some(0));
+    assert!(resets(&bench).contains(&(risen, 0x31)));
+    // Written after it rose: kept.
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    bench.advance(ms(10));
+    assert_eq!(bench.sink().config_1(), Some(0x03));
 }

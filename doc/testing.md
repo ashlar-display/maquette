@@ -67,9 +67,10 @@ parts are built.
   a sink that never gives up; a delay on
   the time handle as the event that sets it; a preset status holding until the lock
   changes; the defaults.
-- **`tests/hpd.rs`** — the HPD resets: `Config` on every low and the rest after 100 ms by
-  default; a reset taken at the first event after it is due, and when HPD rises; a group
-  that never resets; a reset after zero; one reset per low; a `TMDS_Config` reset losing
+- **`tests/hpd.rs`** — the HPD resets: every group on any low by default; `Config` on
+  every low and the rest after 100 ms; a reset taken at the first event after it is due,
+  and when HPD rises; a group that never resets; a reset after zero; a reset as HPD rises,
+  losing what was written during the low; one reset per low; a `TMDS_Config` reset losing
   the lock; a status reset re-arming it while a preset still holds; each change of the
   status recorded once; the groups and their defaults.
 - **`tests/faults.rs`** — faults: before (nothing applied, the address byte charged), after
