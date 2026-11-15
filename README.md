@@ -28,14 +28,68 @@ In development, before its first release. Built: `SimClock`, hdmi-hal's clock an
 simulated time; the bench, with its DDC bus routed to a test's own targets, the sink's SCDC
 registers and its EDID and DisplayID behind the E-DDC segment pointer, register presets and
 the transcript; the line, HPD, unplug and detach; the sink's scrambling lock and its HPD
-resets; scheduled faults and an operation budget; a simulated PHY, or any PHY coupled to the
-bench, driving the line; hdmi-hal-async's traits on the same handles (`async` feature); a
+resets; scheduled faults, scheduled sink changes and an operation budget; a hook for a
+quirk on top of the sink's SCDC registers; a simulated PHY, or any PHY coupled to the bench,
+driving the line; hdmi-hal-async's traits on the same handles (`async` feature); a
 fuzz target checking the simulator's invariants; and conformance checks for implementations
 of hdmi-hal's `Clock` and `Delay`, `DdcBus`, `ScdcTransport`, `TmdsPhy`, `FrlPhy` and
 `PhyPower`. The design is in [`doc/architecture.md`](doc/architecture.md), and what comes
 before the first release is on the [roadmap](doc/roadmap.md).
 
 ## Usage
+
+A bench is a sink, its bus, the source's PHY and a clock in one. A procedure gets the
+bench's handles as the hdmi-hal traits it takes, and a test asserts on the sink and on the
+transcript of everything that happened:
+
+```rust
+use core::time::Duration;
+use maquette::{
+    Bench, ColorBitDepth, ColorFormat, DdcBus, DdcErrorKind, Delay, Effect, Event, Fault,
+    Filter, NoAcknowledgeSource, SinkConfig, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo,
+};
+
+/// The procedure under test: scrambling at 594 Mcsc, the output, then the sink's status.
+fn bring_up<B: DdcBus, P: TmdsPhy, D: Delay>(
+    bus: &B,
+    phy: &mut P,
+    delay: &mut D,
+) -> Result<u8, B::Error> {
+    let video = TmdsVideo::new(594_000, ColorBitDepth::Depth8, ColorFormat::Rgb444);
+    let config = TmdsPhyConfig::new(594_000, TmdsClockRatio::Div40, video);
+    bus.write(0x54, &[0x20, 0x03])?; // TMDS_Config: scrambling, 1/40
+    phy.configure(config).ok();
+    phy.set_scrambling(true).ok();
+    phy.start_output().ok();
+    // The sink locks once scrambled output has run a while: read the status too soon and
+    // it is 0, against the bench as against a sink.
+    delay.delay(Duration::from_millis(1));
+    let mut status = [0];
+    bus.write_read(0x54, &[0x21], &mut status)?; // Scrambling_Status
+    Ok(status[0])
+}
+
+let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
+let up = bring_up(&bench.ddc(), &mut bench.phy(), &mut bench.time());
+assert_eq!(up, Ok(1));
+assert_eq!(bench.sink().scrambling_status(), Some(1));
+assert!(bench.transcript().any(|record| matches!(
+    record.event,
+    Event::Register { reg: 0x20, to: 0x03, .. }
+)));
+
+// A fault: the next write to TMDS_Config is not acknowledged.
+let nack = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data);
+bench
+    .schedule(Fault::new(Effect::Fail(nack)).on(Filter::ANY.with_addr(0x54).with_first(0x20)))
+    .unwrap();
+let error = bring_up(&bench.ddc(), &mut bench.phy(), &mut bench.time()).unwrap_err();
+assert_eq!(error.kind, nack);
+```
+
+Settings make the sink stricter or slower (`SinkConfig`), faults fail or garble operations,
+scheduled actions change the sink in the middle of a procedure, and the conformance checks in
+`check` run an implementation of hdmi-hal's traits against what the bench knows.
 
 A procedure that waits and reads the time runs on `SimClock` in no time at all, and a test
 checks exactly how long it took. One clock serves as both clock and delay:

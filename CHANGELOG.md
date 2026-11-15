@@ -9,222 +9,165 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+The first release: a simulated HDMI sink for tests, and conformance checks for
+implementations of hdmi-hal's traits.
+
+**Time**
+
 - **`SimClock`:** hdmi-hal's `Clock` and `Delay` on simulated time, starting at zero and
   moving only by a delay or the test's `advance`; it never reads the host's time, never
   moves backwards and saturates instead of overflowing. `with_tick` gives it a coarse
-  resolution (`now` rounded down, delays rounded up to whole ticks) and `with_overshoot`
-  makes every delay wait longer than asked; either way `now` after `delay(d)` is at least
-  `d` later. `Sync`, `const`-constructible, and implemented for `&SimClock` too, so one
-  clock is passed as both clock and delay.
-- Re-exports of hdmi-hal's `Clock`, `Delay` and `Timestamp`.
-- **The clock check** (`check::clock`): the conformance check for implementations of
-  hdmi-hal's `Clock` and `Delay`, passed as two values. Every read of the clock must be no
-  earlier than the one before it, and every delay must advance the clock by at least its
-  duration, so a frozen clock fails. `check::ClockCheck` sets the delays (by default 0, 1 ns,
-  1 µs, 999 µs, 1 ms, 1.001 ms and 10 ms) and the reads in a row (1000); with `async`,
-  `run_async` checks an async delay, its `Send` twin included.
-  `run_with_reference` (and its async form) measures each delay on a clock the test trusts
-  too, within a tolerance, so a clock running at the wrong rate fails; with `std`,
-  `check::HostClock` is one over `std::time::Instant`. Failures are `check::ClockFailure`
-  values.
+  resolution and `with_overshoot` makes every delay wait longer than asked. `Sync`,
+  `const`-constructible, and implemented for `&SimClock` too, so one clock is passed as both
+  clock and delay.
+
+**The bench**
+
 - **`Bench`**, the simulation a procedure runs against, built with `Bench::new` or
   `Bench::builder` (the sink's settings, the bus's capabilities and timing, the clock, the
-  test's own targets, and the capacities, which default to 256 records and 16 faults). Its
-  handles are `Copy`, `Send` and `Sync` and name no capacity: `ddc()`, the sink's DDC bus, and
-  `time()`, its clock as one `Clock` and `Delay`. Calls from several threads are
-  serialized: each bus call, and each delay with the event after it, is one step, so the
-  transcript is in time order and faults count calls in its order. `advance` moves its time
-  and lets every target see it. `BenchError` refuses an EDID store that is not whole 128-byte blocks, up
-  to 256; an empty one is accepted.
-- **`Ddc`, the bench's `DdcBus`:** each call is one transaction, routed to the first target
-  that answers the address of its first operation, or `NoAcknowledge(Address)`. It refuses
-  what `DdcBus`'s argument rules and its capabilities rule out, before any target and
-  without taking time; splits `read_segmented` into pieces where the capabilities say so,
-  writing the segment pointer from segment 1; charges the clock by `BusTiming` (90 µs a byte
-  by default, standard mode); and fills a failed read with `0xA5`. Its errors are
-  `BusError`s, with the kind, the call and the address.
-- **`Target`**, a device on the sink's bus, for a test's own: `answers`, `transaction` over
-  `Operation`s, and `update`; `Env` gives it the time, HPD and `note`. A target runs with
-  the bench locked: using the bench's handles from it panics, naming the cause.
-- **`ScdcHook`**, a test's quirk on top of the built-in SCDC sink, set with
-  `BenchBuilder::scdc_hook`: it decides each byte the source writes (`HookWrite::Store`,
-  `Drop`, `Nack`, `StoreRelocking`) and what each read returns, with a read-only
-  `ScdcRegisters` view; the sink keeps its lock, resets and records, and a dropped or
-  refused byte is an `IgnoredWrite` with `Ignored::Hook`. Presets bypass it; a `plug`
-  keeps it.
-- **The transcript**, `Bench::transcript`: one `Record` per bus call (`BusRecord`, refused
-  calls included, a split read per piece) and per target note, in order, with its time;
-  what does not fit is counted; `BenchBuilder::keep_newest_records` keeps the newest
-  instead, for a session-length test. `Event` also has the variants the built-in targets will
-  record (`Register`, `IgnoredWrite`, with `Actor` and `Ignored`). Each variant with fields
-  is `#[non_exhaustive]`: a test matches records with `..`, and a variant may gain a field.
-- **The sink's SCDC registers** at 0x54, the built-in target routed after a test's own: a
-  write sets the offset with its first byte, a read reads from it, the offset persists. The
-  source's registers (`Source_Version`, `TMDS_Config`, `Config_0`, `Config_1`,
-  `Test_Read_Request`, the manufacturer's block from 0xDE) are stored as written; the update
-  flags (`Update_0`, `Update_1`) clear when written back as 1; the sink's (`Sink_Version`,
-  `Scrambling_Status`, `Source_Test_Configuration`, status flags, error counters, the
-  manufacturer's identification at 0xD0–0xDD) follow `OwnedWrite`; any other register is
-  stored. Addresses, bits
-  and roles are cited in the code from Linux, amdgpu, Xilinx and Amlogic. Every byte written
-  is a `Register` or `IgnoredWrite` event in the transcript.
-- **The sink's EDID at 0x50 and DisplayID at 0x52, behind the E-DDC segment pointer at
-  0x30** (VESA E-DDC 1.3), the built-in target routed after a test's own. The pointer is 0
-  at the start of every transaction and acknowledged for segments the sink has; each
-  structure's word offset persists, for current-address reads; writes after the offset are
-  ignored and recorded; a sink without a pointer answers segment 0 only; an empty store does
-  not answer. `BenchBuilder::displayid` gives the DisplayID store, checked like the EDID's
-  (`BenchError::DisplayIdLength`). `SinkConfig` gains `without_segment_pointer`,
-  `with_past_store` (`PastStore::Fill`, reading 0xFF, by default; `Wrap`: the display
-  cannot refuse a byte it sends),
-  `with_missing_segment` (`MissingSegment::Nack` by default; `Ack`) and
-  `with_block_boundary` (`BlockBoundary::Continue` by default; `Wrap`), with getters.
-- **The line and the sink's events:** `Line` (`Off`, `Tmds` with rate, ratio and
-  scrambling, `Frl`, built with `Line::frl` and open to more fields), set by
-  `Bench::set_line` and seen by targets through `Env::line`;
-  `Bench::set_hpd` and `hpd_pulse`; `unplug` and `plug` (a fresh sink with new stores and
-  settings; nothing answers while unplugged, the test's own targets included); `detach` and
-  `reattach` (every call that passes the checks fails `Detached`, taking no time). Each is a
-  bench event after which every target sees the bench (`Target::update`), recorded as
-  `Event::Line`, `Hpd`, `Plug` or `Adapter`; a delay on the bench's time handle is an event
-  too. `Sink::hpd` and `Sink::is_plugged`, `Bench::line` and `Bench::is_attached` read the
-  state. `SinkConfig::with_scdc_during_hpd_low` and `with_edid_during_hpd_low` say whether
-  the built-in targets answer while HPD is low (`DuringHpdLow::Answers` by default, or
-  `Silent`).
-- **The scrambling lock:** the SCDC target sets `Scrambling_Status` when
-  `Scrambling_Enable` is set, the line is scrambled TMDS at the ratio
-  `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate (1/40 above 340 Mcsc, 1/10 at or
-  below), no refusal withholds it, and the lock's `Trigger` has passed since these
-  conditions last began to hold; it clears it when a condition fails. Each change is a
-  `Register` event by `Actor::Sink`, made only when the lock is gained or lost, so a preset
-  holds until then; the sink's own HPD reset of the status loses the lock, and the
-  conditions begin to hold again at the reset. `SinkConfig` gains
-  `with_scrambling_lock` (`Trigger::After` 1 ms by default, or `Trigger::AfterReads(n)`),
-  `with_strict_lock` (off by default: output must start after the write that set
-  `Scrambling_Enable` or changed the ratio, and at least 1 ms after a ratio change),
-  `with_scrambling_refusals` (`Refusal` with
-  `RefusalKind::WithholdStatus` or `DropEnable` for the first attempts; none by default,
-  each refusal an `Event::Refusal`) and `with_enable_timeout` (100 ms by default, from the
-  write that set `Scrambling_Enable` or one that changed the ratio while it was set; output
-  that starts at or after the deadline is late; `None` never gives up), with getters.
-- **HPD resets:** around an HPD low the SCDC target resets each `RegisterGroup`
-  (`TmdsConfig`, `Status` — `Scrambling_Status`, the update and status flags —
-  `SourceVersion`, `Config`) to 0 once, as its `HpdReset` says: `OnHpdLow`, the default for
-  every group; `After(d)`, taken at the first event at or after it or when HPD rises;
-  `OnHpdRise`, losing what was written during the low too; or `Never`. Set by
-  `SinkConfig::with_hpd_reset`; `RegisterGroup::ALL`, a slice, lists the groups. Each reset
-  register is a `Register` event by `Actor::Sink`; resetting `TMDS_Config` loses the
-  scrambling lock.
-- **The simulated PHY**, `Bench::phy`: a `Copy` handle implementing hdmi-hal's `TmdsPhy`,
-  `FrlPhy` and `PhyPower` to their contracts, the mode rule included, with `PhyError`s
-  (`PhyErrorKind::PoweredOff`, `NotConfigured`, `Running`, `Unsupported`, `NotInFrl`,
-  `Fault`). It drives the line whenever its output changes: running TMDS from its
-  configuration and scrambler, FRL from its rate. Where the contract allows several
-  behaviours, `PhySettings` sets them, each defaulting to the least forgiving one:
-  `configure` fails with the output running (`ConfigureWhileRunning`), the scrambler after
-  `configure` is the opposite of what the rate needs (`ScramblerAfterConfigure`, each
-  setting within the PHY's capabilities), and
-  `start_output` takes 1 ms; the PHY starts powered on. `BenchBuilder::phy_capabilities`
-  sets what it can do (by default `DEFAULT_PHY_CAPABILITIES`: 600 000 kHz with a scrambler,
-  low rates included). Every call is an `Event::Phy` with its `PhyCall` and result, a bench
-  event, and counts against the budget. `Bench::schedule_phy` schedules a `PhyFault`, in
-  the same schedule as the bus's faults, failing a call before or after it takes effect.
-  The hdmi-hal PHY traits and types are re-exported, `PhyCall`'s FRL arguments included.
-- **`Coupled<P>`**, any PHY driving the bench's line: `Coupled::new(phy, &bench)`
-  implements `TmdsPhy` with `P`'s error, and `PhyPower` and `FrlPhy` where `P` does. Calls go
-  to `P` unchanged; what succeeded drives the line by the contract's guarantees (unscrambled
-  after `configure` until `set_scrambling`); every call is an `Event::Phy` (a failure as
-  `PhyErrorKind::Coupled`), a bench event, and counts against the budget. `get_ref`,
-  `get_mut` and `into_inner` reach `P`.
-- **The async handles** (`async` feature): `Ddc` implements hdmi-hal-async's `SendDdcBus`,
-  `Time` its `SendDelay`, and `Phy` its `SendTmdsPhy`, `SendFrlPhy` and `SendPhyPower`; the
-  plain async traits follow through hdmi-hal-async's blanket implementations. Each async
-  method runs its sync counterpart when first polled, so the futures are `Send` and complete
-  with any executor. `SimClock` and `&SimClock` implement `SendDelay` too, so an async
-  procedure that needs only time needs no bench. hdmi-hal-async is re-exported as
-  `maquette::hdmi_hal_async`.
-- **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
-  written), the `nth` matching operation, `Times::Count(k)`, `UntilCleared` or `For(d)` (every matching
-  operation for `d` on the bench's clock from the first struck), an `Effect`
-  (`Fail(kind)`, `Slow(d)`, or `Corrupt { byte, xor }`, a read byte garbled under an `Ok`) and a `Point` (`Before` the sink sees it, `After` it applied
-  it, `Partway { byte }`; a NACK partway through a read falls on the read's address byte) —
-  and returns a `FaultId` for `clear_fault`, or `ScheduleFull`
-  past `FAULTS`. An operation is one transaction; refused, empty and detached calls do not
-  count. A timeout charges the bus's stretch timeout; a struck operation is charged for
-  the bytes that went out; each strike is an `Event::Fault` after its bus record.
-  `clear_faults` and `scheduled_faults` manage the schedule. A preset is now a bench event,
-  so a preset of `TMDS_Config` can lose or start the scrambling lock.
-- **Scheduled actions:** `Bench::schedule_action` takes an `Action` (`Preset`, `Hpd`,
-  `Unplug`, `Plug`, `Line`, `Detach`, `Reattach`) and a `When` (`BeforeOp` or `AfterOp`
-  the `nth` bus operation matching a `Filter`, `PhyCall` after the `nth` PHY call, or `At`
-  a time, taken at the first bench event at or after it), so the sink changes during a
-  procedure. `hpd_pulse` leaves HPD low when a scheduled unplug came during the low. An action comes once, shares the faults' schedule,
-  and is recorded as an `Event::Action` followed by the events its change makes.
-- **The operation budget:** every bus call (refused ones included), clock read and delay
-  through the bench's handles counts; past `BenchBuilder::budget` (by default
-  `DEFAULT_BUDGET`, 1 000 000; `None` for none) the bench panics, naming the budget, so a
-  procedure that loops forever fails its test. `Bench::operations` says how many were made.
-- **`Bench::preset_scdc`**, which sets any SCDC register, recorded as by `Actor::Test`, and
-  **`Bench::sink`**, a `Sink` view of the registers (`scdc`, `tmds_config`,
-  `scrambling_status`, `sink_version`, `source_version`, `update_0`, `config_0`, `config_1`)
-  that takes no bus operation.
-- **`SinkConfig`**, the sink's settings, with `const` builders and getters: `without_scdc`
-  (nothing answers 0x54), `with_sink_version` (1 by default), `with_owned_scdc_writes`
-  (`OwnedWrite::Ignore` by default, or `Nack`) and `with_scdc_past_end`
-  (`ScdcPastEnd::Wrap` by default, or `Nack`, which refuses a write's byte past 0xFF; a read
-  wraps either way).
-- Re-exports of `hdmi_hal` itself and its DDC types (`DdcBus`, `DdcCapabilities`,
-  `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`). Every hdmi-hal type
-  maquette's API names is re-exported, and listed as a re-export with hdmi-hal's own docs.
-- **The `DdcBus` check** (`check::DdcBusCheck`): hdmi-hal's `DdcBus` contract as a caller
-  sees it, against a device the test describes (`check::DdcDevice`: its EDID, whether it has
-  a segment pointer, an address where nothing answers). Argument and capability refusals,
-  empty buffers, the EDID read from segment 0 (without a pointer too), at its second block
-  and an odd offset, and from segment 1; 16 bytes by `write_read` at the offset it writes;
-  a `write` of the offset and a plain `read` at the current address; and `NoAcknowledge`
-  where nothing answers; every call safe on a real device, points without a description
-  skipped. `run_threads` (with `std`) runs it from as many threads at once as asked for, at
-  least one, without the read at the current address;
-  `run_async` (with `async`) over hdmi-hal-async's `DdcBus`. Failures are
-  `check::DdcBusFailure`s.
-- **The `ScdcTransport` check** (`check::ScdcTransportCheck`): over a register image the
-  test knows (`check::ScdcImage`, or `ScdcImage::of(&bench)`: the bench's registers but the
-  ones that change by themselves), `read` of every known register, `read_block` of 16
-  registers wherever they fit agreeing register by register, empty buffers `Ok`, reads past
-  0xFF returning; with `with_write(reg, value)`, a register the test knows is safe to write
-  (`Source_Version` and 1 on a sink) written and read back, and the image's value restored;
-  and, with a `check::FailNext` hook (implemented by `Bench`), an error
-  reaching the caller with its kind and the transport working after it; a failure the hook
-  cannot arm is `NotArmed`, the setup's and not the transport's, and one no transfer took
-  is withdrawn. `run_async` over
-  hdmi-hal-async's `ScdcTransport`. Failures are `check::ScdcTransportFailure`s.
-- **The PHY check** (`check::PhyCheck`): hdmi-hal's PHY contracts with a configuration the
-  PHY can do and a `check::OutputProbe` (implemented by `Bench`, and `check::NoProbe` for
-  one that cannot tell) for what it transmits: once its output runs, TMDS at the
-  configuration's rate and ratio, scrambled as `set_scrambling` says, or FRL at the rate
-  entered. The probe is handed the PHY, so a PHY can be probed through its own state. `run_tmds` (`TmdsPhy` alone, a fresh PHY), `run_powered` (with `PhyPower`, from a
-  power cycle) and `run_frl` (with `FrlPhy`: the mode rule), and their async forms. Failures
-  are `check::PhyFailure`s naming a `check::PhyPoint`.
-- **`check::Report`**, what every check returns: the points run, every failed point counted,
-  the first 16 recorded in the order found, and `assert_ok`, which panics listing them. A
-  check of another crate's own trait that runs against the bench builds one with
-  `Report::new` and `record`, so its users get the same report.
-- **Settings by value:** every method that returns a changed copy (`with_*`, `without_*`,
-  `Fault::on` and the like) is `#[must_use]`, so a dropped result warns. `Filter`,
-  `Refusal`, `ClockCheck` and `Line` have a `Default` (`ANY`, `NONE`, `DEFAULT`, `Off`), and
-  the kinds a test may collect (`OpKind`, `BusOp`, `Actor`, `Ignored`, `RegisterGroup`,
-  `Effect`) are `Hash`.
-- **Errors in words:** `BusError` and `PhyError` print as a sentence ("write at 0x37 failed:
-  the address was not acknowledged"); `BusOp`, `PhyCallKind` and `PhyErrorKind` have a
-  `Display` of their own. `Record`, `BusRecord` and `Event` are read, not built: a test
-  compares the fields it cares about.
+  PHY's settings and capabilities, the test's own targets, an SCDC hook, the transcript's
+  mode, and the capacities: 256 records and 16 scheduled faults by default). `BenchError`
+  refuses an EDID or DisplayID store that is not whole 128-byte blocks, up to 256 blocks.
+- **Handles** that are `Copy`, `Send` and `Sync` and name no capacity: `ddc()`, the sink's
+  DDC bus (`DdcBus`); `time()`, its clock as one `Clock` and `Delay`; `phy()`, the source's
+  simulated PHY; `sink()`, a read-only view of the sink's registers, HPD and plug state.
+  Calls from several threads are serialized: each bus call, and each delay with the event
+  after it, is one step.
+- **The test's controls:** `advance`; `set_line`; `set_hpd` and `hpd_pulse`; `unplug` and
+  `plug` (a fresh sink with new stores and settings); `detach` and `reattach`;
+  `preset_scdc`. Each is a bench event: every target sees the bench after it.
+- **The operation budget:** every bus call, clock read, delay and PHY call through the
+  handles counts; past `BenchBuilder::budget` (`DEFAULT_BUDGET`, 1 000 000, by default;
+  `None` for none) the bench panics, naming the budget, so a procedure that loops forever
+  fails its test.
+
+**The bus**
+
+- **`Ddc`, the bench's `DdcBus`:** each call is one transaction, routed to the first
+  target that answers the address of its first operation, or `NoAcknowledge(Address)`. It
+  refuses what `DdcBus`'s argument rules and its capabilities rule out, before any target
+  and without taking time; splits `read_segmented` into pieces where the capabilities say
+  so; charges the clock by `BusTiming` (90 µs a byte by default, 100 kHz); and fills a
+  failed read with `0xA5`. Its errors are `BusError`s, printed as a sentence.
+
+**The sink**
+
+- **SCDC at 0x54:** a 256-byte register file. A write sets the offset with its first byte;
+  the offset persists. The source's registers are stored as written; the update flags clear
+  when written back as 1; the sink's registers follow `OwnedWrite`; roles, addresses and
+  bits are cited in the code from Linux, amdgpu, Xilinx and Amlogic.
+- **The EDID at 0x50 and DisplayID at 0x52, behind the E-DDC segment pointer at 0x30**
+  (VESA E-DDC 1.3): the pointer is 0 at the start of every transaction; each structure's
+  word offset persists, for current-address reads; a read goes on with data past a store,
+  0xFF or wrapped, since the host acknowledges what it reads.
+- **The line** (`Line`: `Off`, `Tmds` with rate, ratio and scrambling, `Frl`, built with
+  `Line::frl`), which the PHY drives when its output changes and a test sets with
+  `set_line`; the last change wins.
+- **The scrambling lock:** `Scrambling_Status` is set once `Scrambling_Enable` is set, the
+  line is scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names and that ratio fits the
+  rate (1/40 above 340 Mcsc), no refusal withholds it, and the lock's `Trigger` has passed
+  since these conditions last began to hold. The sink changes the status only when its lock
+  is gained or lost, so a preset holds; its own reset of the status re-arms the lock.
+- **HPD resets:** each `RegisterGroup` resets as its `HpdReset` says: as HPD falls (the
+  default, after the public sink drivers), after a time, as HPD rises, or never.
+- **`SinkConfig`**, the sink's settings with `const` builders and getters: SCDC or none, the
+  `Sink_Version`, owned writes, bursts past 0xFF, reads past a store, missing segments, the
+  128-byte boundary, the segment pointer, what answers while HPD is low, the lock's trigger,
+  the strict sink (output started after the write, and 1 ms after a ratio change),
+  refusals, the enable timeout (100 ms by default, from the write that set
+  `Scrambling_Enable` or changed the ratio) and the HPD resets. Each default is sourced or
+  marked *chosen*, the least forgiving where sources differ.
+
+**The PHY**
+
+- **The simulated PHY**, `Bench::phy`: hdmi-hal's `TmdsPhy`, `FrlPhy` and `PhyPower` to their
+  contracts, the mode rule included, with `PhyError`s. `PhySettings` sets what the contract
+  leaves open, each defaulting to the least forgiving: `configure` with the output running
+  fails, the scrambler after `configure` is the opposite of what the rate needs (within the
+  PHY's capabilities), and `start_output` takes 1 ms. `BenchBuilder::phy_capabilities` sets
+  what it can do.
+- **`Coupled<P>`**, any PHY driving the bench's line: calls go to `P` unchanged, and what
+  succeeded drives the line by the contract's guarantees; `get_ref`, `get_mut` and
+  `into_inner` reach `P`.
+
+**Faults and scheduled actions**
+
+- **Faults:** `Bench::schedule` takes a `Fault`: a `Filter`, the `nth` matching operation,
+  `Times` (`Count(k)`, `UntilCleared`, or `For(d)` on the bench's clock), an `Effect`
+  (`Fail(kind)`, `Slow(d)`, or `Corrupt { byte, xor }`, a read byte garbled under an `Ok`)
+  and a `Point` (`Before`, `After`, `Partway { byte }`; a NACK partway through a read falls
+  on its address byte). `Bench::schedule_phy` schedules a `PhyFault` in the same schedule.
+  Each strike is an `Event::Fault`.
+- **Scheduled actions:** `Bench::schedule_action` takes an `Action` (a preset, HPD, unplug,
+  plug, the line, detach, reattach) and a `When` (before or after the `nth` matching bus
+  operation, after the `nth` PHY call, or at a time), so the sink changes during a
+  procedure. An action comes once, in the faults' schedule, recorded as an `Event::Action`
+  before the events its change makes.
+
+**Extending the sink**
+
+- **`Target`**, a device on the sink's bus, for a test's own (DDC/CI, an HDCP port):
+  `answers`, `transaction` over `Operation`s, and `update`; `Env` gives it the time, HPD,
+  the line and `note`. It runs with the bench locked: using the bench's handles from it
+  panics, naming the cause.
+- **`ScdcHook`**, a test's quirk on top of the built-in SCDC sink
+  (`BenchBuilder::scdc_hook`): it decides each byte the source writes (`HookWrite::Store`,
+  `Drop`, `Nack`, `StoreRelocking`) and what each read returns, while the sink keeps its
+  lock, resets and records.
+
+**The transcript**
+
+- **`Bench::transcript`:** one ordered `Record` per bus call, register change, ignored
+  write, refusal, fault, PHY call, line, HPD, plug, adapter change, action and target note,
+  with its time. `Record`, `BusRecord` and `Event` are read, not built: each `Event` variant
+  with fields is `#[non_exhaustive]`. What does not fit is counted
+  (`Bench::transcript_overflow`); by default the oldest records are kept, and
+  `BenchBuilder::keep_newest_records` keeps the newest, for a session-length test.
+
+**Async**
+
+- **The `async` feature:** the handles implement hdmi-hal-async's `Send` twins (`SendDdcBus`,
+  `SendDelay`, `SendTmdsPhy`, `SendFrlPhy`, `SendPhyPower`), and so the plain async traits;
+  each async method runs its sync counterpart when first polled, so the futures are `Send`
+  and complete with any executor. `SimClock` implements `SendDelay` too.
+
+**Conformance checks** (`check`)
+
+- **The clock check** (`check::clock`, `check::ClockCheck`): every read no earlier than the
+  one before, every delay advancing the clock by at least its duration; with
+  `run_with_reference`, each delay measured on a clock the test trusts too
+  (`check::HostClock` with `std`), so a clock at the wrong rate fails.
+- **The `DdcBus` check** (`check::DdcBusCheck`, against a `check::DdcDevice`): argument and
+  capability refusals, empty buffers, the EDID read at offsets, through `write_read` and
+  through a `write` then a current-address `read`, and `NoAcknowledge` where nothing
+  answers; every call safe on a real device. `run_threads` (with `std`) runs it from several
+  threads at once.
+- **The `ScdcTransport` check** (`check::ScdcTransportCheck`, over a `check::ScdcImage`):
+  `read` and `read_block` against the image; with `with_write`, a register written and read
+  back; with a `check::FailNext` hook, an error reaching the caller and the transport
+  working after it.
+- **The PHY check** (`check::PhyCheck`, with a `check::OutputProbe`, or `check::NoProbe`):
+  hdmi-hal's PHY contracts, the line checked for the configuration's rate and ratio and the
+  scrambling asked; `run_tmds`, `run_powered` and `run_frl`.
+- **`check::Report`**, what every check returns: every failed point counted, the first 16
+  recorded, and `assert_ok`. Another crate's check of its own trait against the bench builds
+  one with `Report::new` and `record`. Each check has an async form with the `async`
+  feature.
+
+**API**
+
+- Every hdmi-hal type maquette's API names is re-exported, as are `hdmi_hal` and, with
+  `async`, `hdmi_hal_async`. Value builders are `#[must_use]`; the plain value types have a
+  `Default` and the kinds a test may collect are `Hash`.
 
 ### Internal
 
 - A fuzz target (`fuzz/`, `bench`) drives the bench with arbitrary actions and checks the
   simulator's invariants: the same transcript for the same input, the scrambling status
-  only under the lock's conditions, the sink's registers never changed by the source, the
-  segment pointer never outliving its command sequence, time never going backwards. CI
+  only under the lock's conditions and set once they have held for a time trigger, the
+  sink's registers never changed by the source, the segment pointer never outliving its
+  command sequence, time never going backwards, and a transcript (4096 records) that never
+  overflows. CI
   fuzzes it for 60 s on pushes and pull requests and for an hour weekly, opening a pull
   request with the minimised corpus. release-prep refreshes maquette's entry in
   `fuzz/Cargo.lock`; Dependabot keeps the fuzz lock file current.
