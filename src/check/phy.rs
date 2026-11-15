@@ -202,6 +202,7 @@ impl<'p, R: ?Sized> PhyCheck<'p, R> {
     }
 
     /// The check entering FRL at `rate`, one the PHY can do, for the mode rule.
+    #[must_use]
     pub const fn with_frl_rate(self, rate: HdmiForumFrl) -> Self {
         Self {
             frl_rate: Some(rate),

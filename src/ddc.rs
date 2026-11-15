@@ -427,11 +427,13 @@ impl BusTiming {
     };
 
     /// The timing with each byte taking `per_byte`.
+    #[must_use]
     pub const fn with_per_byte(self, per_byte: Duration) -> Self {
         Self { per_byte, ..self }
     }
 
     /// The timing with each transaction taking `per_transaction` on top of its bytes.
+    #[must_use]
     pub const fn with_per_transaction(self, per_transaction: Duration) -> Self {
         Self {
             per_transaction,

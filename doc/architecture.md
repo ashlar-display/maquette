@@ -457,7 +457,7 @@ Three events a test needs to tell apart:
 
 ```rust
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
-    pub fn hpd(&self, high: bool);
+    pub fn set_hpd(&self, high: bool);
     /// HPD low, `low_for` on the bench's clock (`advance`), HPD high.
     pub fn hpd_pulse(&self, low_for: Duration);
     pub fn unplug(&self);

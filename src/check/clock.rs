@@ -68,6 +68,7 @@ impl ClockCheck<'static> {
 
 impl<'a> ClockCheck<'a> {
     /// The check with `delays` run instead.
+    #[must_use]
     pub const fn with_delays<'b>(self, delays: &'b [Duration]) -> ClockCheck<'b> {
         ClockCheck {
             delays,
@@ -76,6 +77,7 @@ impl<'a> ClockCheck<'a> {
     }
 
     /// The check with `reads` reads in a row.
+    #[must_use]
     pub const fn with_reads(self, reads: u32) -> Self {
         Self { reads, ..self }
     }

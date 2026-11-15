@@ -425,7 +425,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let high = input.bit();
                 // Raising HPD on an unplugged sink is a mistake the bench panics on.
                 if !high || bench.sink().is_plugged() {
-                    bench.hpd(high);
+                    bench.set_hpd(high);
                 }
             }
             6 => {

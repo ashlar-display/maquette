@@ -23,6 +23,7 @@ impl ScdcImage {
     }
 
     /// The image with `reg` known to hold `value`.
+    #[must_use]
     pub const fn with(mut self, reg: u8, value: u8) -> Self {
         self.regs[reg as usize] = Some(value);
         self
@@ -204,6 +205,7 @@ impl<'i> ScdcTransportCheck<'i> {
     /// writing that back and reading it. For a sink, `Source_Version` (0x02) and 1, which a
     /// source writes at every bring-up. A `value` other than the one `reg` holds shows a
     /// write that does nothing.
+    #[must_use]
     pub const fn with_write(self, reg: u8, value: u8) -> Self {
         Self {
             write: Some((reg, value)),
@@ -212,6 +214,7 @@ impl<'i> ScdcTransportCheck<'i> {
     }
 
     /// The check with `faults` making transfers fail, for the points after an error.
+    #[must_use]
     pub const fn with_faults(self, faults: &'i dyn FailNext) -> Self {
         Self {
             faults: Some(faults),

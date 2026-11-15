@@ -64,6 +64,7 @@ impl SinkConfig {
     /// A sink without SCDC: nothing answers 0x54 (*chosen* on one source: Xilinx takes a
     /// failed `Source_Version` write for a sink without SCDC, embeddedsw `97f2baf7f69e`,
     /// `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–807`).
+    #[must_use]
     pub const fn without_scdc(self) -> Self {
         Self {
             scdc: false,
@@ -72,6 +73,7 @@ impl SinkConfig {
     }
 
     /// The `Sink_Version` the sink reports; 1 by default.
+    #[must_use]
     pub const fn with_sink_version(self, sink_version: u8) -> Self {
         Self {
             sink_version,
@@ -81,6 +83,7 @@ impl SinkConfig {
 
     /// What a write to an SCDC register the sink owns does; by default
     /// [`OwnedWrite::Ignore`].
+    #[must_use]
     pub const fn with_owned_scdc_writes(self, owned_scdc_write: OwnedWrite) -> Self {
         Self {
             owned_scdc_write,
@@ -89,6 +92,7 @@ impl SinkConfig {
     }
 
     /// What an SCDC read or write past 0xFF does; by default [`ScdcPastEnd::Wrap`].
+    #[must_use]
     pub const fn with_scdc_past_end(self, scdc_past_end: ScdcPastEnd) -> Self {
         Self {
             scdc_past_end,
@@ -99,6 +103,7 @@ impl SinkConfig {
     /// A sink without the E-DDC segment pointer: nothing answers 0x30, and the sink answers
     /// segment 0 reads (VESA E-DDC 1.3, 8.1.2), so a read of segment 1 or higher fails
     /// `NoAcknowledge(Address)` at the pointer.
+    #[must_use]
     pub const fn without_segment_pointer(self) -> Self {
         Self {
             segment_pointer: false,
@@ -108,12 +113,14 @@ impl SinkConfig {
 
     /// What a read past the end of the EDID or DisplayID store does, in a segment the sink
     /// has; by default [`PastStore::Fill`].
+    #[must_use]
     pub const fn with_past_store(self, past_store: PastStore) -> Self {
         Self { past_store, ..self }
     }
 
     /// What a segment pointer value for a segment the sink does not have does; by default
     /// [`MissingSegment::Nack`].
+    #[must_use]
     pub const fn with_missing_segment(self, missing_segment: MissingSegment) -> Self {
         Self {
             missing_segment,
@@ -123,6 +130,7 @@ impl SinkConfig {
 
     /// What a read across a 128-byte block boundary at 0x50 or 0x52 does; by default
     /// [`BlockBoundary::Continue`].
+    #[must_use]
     pub const fn with_block_boundary(self, block_boundary: BlockBoundary) -> Self {
         Self {
             block_boundary,
@@ -132,6 +140,7 @@ impl SinkConfig {
 
     /// Whether SCDC answers while HPD is low; by default [`DuringHpdLow::Answers`]
     /// (*chosen*: no source says a sink's SCDC stops answering).
+    #[must_use]
     pub const fn with_scdc_during_hpd_low(self, scdc_during_hpd_low: DuringHpdLow) -> Self {
         Self {
             scdc_during_hpd_low,
@@ -144,6 +153,7 @@ impl SinkConfig {
     /// +5 V is present (§4.2.2), and readable with the display powered off (§9.2, §9.5.3).
     /// [`DuringHpdLow::Silent`] is a sink whose EDID is unavailable while HPD is low (DVI
     /// 1.0 has HPD high only while the EDID can be read, §2.2.9.2).
+    #[must_use]
     pub const fn with_edid_during_hpd_low(self, edid_during_hpd_low: DuringHpdLow) -> Self {
         Self {
             edid_during_hpd_low,
@@ -153,6 +163,7 @@ impl SinkConfig {
 
     /// When the sink sets `Scrambling_Status` once its conditions hold; by default
     /// `Trigger::After` 1 ms (*chosen*: no source gives the delay).
+    #[must_use]
     pub const fn with_scrambling_lock(self, scrambling_lock: Trigger) -> Self {
         Self {
             scrambling_lock,
@@ -166,6 +177,7 @@ impl SinkConfig {
     /// after). Output already running at the write, or resumed sooner, is not taken until it
     /// stops and starts again. Off by default: sources that redo the whole mode set say some
     /// sinks would accept the SCDC writes alone, and others restore with the output running.
+    #[must_use]
     pub const fn with_strict_lock(self, strict_lock: bool) -> Self {
         Self {
             strict_lock,
@@ -175,6 +187,7 @@ impl SinkConfig {
 
     /// A sink that refuses to set the scrambling bit right away, for the first attempts; by
     /// default [`Refusal::NONE`] (*chosen*).
+    #[must_use]
     pub const fn with_scrambling_refusals(self, refusal: Refusal) -> Self {
         Self { refusal, ..self }
     }
@@ -184,6 +197,7 @@ impl SinkConfig {
     /// `TMDS_Bit_Clock_Ratio` while it was set; `None` never gives up. 100 ms by default:
     /// i915 notes that a sink may disable scrambling without a scrambled clock within 100 ms,
     /// and a source resumes within 100 ms of a ratio change (the least forgiving default).
+    #[must_use]
     pub const fn with_enable_timeout(self, enable_timeout: Option<Duration>) -> Self {
         Self {
             enable_timeout,
@@ -198,6 +212,7 @@ impl SinkConfig {
     /// clears its whole SCDC with HPD low (on T7 and later chips); for the status, the
     /// update flags and `Source_Version`, only Amlogic's says (*chosen* after it). A sink
     /// whose 5 V goes away loses everything: [`Bench::unplug`](crate::Bench::unplug).
+    #[must_use]
     pub const fn with_hpd_reset(mut self, group: RegisterGroup, reset: HpdReset) -> Self {
         self.hpd_resets[group.index()] = reset;
         self

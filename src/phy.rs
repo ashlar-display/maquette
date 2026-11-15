@@ -43,11 +43,13 @@ impl PhySettings {
     };
 
     /// The settings with the PHY powered on at creation or not.
+    #[must_use]
     pub const fn with_powered(self, powered: bool) -> Self {
         Self { powered, ..self }
     }
 
     /// The settings with `configure` doing `behaviour` with the output running.
+    #[must_use]
     pub const fn with_configure_while_running(self, behaviour: ConfigureWhileRunning) -> Self {
         Self {
             configure_while_running: behaviour,
@@ -56,6 +58,7 @@ impl PhySettings {
     }
 
     /// The settings with the scrambler after `configure` as `behaviour` says.
+    #[must_use]
     pub const fn with_scrambler_after_configure(self, behaviour: ScramblerAfterConfigure) -> Self {
         Self {
             scrambler_after_configure: behaviour,
@@ -64,6 +67,7 @@ impl PhySettings {
     }
 
     /// The settings with `start_output` taking `latency`.
+    #[must_use]
     pub const fn with_start_latency(self, latency: Duration) -> Self {
         Self {
             start_latency: latency,
@@ -248,6 +252,7 @@ impl PhyFault {
     }
 
     /// The fault counting only calls of `kind`.
+    #[must_use]
     pub const fn on(self, kind: PhyCallKind) -> Self {
         Self {
             call: Some(kind),
@@ -256,16 +261,19 @@ impl PhyFault {
     }
 
     /// The fault failing the `n`-th matching call first.
+    #[must_use]
     pub const fn nth(self, n: u32) -> Self {
         Self { nth: n, ..self }
     }
 
     /// The fault failing `times` calls from the `nth`.
+    #[must_use]
     pub const fn times(self, times: Times) -> Self {
         Self { times, ..self }
     }
 
     /// The fault failing the call after it took effect.
+    #[must_use]
     pub const fn after_effect(self) -> Self {
         Self {
             took_effect: true,

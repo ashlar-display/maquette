@@ -73,7 +73,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The line and the sink's events:** `Line` (`Off`, `Tmds` with rate, ratio and
   scrambling, `Frl`, built with `Line::frl` and open to more fields), set by
   `Bench::set_line` and seen by targets through `Env::line`;
-  `Bench::hpd` and `hpd_pulse`; `unplug` and `plug` (a fresh sink with new stores and
+  `Bench::set_hpd` and `hpd_pulse`; `unplug` and `plug` (a fresh sink with new stores and
   settings; nothing answers while unplugged, the test's own targets included); `detach` and
   `reattach` (every call that passes the checks fails `Detached`, taking no time). Each is a
   bench event after which every target sees the bench (`Target::update`), recorded as
@@ -187,6 +187,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the first 16 recorded in the order found, and `assert_ok`, which panics listing them. A
   check of another crate's own trait that runs against the bench builds one with
   `Report::new` and `record`, so its users get the same report.
+- **Settings by value:** every method that returns a changed copy (`with_*`, `without_*`,
+  `Fault::on` and the like) is `#[must_use]`, so a dropped result warns.
 
 ### Internal
 

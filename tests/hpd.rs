@@ -107,7 +107,7 @@ fn a_group_can_reset_on_any_hpd_low_or_after_100_ms() {
 fn a_reset_is_taken_at_the_first_event_after_it_is_due() {
     let bench = bench(after_100_ms());
     fill(&bench);
-    bench.hpd(false);
+    bench.set_hpd(false);
     let low = bench.now().as_micros();
     // SCDC answers while HPD is low; reads at 60 ms and 150 ms are events.
     bench.advance(ms(60));
@@ -137,10 +137,10 @@ fn a_reset_due_while_nothing_happened_is_taken_when_hpd_rises() {
         .build()
         .unwrap();
     bench.preset_scdc(0x20, 0x03);
-    bench.hpd(false);
+    bench.set_hpd(false);
     bench.ddc().write(0x37, &[0]).unwrap_err();
     assert_eq!(bench.sink().tmds_config(), Some(0x03));
-    bench.hpd(true);
+    bench.set_hpd(true);
     let risen = bench.now().as_micros();
     assert!(resets(&bench).contains(&(risen, 0x20)));
     assert_eq!(bench.sink().tmds_config(), Some(0));
@@ -168,20 +168,20 @@ fn a_reset_after_zero_is_a_reset_as_hpd_falls() {
     );
     let bench = bench(config);
     fill(&bench);
-    bench.hpd(false);
+    bench.set_hpd(false);
     assert_eq!(bench.sink().source_version(), Some(0));
 }
 
 #[test]
 fn each_low_resets_a_group_once() {
     let bench = bench(SinkConfig::new());
-    bench.hpd(false);
+    bench.set_hpd(false);
     bench.advance(ms(150));
     // Written again while HPD is still low: kept for the rest of this low.
     bench.ddc().write(SCDC, &[0x20, 0x03]).unwrap();
     bench.advance(ms(150));
     assert_eq!(bench.sink().tmds_config(), Some(0x03));
-    bench.hpd(true);
+    bench.set_hpd(true);
     assert_eq!(bench.sink().tmds_config(), Some(0x03));
     // The next long low resets it again.
     bench.hpd_pulse(ms(100));
@@ -282,14 +282,14 @@ fn a_group_can_reset_as_hpd_rises() {
     let config = SinkConfig::new().with_hpd_reset(RegisterGroup::Config, HpdReset::OnHpdRise);
     let bench = bench(config);
     fill(&bench);
-    bench.hpd(false);
+    bench.set_hpd(false);
     assert_eq!(bench.sink().config_1(), Some(0x35), "kept while HPD is low");
     // Written while HPD is low: lost as it rises.
     bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
     bench.advance(ms(10));
     assert_eq!(bench.sink().config_1(), Some(0x03));
     let risen = bench.now().as_micros();
-    bench.hpd(true);
+    bench.set_hpd(true);
     assert_eq!(bench.sink().config_1(), Some(0));
     assert!(resets(&bench).contains(&(risen, 0x31)));
     // Written after it rose: kept.

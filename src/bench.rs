@@ -377,7 +377,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// # Panics
     ///
     /// When raising HPD on an unplugged sink: a mistake in the test, which plugs it instead.
-    pub fn hpd(&self, high: bool) {
+    pub fn set_hpd(&self, high: bool) {
         let unplugged = self.locked(|state, at| {
             if high && !state.plugged {
                 return true;
@@ -396,9 +396,9 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 
     /// HPD low, `low_for` on the bench's clock ([`advance`](Self::advance)), then HPD high.
     pub fn hpd_pulse(&self, low_for: Duration) {
-        self.hpd(false);
+        self.set_hpd(false);
         self.advance(low_for);
-        self.hpd(true);
+        self.set_hpd(true);
     }
 
     /// Unplugs the sink: HPD goes low, and nothing answers, the test's own targets included,

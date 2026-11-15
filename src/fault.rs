@@ -67,21 +67,25 @@ impl Fault {
     }
 
     /// The fault counting only operations that match `filter`.
+    #[must_use]
     pub const fn on(self, filter: Filter) -> Self {
         Self { filter, ..self }
     }
 
     /// The fault striking the `n`-th matching operation first.
+    #[must_use]
     pub const fn nth(self, n: u32) -> Self {
         Self { nth: n, ..self }
     }
 
     /// The fault striking `times` operations from the `nth`.
+    #[must_use]
     pub const fn times(self, times: Times) -> Self {
         Self { times, ..self }
     }
 
     /// The fault striking at `point`.
+    #[must_use]
     pub const fn at(self, point: Point) -> Self {
         Self { point, ..self }
     }
@@ -117,6 +121,7 @@ impl Filter {
     };
 
     /// The filter matching only operations at `addr`.
+    #[must_use]
     pub const fn with_addr(self, addr: u8) -> Self {
         Self {
             addr: Some(addr),
@@ -125,6 +130,7 @@ impl Filter {
     }
 
     /// The filter matching only operations of kind `op`.
+    #[must_use]
     pub const fn with_op(self, op: OpKind) -> Self {
         Self {
             op: Some(op),
@@ -133,6 +139,7 @@ impl Filter {
     }
 
     /// The filter matching only operations whose first byte written is `first`.
+    #[must_use]
     pub const fn with_first(self, first: u8) -> Self {
         Self {
             first: Some(first),

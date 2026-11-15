@@ -126,8 +126,8 @@ fn hpd_changes_are_events_and_the_built_in_targets_answer_while_it_is_low() {
     let edid = [0x11u8; 128];
     let bench = Bench::new(SinkConfig::new(), &edid).unwrap();
     assert!(bench.sink().hpd());
-    bench.hpd(false);
-    bench.hpd(false);
+    bench.set_hpd(false);
+    bench.set_hpd(false);
     assert!(!bench.sink().hpd());
     let mut buf = [0u8; 2];
     bench
@@ -140,7 +140,7 @@ fn hpd_changes_are_events_and_the_built_in_targets_answer_while_it_is_low() {
         .write_read(SCDC, &[0x01], &mut buf[..1])
         .unwrap();
     assert_eq!(buf[0], 1);
-    bench.hpd(true);
+    bench.set_hpd(true);
     let hpd: Vec<_> = events(&bench).into_iter().map(|(_, e)| e).collect();
     assert_eq!(hpd, [Seen::Hpd(false), Seen::Hpd(true)]);
 }
@@ -156,14 +156,14 @@ fn built_in_targets_can_be_silent_while_hpd_is_low() {
     let bench = Bench::new(config, &edid).unwrap();
     let bus = bench.ddc();
     bus.write(SCDC, &[0x20, 0x03]).unwrap();
-    bench.hpd(false);
+    bench.set_hpd(false);
     assert_eq!(
         bus.write(SCDC, &[0x20, 0x00]).unwrap_err().kind,
         NACK_ADDRESS
     );
     assert_eq!(bus.read(EDID, &mut [0]).unwrap_err().kind, NACK_ADDRESS);
     assert_eq!(bus.write(0x30, &[1]).unwrap_err().kind, NACK_ADDRESS);
-    bench.hpd(true);
+    bench.set_hpd(true);
     bus.write(SCDC, &[0x20, 0x00]).unwrap();
     assert_eq!(bench.sink().tmds_config(), Some(0));
     let defaults = SinkConfig::new();
@@ -177,7 +177,7 @@ fn a_tests_target_decides_with_hpd() {
     let mut targets: [&mut (dyn Target + Send); 1] = [&mut watcher];
     let bench = Bench::builder(&[]).targets(&mut targets).build().unwrap();
     bench.ddc().write(0x37, &[0]).unwrap();
-    bench.hpd(false);
+    bench.set_hpd(false);
     assert_eq!(
         bench.ddc().write(0x37, &[0]).unwrap_err().kind,
         NACK_ADDRESS
@@ -200,7 +200,7 @@ fn an_hpd_pulse_is_low_for_its_duration() {
 fn hpd_cannot_rise_on_an_unplugged_sink() {
     let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
     bench.unplug();
-    bench.hpd(true);
+    bench.set_hpd(true);
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn while_unplugged_nothing_answers() {
         .collect();
     assert_eq!(changes, [Seen::Plug(false), Seen::Hpd(false)]);
     // An HPD low on an unplugged sink is no change.
-    bench.hpd(false);
+    bench.set_hpd(false);
 }
 
 #[test]

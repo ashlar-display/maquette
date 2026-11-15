@@ -42,6 +42,7 @@ impl<'d> DdcDevice<'d> {
     }
 
     /// The device serving `edid`.
+    #[must_use]
     pub const fn with_edid(self, edid: &'d [u8]) -> Self {
         Self {
             edid: Some(edid),
@@ -50,6 +51,7 @@ impl<'d> DdcDevice<'d> {
     }
 
     /// A device without a segment pointer.
+    #[must_use]
     pub const fn without_segment_pointer(self) -> Self {
         Self {
             segment_pointer: false,
@@ -58,6 +60,7 @@ impl<'d> DdcDevice<'d> {
     }
 
     /// `addr`, reachable, answers nothing.
+    #[must_use]
     pub const fn with_silent(self, addr: u8) -> Self {
         Self {
             silent: Some(addr),

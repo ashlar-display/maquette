@@ -67,6 +67,7 @@ impl SimClock {
 
     /// The clock with a resolution of `tick`, rounded up to whole microseconds; zero means
     /// 1 µs, the finest a [`Timestamp`] holds.
+    #[must_use]
     pub const fn with_tick(mut self, tick: Duration) -> Self {
         let us = micros_rounded_up(tick);
         self.tick_us = if us == 0 { 1 } else { us };
@@ -75,6 +76,7 @@ impl SimClock {
 
     /// The clock with every delay waiting `overshoot` longer than asked, rounded up to whole
     /// microseconds.
+    #[must_use]
     pub const fn with_overshoot(mut self, overshoot: Duration) -> Self {
         self.overshoot_us = micros_rounded_up(overshoot);
         self
