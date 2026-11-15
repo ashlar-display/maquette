@@ -363,12 +363,14 @@ The built-in targets:
   byte, then writes from there; a read starts at the offset, which advances with every byte,
   and persists between transactions. What a byte written does depends on the register:
   - **the source's** — `Source_Version` (0x02), `TMDS_Config` (0x20), `Config_0` (0x30),
-    `Config_1` (0x31) and the test registers: stored as written;
+    `Config_1` (0x31), `Test_Read_Request` (0xC0) and the manufacturer's block past its
+    identification (0xDE–0xFF, which Amlogic marks `RW`) [12]: stored as written;
   - **update flags** — `Update_0` (0x10) and `Update_1` (0x11): a 1 written clears that
     flag [8];
-  - **the sink's** — `Sink_Version` (0x01), `Scrambling_Status` (0x21), the status flags
-    (0x40–0x42), the error counters (0x50–0x5A), the manufacturer's block (0xD0–0xFF): by
-    the setting in "Sink behaviour";
+  - **the sink's** — `Sink_Version` (0x01), `Scrambling_Status` (0x21),
+    `Source_Test_Configuration` (0x35, the sink's test requests, which sources only read)
+    [12], the status flags (0x40–0x42), the error counters (0x50–0x5A), the manufacturer's
+    identification (0xD0–0xDD): by the setting in "Sink behaviour";
   - **any other register:** stored as written (*chosen*, until it is modelled).
 
   At creation every register is 0 but `Sink_Version`, which is the setting (1 by default).
@@ -1217,6 +1219,7 @@ Driver source read at these commits; line numbers refer to them.
 | [9] | The SCDC register map: addresses, bits, and which registers the source writes | Linux `include/drm/display/drm_scdc.h:27–53`; amdgpu `drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h:58–65`, `dc/link/protocols/link_ddc.c:602–609`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:41–49`, `645–669`, `719–743`, `790`, `870`; Amlogic `drivers/media/vout/hdmitx21/hw/hdmi_tx_ddc.h:16–56` (the source's registers marked `RW`) |
 | [10] | 1/40 and scrambling above 340 Mcsc, 1/10 at or below | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:262–267` (comment); i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2437–2440` (`port_clock > 340000`); amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:575`, `604–605` (`pix_clk > 340000` writes `TMDS_Config` 3); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:740–743` (the ratio bit above 3.4 Gbps) |
 | [11] | A ratio change: suspend, write `TMDS_Bit_Clock_Ratio`, resume 1 to 100 ms after | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:300–305` (waits 1–2 ms after the write); dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:1407–1419`; Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:510–517` |
+| [12] | The sink's test and manufacturer registers | `Source_Test_Configuration` (0x35) read by the source: amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:58`, `98`, `220`, `310`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1_frl.c:360`, `538` (`xv_hdmitx1_hw.h:44`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_scdc.c:198–200`, and not marked `RW` in `hw/hdmi_tx_ddc.h:56`. Amlogic marks 0xC0 and 0xDE–0xFF `RW` (`hw/hdmi_tx_ddc.h:85`, `93`), not 0xD0–0xDD |
 
 Standards (VESA, public):
 

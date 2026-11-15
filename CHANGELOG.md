@@ -46,10 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   record (`Register`, `IgnoredWrite`, with `Actor` and `Ignored`).
 - **The sink's SCDC registers** at 0x54, the built-in target routed after a test's own: a
   write sets the offset with its first byte, a read reads from it, the offset persists. The
-  source's registers (`Source_Version`, `TMDS_Config`, `Config_0`, `Config_1`, …) are stored
-  as written; the update flags (`Update_0`, `Update_1`) clear when written back as 1; the
-  sink's (`Sink_Version`, `Scrambling_Status`, status flags, error counters, the
-  manufacturer's block) follow `OwnedWrite`; any other register is stored. Addresses, bits
+  source's registers (`Source_Version`, `TMDS_Config`, `Config_0`, `Config_1`,
+  `Test_Read_Request`, the manufacturer's block from 0xDE) are stored as written; the update
+  flags (`Update_0`, `Update_1`) clear when written back as 1; the sink's (`Sink_Version`,
+  `Scrambling_Status`, `Source_Test_Configuration`, status flags, error counters, the
+  manufacturer's identification at 0xD0–0xDD) follow `OwnedWrite`; any other register is
+  stored. Addresses, bits
   and roles are cited in the code from Linux, amdgpu, Xilinx and Amlogic. Every byte written
   is a `Register` or `IgnoredWrite` event in the transcript.
 - **The sink's EDID at 0x50 and DisplayID at 0x52, behind the E-DDC segment pointer at

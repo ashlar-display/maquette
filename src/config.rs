@@ -285,8 +285,9 @@ impl Default for SinkConfig {
     }
 }
 
-/// What a write to an SCDC register the sink owns (`Sink_Version`, `Scrambling_Status`, the
-/// status flags, the error counters, the manufacturer's block) does. No public source says.
+/// What a write to an SCDC register the sink owns (`Sink_Version`, `Scrambling_Status`,
+/// `Source_Test_Configuration`, the status flags, the error counters, the manufacturer's
+/// identification at 0xD0–0xDD) does. No public source says.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum OwnedWrite {

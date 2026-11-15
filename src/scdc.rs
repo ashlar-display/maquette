@@ -66,6 +66,8 @@ pub(crate) const SCRAMBLING_STATUS: u8 = 0x21;
 pub(crate) const CONFIG_0: u8 = 0x30;
 /// `Config_1`: written by the source; `FRL_Rate` in bits 3:0, `FFE_Levels` in 7:4.
 pub(crate) const CONFIG_1: u8 = 0x31;
+/// `Source_Test_Configuration`: the sink's test requests to the source, read by the source.
+const SOURCE_TEST_CONFIGURATION: u8 = 0x35;
 
 /// What a write to a register does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,14 +80,25 @@ enum Role {
     Sink,
 }
 
-/// The role of `reg`. The sink's: `Sink_Version`, `Scrambling_Status`, the status flags
-/// (0x40–0x42), the error counters (0x50–0x5A) and the manufacturer's block (0xD0–0xFF),
-/// which Amlogic does not mark `RW` and which sources only read. A register outside the
-/// modelled set is stored as written (*chosen*).
+/// The role of `reg`. The sink's: `Sink_Version`, `Scrambling_Status`,
+/// `Source_Test_Configuration` (0x35), the status flags (0x40–0x42), the error counters
+/// (0x50–0x5A) and the manufacturer's identification (0xD0–0xDD: the IEEE OUI, the device
+/// ID string, the revisions), which Amlogic does not mark `RW` and which sources only read.
+/// 0x35 the sources read under `Source_Test_Update` (amdgpu
+/// `dc/link/protocols/link_hdmi_frl.c:58`, `98`, `220`, `310`; Xilinx
+/// `v_hdmitx1/src/xv_hdmitx1_frl.c:360`, `538`; Amlogic `hdmitx21/hdmi_tx_scdc.c:198–200`).
+/// The rest of the manufacturer's block, 0xDE–0xFF, Amlogic marks `RW`
+/// (`hw/hdmi_tx_ddc.h:93`): stored as written, as is a register outside the modelled set
+/// (*chosen*).
 fn role(reg: u8) -> Role {
     match reg {
         UPDATE_0 | UPDATE_1 => Role::WriteOneToClear,
-        SINK_VERSION | SCRAMBLING_STATUS | 0x40..=0x42 | 0x50..=0x5A | 0xD0..=0xFF => Role::Sink,
+        SINK_VERSION
+        | SCRAMBLING_STATUS
+        | SOURCE_TEST_CONFIGURATION
+        | 0x40..=0x42
+        | 0x50..=0x5A
+        | 0xD0..=0xDD => Role::Sink,
         _ => Role::Source,
     }
 }
@@ -485,7 +498,15 @@ mod tests {
 
     #[test]
     fn roles_follow_the_sources() {
-        for reg in [SOURCE_VERSION, TMDS_CONFIG, CONFIG_0, CONFIG_1, 0x35, 0xC0] {
+        for reg in [
+            SOURCE_VERSION,
+            TMDS_CONFIG,
+            CONFIG_0,
+            CONFIG_1,
+            0xC0,
+            0xDE,
+            0xFF,
+        ] {
             assert_eq!(role(reg), Role::Source, "{reg:#04x}");
         }
         for reg in [UPDATE_0, UPDATE_1] {
@@ -494,12 +515,13 @@ mod tests {
         for reg in [
             SINK_VERSION,
             SCRAMBLING_STATUS,
+            SOURCE_TEST_CONFIGURATION,
             0x40,
             0x42,
             0x50,
             0x5A,
             0xD0,
-            0xFF,
+            0xDD,
         ] {
             assert_eq!(role(reg), Role::Sink, "{reg:#04x}");
         }

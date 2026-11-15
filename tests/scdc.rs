@@ -149,7 +149,7 @@ fn update_flags_clear_when_written_back_as_1() {
 fn writes_to_the_sinks_registers_are_ignored_by_default() {
     let bench = bench(SinkConfig::new());
     let bus = bench.ddc();
-    for reg in [0x01, 0x21, 0x40, 0x42, 0x50, 0x5A, 0xD0, 0xFF] {
+    for reg in [0x01, 0x21, 0x35, 0x40, 0x42, 0x50, 0x5A, 0xD0, 0xDD] {
         bus.write(SCDC, &[reg, 0x7F]).unwrap();
         assert_eq!(
             bench.sink().scdc(reg),
@@ -157,7 +157,7 @@ fn writes_to_the_sinks_registers_are_ignored_by_default() {
         );
     }
     let events = sink_events(&bench);
-    assert_eq!(events.len(), 8);
+    assert_eq!(events.len(), 9);
     assert_eq!(
         events[1],
         Event::IgnoredWrite {
@@ -171,6 +171,16 @@ fn writes_to_the_sinks_registers_are_ignored_by_default() {
     bus.write(SCDC, &[0x20, 0x03, 0x01, 0x00]).unwrap();
     assert_eq!(bench.sink().tmds_config(), Some(3));
     assert_eq!(bench.sink().scdc(0x22), Some(0));
+}
+
+#[test]
+fn the_manufacturers_block_past_its_identification_is_stored() {
+    let bench = bench(SinkConfig::new());
+    let bus = bench.ddc();
+    for reg in [0xDE, 0xFF] {
+        bus.write(SCDC, &[reg, 0x7F]).unwrap();
+        assert_eq!(bench.sink().scdc(reg), Some(0x7F));
+    }
 }
 
 #[test]
