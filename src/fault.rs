@@ -210,6 +210,21 @@ pub enum Effect {
     Fail(DdcErrorKind),
     /// The operation succeeds and takes this much longer.
     Slow(Duration),
+    /// The operation succeeds, but read byte `byte`, counted from 0 across the operation's
+    /// read data, comes back XORed with `xor`: the device sent it right, the line or a
+    /// dongle garbled it. A read that never reaches `byte`, and a write, are not changed.
+    /// EDID readers check and retry for this: Linux, github.com/torvalds/linux
+    /// `e9954f3fbddd`, `drivers/gpu/drm/drm_edid.c:2385–2416` (`edid_block_read`, up to 4
+    /// tries until a block validates); amdgpu, the same tree,
+    /// `drivers/gpu/drm/amd/display/amdgpu_dm/amdgpu_dm_helpers.c:1293–1348`
+    /// (`dm_helpers_read_local_edid`, 25 tries: "some dongles read edid incorrectly the
+    /// first time"). The point does not matter.
+    Corrupt {
+        /// The read byte changed.
+        byte: u16,
+        /// What it is XORed with.
+        xor: u8,
+    },
 }
 
 /// Where in an operation a fault strikes.

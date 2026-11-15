@@ -263,7 +263,11 @@ impl Input<'_> {
         let a = self.byte();
         let effect = match kinds.get(usize::from(a % 8)) {
             Some(&kind) => Effect::Fail(kind),
-            None => Effect::Slow(Duration::from_micros(u64::from(a))),
+            None if a % 8 == 6 => Effect::Slow(Duration::from_micros(u64::from(a))),
+            None => Effect::Corrupt {
+                byte: u16::from(self.byte() % 16),
+                xor: self.byte() | 1,
+            },
         };
         let point = match (a >> 3) % 3 {
             0 => Point::Before,
@@ -404,8 +408,32 @@ fn check_lock_comes(bench: &Bench<'_>, config: &SinkConfig) {
 }
 
 /// Checks that a successful plain read at 0x50 read segment 0.
-fn check_edid_read(result: &Result<(), maquette::BusError>, addr: u8, buf: &[u8]) {
-    if result.is_ok() && addr == 0x50 {
+/// A read a `Corrupt` fault struck is not checked: its bytes are garbled on purpose. The
+/// fault is recorded after the read's bus record, the last one, with a scheduled action's
+/// records possibly after it; once the transcript is full, nothing tells.
+fn check_edid_read(
+    bench: &Bench<'_>,
+    result: &Result<(), maquette::BusError>,
+    addr: u8,
+    buf: &[u8],
+) {
+    let records: Vec<Record> = bench.transcript().collect();
+    let read = records
+        .iter()
+        .rposition(|record| matches!(record.event, Event::Bus(_)));
+    let corrupted = bench.transcript_overflow() > 0
+        || read.is_some_and(|read| {
+            records[read..].iter().any(|record| {
+                matches!(
+                    record.event,
+                    Event::Fault {
+                        effect: Effect::Corrupt { .. },
+                        ..
+                    }
+                )
+            })
+        });
+    if result.is_ok() && addr == 0x50 && !corrupted {
         assert!(
             !buf.iter().any(|byte| (0x80..=0xBF).contains(byte)),
             "a plain EDID read returned segment 1: {buf:02x?}"
@@ -448,13 +476,13 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let written = input.bytes(&mut bytes);
                 let len = usize::from(input.byte() % 9);
                 let result = bus.write_read(addr, written, &mut buf[..len]);
-                check_edid_read(&result, addr, &buf[..len]);
+                check_edid_read(&bench, &result, addr, &buf[..len]);
             }
             2 => {
                 let addr = input.addr();
                 let len = usize::from(input.byte() % 9);
                 let result = bus.read(addr, &mut buf[..len]);
-                check_edid_read(&result, addr, &buf[..len]);
+                check_edid_read(&bench, &result, addr, &buf[..len]);
             }
             3 => {
                 let target = if input.bit() {

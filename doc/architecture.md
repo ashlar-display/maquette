@@ -890,7 +890,7 @@ pub struct Filter {
 // Filter::ANY, with const `with_addr`, `with_op`, `with_first` builders.
 
 pub enum Times { Count(u32), UntilCleared }
-pub enum Effect { Fail(DdcErrorKind), Slow(Duration) }
+pub enum Effect { Fail(DdcErrorKind), Slow(Duration), Corrupt { byte: u16, xor: u8 } }
 pub enum Point { Before, After, Partway { byte: u16 } }
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
@@ -928,6 +928,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     `Unsupported` fault breaks the `DdcBus` contract on purpose (`Unsupported` means
     refused before bus activity), to test code against a misbehaving backend.
   - `Slow(d)`: the operation succeeds and takes `d` longer.
+  - `Corrupt { byte, xor }`: the operation succeeds, and read byte `byte`, counted across
+    its read data, comes back XORed with `xor`: the device sent it right, the line or a
+    dongle garbled it. EDID readers check and retry for this (Linux's `edid_block_read`,
+    up to 4 tries; amdgpu's `dm_helpers_read_local_edid`, 25), so a reader that trusts
+    the first read fails against the bench. Writes are not changed.
 - **Time:** a faulted operation is charged for the bytes that went out: its address byte
   before, all of it after, up to byte *k* partway.
 - **Records:** the bus record carries the call's result; an `Event::Fault { id, effect,

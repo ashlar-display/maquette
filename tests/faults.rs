@@ -353,3 +353,52 @@ fn a_filter_on_plain_reads() {
         DdcErrorKind::Busy
     );
 }
+
+fn corrupt(byte: u16, xor: u8) -> Fault {
+    Fault::new(Effect::Corrupt { byte, xor })
+}
+
+#[test]
+fn a_corrupt_read_succeeds_with_one_byte_changed() {
+    let bench = bench();
+    bench.schedule(corrupt(5, 0xFF)).unwrap();
+    let mut block = [0u8; 16];
+    bench
+        .ddc()
+        .read_segmented(EddcTarget::Edid, 0, 0, &mut block)
+        .unwrap();
+    let mut expected: [u8; 16] = core::array::from_fn(|i| i as u8);
+    expected[5] ^= 0xFF;
+    assert_eq!(block, expected);
+    assert_eq!(results(&bench), [Ok(())]);
+    assert!(bench.transcript().any(|record| matches!(
+        record.event,
+        Event::Fault {
+            effect: Effect::Corrupt { byte: 5, xor: 0xFF },
+            ..
+        }
+    )));
+    // It struck once: the next read is clean.
+    bench
+        .ddc()
+        .read_segmented(EddcTarget::Edid, 0, 0, &mut block)
+        .unwrap();
+    assert_eq!(block[5], 5);
+}
+
+#[test]
+fn a_corrupt_byte_is_counted_across_the_read_data_only() {
+    // write_read: the offset written is not a read byte, so byte 2 is the third read.
+    let bench = bench();
+    bench.schedule(corrupt(2, 0x0F)).unwrap();
+    let mut buf = [0u8; 4];
+    bench.ddc().write_read(EDID, &[0x10], &mut buf).unwrap();
+    assert_eq!(buf, [0x10, 0x11, 0x12 ^ 0x0F, 0x13]);
+    // A read that does not reach the byte, and a write, are unchanged.
+    bench.schedule(corrupt(200, 0xFF)).unwrap();
+    bench.ddc().write_read(EDID, &[0], &mut buf).unwrap();
+    assert_eq!(buf, [0, 1, 2, 3]);
+    bench.schedule(corrupt(0, 0xFF)).unwrap();
+    bench.ddc().write(SCDC, &[0x20, 0x03]).unwrap();
+    assert_eq!(bench.sink().tmds_config(), Some(0x03));
+}

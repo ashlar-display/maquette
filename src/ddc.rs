@@ -96,6 +96,16 @@ impl<'b> Ddc<'b> {
                 (result, wire(reach, ops))
             }
         };
+        if let (
+            Ok(()),
+            Some(Strike {
+                effect: Effect::Corrupt { byte, xor },
+                ..
+            }),
+        ) = (result, strike)
+        {
+            corrupt(ops, usize::from(byte), xor);
+        }
         self.core.run_actions(false);
         if let Some(bytes) = wire_bytes {
             let timing = self.core.timing();
@@ -123,6 +133,21 @@ impl<'b> Ddc<'b> {
             }
             BusError::from_record(&record, kind)
         })
+    }
+}
+
+/// XORs read byte `byte`, counted across the operations' read data, with `xor`, if the
+/// reads reach it.
+fn corrupt(ops: &mut [Operation<'_>], byte: usize, xor: u8) {
+    let mut left = byte;
+    for op in ops.iter_mut() {
+        if let Operation::Read { buf, .. } = op {
+            if let Some(target) = buf.get_mut(left) {
+                *target ^= xor;
+                return;
+            }
+            left -= buf.len();
+        }
     }
 }
 

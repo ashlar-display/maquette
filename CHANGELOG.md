@@ -142,7 +142,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `maquette::hdmi_hal_async`.
 - **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
   written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
-  (`Fail(kind)`, or `Slow(d)`) and a `Point` (`Before` the sink sees it, `After` it applied
+  (`Fail(kind)`, `Slow(d)`, or `Corrupt { byte, xor }`, a read byte garbled under an `Ok`) and a `Point` (`Before` the sink sees it, `After` it applied
   it, `Partway { byte }`) — and returns a `FaultId` for `clear_fault`, or `ScheduleFull`
   past `FAULTS`. An operation is one transaction; refused, empty and detached calls do not
   count. A timeout charges the bus's stretch timeout; a struck operation is charged for
