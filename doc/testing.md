@@ -87,7 +87,8 @@ parts are built.
   calls not counting, unplugged ones counting; each piece of a split read an operation;
   the first scheduled fault striking while every fault counts; a full schedule; a fault
   that never strikes; the stretch timeout, slow operations, `Detached` and `Unsupported`
-  effects; a preset as an event the lock answers; a corrupt read succeeding with one byte
+  effects; a fault for a time striking until its window passes, a zero window striking
+  nothing; a preset as an event the lock answers; a corrupt read succeeding with one byte
   changed, counted across the read data only.
 - **`tests/actions.rs`** — scheduled actions: before an operation (seen by it) and after
   one (following its record), after a PHY call of the simulated PHY and of a coupled one;

@@ -197,6 +197,11 @@ pub enum Times {
     Count(u32),
     /// Every matching operation from the `nth`, until the test clears it.
     UntilCleared,
+    /// Every matching operation from the `nth` for this long on the bench's clock, counted
+    /// from the first it strikes; the first after that leaves it unstruck, and the fault
+    /// leaves the schedule. A host that backs off past the window gets through where one
+    /// that retries at once does not. A zero window strikes nothing.
+    For(Duration),
 }
 
 /// What a fault does to the operation it strikes.
@@ -284,15 +289,31 @@ struct Scheduled<'a> {
     id: FaultId,
     kind: Kind<'a>,
     seen: u32,
+    /// For a `Times::For` window: when it struck first.
+    first_at: Option<Timestamp>,
     due: bool,
 }
 
-/// Counts one more matching operation; whether it is struck, and whether the fault's last
-/// operation has now passed.
-fn count(seen: &mut u32, nth: u32, times: Times) -> (bool, bool) {
+/// Counts one more matching operation at `now`; whether it is struck, and whether the
+/// fault's last operation has now passed.
+fn count(
+    seen: &mut u32,
+    first_at: &mut Option<Timestamp>,
+    nth: u32,
+    times: Times,
+    now: Timestamp,
+) -> (bool, bool) {
     *seen = seen.saturating_add(1);
     let first = nth.max(1);
     match times {
+        Times::For(window) => {
+            if *seen < first {
+                return (false, false);
+            }
+            let start = *first_at.get_or_insert(now);
+            let over = start.checked_add(window).is_none_or(|end| now >= end);
+            (!over, over)
+        }
         Times::Count(count) => {
             let end = first.saturating_add(count);
             (*seen >= first && *seen < end, seen.saturating_add(1) >= end)
@@ -341,6 +362,7 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
             id,
             kind,
             seen: 0,
+            first_at: None,
             due: false,
         });
         Ok(id)
@@ -368,7 +390,13 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
         for scheduled in self.slots.iter_mut().flatten() {
             if let Kind::Action(_, When::PhyCall { kind, nth }) = scheduled.kind {
                 if kind.is_none_or(|kind| kind == call.kind()) {
-                    let (now, _) = count(&mut scheduled.seen, nth, Times::Count(1));
+                    let (now, _) = count(
+                        &mut scheduled.seen,
+                        &mut scheduled.first_at,
+                        nth,
+                        Times::Count(1),
+                        Timestamp::from_micros(0),
+                    );
                     scheduled.due |= now;
                 }
             }
@@ -430,7 +458,7 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
     /// Counts `record`'s operation for every bus fault it matches, in the order scheduled,
     /// and returns the first that strikes; a fault whose last operation has passed leaves,
     /// struck or not (an earlier fault may have taken it).
-    pub(crate) fn strike(&mut self, record: &BusRecord) -> Option<Strike> {
+    pub(crate) fn strike(&mut self, record: &BusRecord, now: Timestamp) -> Option<Strike> {
         let mut strike = None;
         for slot in self.slots.iter_mut() {
             let Some(scheduled) = slot else {
@@ -440,7 +468,13 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
                 Kind::Bus(fault) => fault,
                 Kind::Action(_, When::BeforeOp { filter, nth } | When::AfterOp { filter, nth }) => {
                     if filter.matches(record) {
-                        let (now, _) = count(&mut scheduled.seen, nth, Times::Count(1));
+                        let (now, _) = count(
+                            &mut scheduled.seen,
+                            &mut scheduled.first_at,
+                            nth,
+                            Times::Count(1),
+                            Timestamp::from_micros(0),
+                        );
                         scheduled.due |= now;
                     }
                     continue;
@@ -450,7 +484,13 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
             if !fault.matches(record) {
                 continue;
             }
-            let (strikes, last) = count(&mut scheduled.seen, fault.nth, fault.times);
+            let (strikes, last) = count(
+                &mut scheduled.seen,
+                &mut scheduled.first_at,
+                fault.nth,
+                fault.times,
+                now,
+            );
             if strikes && strike.is_none() {
                 strike = Some(Strike {
                     id: scheduled.id,
@@ -467,7 +507,7 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
 
     /// Counts `call` for every PHY fault it matches, as [`strike`](Self::strike) does for
     /// the bus; the fault that strikes, and whether the call takes effect first.
-    pub(crate) fn strike_phy(&mut self, call: &PhyCall) -> Option<(FaultId, bool)> {
+    pub(crate) fn strike_phy(&mut self, call: &PhyCall, now: Timestamp) -> Option<(FaultId, bool)> {
         let mut strike = None;
         for slot in self.slots.iter_mut() {
             let Some(scheduled) = slot else {
@@ -479,7 +519,13 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
             if !fault.matches(call) {
                 continue;
             }
-            let (strikes, last) = count(&mut scheduled.seen, fault.nth, fault.times);
+            let (strikes, last) = count(
+                &mut scheduled.seen,
+                &mut scheduled.first_at,
+                fault.nth,
+                fault.times,
+                now,
+            );
             if strikes && strike.is_none() {
                 strike = Some((scheduled.id, fault.took_effect));
             }

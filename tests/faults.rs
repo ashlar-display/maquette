@@ -420,3 +420,30 @@ fn a_corrupt_byte_is_counted_across_the_read_data_only() {
     bench.ddc().write(SCDC, &[0x20, 0x03]).unwrap();
     assert_eq!(bench.sink().tmds_config(), Some(0x03));
 }
+
+#[test]
+fn a_fault_for_a_time_strikes_until_its_window_passes() {
+    // Busy for 10 ms from its first strike.
+    let bench = bench();
+    bench
+        .schedule(fail(DdcErrorKind::Busy).times(Times::For(Duration::from_millis(10))))
+        .unwrap();
+    let bus = bench.ddc();
+    let mut buf = [0u8; 1];
+    // A host that retries at once keeps failing.
+    for _ in 0..3 {
+        assert_eq!(
+            bus.read(EDID, &mut buf).unwrap_err().kind,
+            DdcErrorKind::Busy
+        );
+    }
+    // One that backs off past the window gets through, and the fault has left.
+    bench.advance(Duration::from_millis(10));
+    bus.read(EDID, &mut buf).unwrap();
+    assert_eq!(bench.scheduled_faults(), 0);
+    // A zero window strikes nothing.
+    bench
+        .schedule(fail(DdcErrorKind::Busy).times(Times::For(Duration::ZERO)))
+        .unwrap();
+    bus.read(EDID, &mut buf).unwrap();
+}

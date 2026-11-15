@@ -592,3 +592,20 @@ fn the_scrambler_after_configure_stays_within_the_capabilities() {
         assert_eq!(bench.line(), line(config, scrambled), "{behaviour:?}");
     }
 }
+
+#[test]
+fn a_phy_fault_for_a_time_strikes_until_its_window_passes() {
+    let bench = bench();
+    bench
+        .schedule_phy(
+            PhyFault::new()
+                .on(PhyCallKind::Configure)
+                .times(Times::For(Duration::from_millis(5))),
+        )
+        .unwrap();
+    let mut phy = bench.phy();
+    assert_eq!(kind(phy.configure(high())), PhyErrorKind::Fault);
+    assert_eq!(kind(phy.configure(high())), PhyErrorKind::Fault);
+    bench.advance(Duration::from_millis(5));
+    phy.configure(high()).unwrap();
+}

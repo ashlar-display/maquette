@@ -142,7 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   procedure that needs only time needs no bench. hdmi-hal-async is re-exported as
   `maquette::hdmi_hal_async`.
 - **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
-  written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
+  written), the `nth` matching operation, `Times::Count(k)`, `UntilCleared` or `For(d)` (every matching
+  operation for `d` on the bench's clock from the first struck), an `Effect`
   (`Fail(kind)`, `Slow(d)`, or `Corrupt { byte, xor }`, a read byte garbled under an `Ok`) and a `Point` (`Before` the sink sees it, `After` it applied
   it, `Partway { byte }`; a NACK partway through a read falls on the read's address byte) —
   and returns a `FaultId` for `clear_fault`, or `ScheduleFull`

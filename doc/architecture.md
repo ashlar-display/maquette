@@ -889,7 +889,7 @@ pub struct Filter {
 }
 // Filter::ANY, with const `with_addr`, `with_op`, `with_first` builders.
 
-pub enum Times { Count(u32), UntilCleared }
+pub enum Times { Count(u32), UntilCleared, For(Duration) }
 pub enum Effect { Fail(DdcErrorKind), Slow(Duration), Corrupt { byte: u16, xor: u8 } }
 pub enum Point { Before, After, Partway { byte: u16 } }
 
@@ -906,7 +906,10 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
   calls while detached do not count: nothing went out. Calls while unplugged count: they
   reach the wire, and nothing answers.
 - **Counting:** each fault counts the matching operations from when it is scheduled, and
-  strikes the `nth` and, by `times`, the `k - 1` after it or every one until cleared. Faults
+  strikes the `nth` and, by `times`, the `k - 1` after it, every one until cleared, or
+  every one for `d` on the bench's clock from the first it strikes (`For(d)`: the first
+  after the window leaves it unstruck, so a host that backs off past it gets through where
+  one that retries at once does not). Faults
   are checked in the order scheduled; the first that strikes applies, and every fault
   counts the operation. A fault leaves the schedule once its last operation has passed,
   struck or not (an earlier fault may have taken it); `Times::Count(0)` never strikes.

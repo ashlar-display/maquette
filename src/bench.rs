@@ -152,7 +152,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
     fn strike(&mut self, at: Timestamp, record: &BusRecord) -> Option<Strike> {
         self.faults.time_actions(at);
         if self.attached {
-            self.faults.strike(record)
+            self.faults.strike(record, at)
         } else {
             None
         }
@@ -252,7 +252,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
     /// bench event; the line follows the PHY's output when it changes. Returns the result
     /// and whether the call took effect before a fault failed it.
     fn phy_call(&mut self, call: PhyCall, clock: &SimClock) -> (Result<(), PhyErrorKind>, bool) {
-        let strike = self.faults.strike_phy(&call);
+        let strike = self.faults.strike_phy(&call, clock.now());
         self.faults.phy_actions(&call);
         let was_running = self.phy.is_running();
         let (result, took_effect) = match strike {

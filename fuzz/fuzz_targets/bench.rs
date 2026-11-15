@@ -278,10 +278,10 @@ impl Input<'_> {
         };
         let b = self.byte();
         let filter = self.filter(b);
-        let times = if b & 0x08 != 0 {
-            Times::UntilCleared
-        } else {
-            Times::Count(u32::from((b >> 4) % 4))
+        let times = match (b & 0x08 != 0, b & 0x80 != 0) {
+            (true, false) => Times::UntilCleared,
+            (true, true) => Times::For(self.micros()),
+            _ => Times::Count(u32::from((b >> 4) % 4)),
         };
         Fault::new(effect)
             .on(filter)
