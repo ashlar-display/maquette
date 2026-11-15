@@ -15,22 +15,56 @@ fn bench(config: SinkConfig) -> Bench<'static> {
 }
 
 /// The transcript without its bus records.
-fn sink_events(bench: &Bench<'_>) -> Vec<Event> {
+/// What these tests compare of an event at 0x54: the transcript's variants are matched, not
+/// built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Register {
+        reg: u8,
+        from: u8,
+        to: u8,
+        by: Actor,
+    },
+    Ignored {
+        reg: u8,
+        value: u8,
+        why: Ignored,
+    },
+    Other,
+}
+
+fn seen(event: Event) -> Seen {
+    match event {
+        Event::Register {
+            addr: SCDC,
+            reg,
+            from,
+            to,
+            by,
+            ..
+        } => Seen::Register { reg, from, to, by },
+        Event::IgnoredWrite {
+            addr: SCDC,
+            reg,
+            value,
+            why,
+            ..
+        } => Seen::Ignored { reg, value, why },
+        _ => Seen::Other,
+    }
+}
+
+fn sink_events(bench: &Bench<'_>) -> Vec<Seen> {
     bench
         .transcript()
         .map(|record| record.event)
         .filter(|event| !matches!(event, Event::Bus(_)))
+        .map(seen)
         .collect()
 }
 
-fn register(reg: u8, from: u8, to: u8, by: Actor) -> Event {
-    Event::Register {
-        addr: SCDC,
-        reg,
-        from,
-        to,
-        by,
-    }
+fn register(reg: u8, from: u8, to: u8, by: Actor) -> Seen {
+    Seen::Register { reg, from, to, by }
 }
 
 #[test]
@@ -88,7 +122,7 @@ fn register_events_follow_their_bus_record_at_its_time() {
     let records: Vec<_> = bench.transcript().collect();
     assert_eq!(records.len(), 2);
     assert!(matches!(records[0].event, Event::Bus(_)));
-    assert_eq!(records[1].event, register(0x20, 0, 1, Actor::Source));
+    assert_eq!(seen(records[1].event), register(0x20, 0, 1, Actor::Source));
     assert_eq!(records[1].at, records[0].at);
     assert_eq!(records[1].at.as_micros(), 700);
 }
@@ -160,8 +194,7 @@ fn writes_to_the_sinks_registers_are_ignored_by_default() {
     assert_eq!(events.len(), 9);
     assert_eq!(
         events[1],
-        Event::IgnoredWrite {
-            addr: SCDC,
+        Seen::Ignored {
             reg: 0x21,
             value: 0x7F,
             why: Ignored::SinkOwned

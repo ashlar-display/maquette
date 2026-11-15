@@ -20,12 +20,36 @@ fn us(micros: u64) -> Duration {
     Duration::from_micros(micros)
 }
 
+/// What these tests compare of an event: the transcript's variants are matched, not built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Seen {
+    Line(Line),
+    Hpd(bool),
+    Plug(bool),
+    Adapter(bool),
+    Note { code: u32, value: u32 },
+    Register,
+    Other,
+}
+
+fn seen(event: Event) -> Seen {
+    match event {
+        Event::Line(line) => Seen::Line(line),
+        Event::Hpd { high, .. } => Seen::Hpd(high),
+        Event::Plug { plugged, .. } => Seen::Plug(plugged),
+        Event::Adapter { attached, .. } => Seen::Adapter(attached),
+        Event::Note { code, value, .. } => Seen::Note { code, value },
+        Event::Register { .. } => Seen::Register,
+        _ => Seen::Other,
+    }
+}
+
 /// The transcript's events other than bus records, with their times.
-fn events(bench: &Bench<'_>) -> Vec<(u64, Event)> {
+fn events(bench: &Bench<'_>) -> Vec<(u64, Seen)> {
     bench
         .transcript()
         .filter(|record| !matches!(record.event, Event::Bus(_)))
-        .map(|record| (record.at.as_micros(), record.event))
+        .map(|record| (record.at.as_micros(), seen(record.event)))
         .collect()
 }
 
@@ -55,9 +79,8 @@ impl Target for Watcher {
     }
 }
 
-fn note(hpd: bool, line: u32) -> Event {
-    Event::Note {
-        addr: 0x37,
+fn note(hpd: bool, line: u32) -> Seen {
+    Seen::Note {
         code: u32::from(hpd),
         value: line,
     }
@@ -73,18 +96,16 @@ fn the_line_starts_off_and_changes_are_events() {
     bench.set_line(TMDS_594);
     // The same line again is not a change.
     bench.set_line(TMDS_594);
-    let frl = Line::Frl {
-        rate: HdmiForumFrl::Rate12Gbps4Lanes,
-    };
+    let frl = Line::frl(HdmiForumFrl::Rate12Gbps4Lanes);
     bench.set_line(frl);
     assert_eq!(bench.line(), frl);
     assert_eq!(
         events(&bench),
         [
             (10, note(true, 0)),
-            (10, Event::Line(TMDS_594)),
+            (10, Seen::Line(TMDS_594)),
             (10, note(true, 594_000)),
-            (10, Event::Line(frl)),
+            (10, Seen::Line(frl)),
             (10, note(true, 1)),
         ]
     );
@@ -121,7 +142,7 @@ fn hpd_changes_are_events_and_the_built_in_targets_answer_while_it_is_low() {
     assert_eq!(buf[0], 1);
     bench.hpd(true);
     let hpd: Vec<_> = events(&bench).into_iter().map(|(_, e)| e).collect();
-    assert_eq!(hpd, [Event::Hpd { high: false }, Event::Hpd { high: true }]);
+    assert_eq!(hpd, [Seen::Hpd(false), Seen::Hpd(true)]);
 }
 
 #[test]
@@ -170,10 +191,7 @@ fn an_hpd_pulse_is_low_for_its_duration() {
     bench.hpd_pulse(Duration::from_millis(500));
     assert_eq!(
         events(&bench),
-        [
-            (5, Event::Hpd { high: false }),
-            (500_005, Event::Hpd { high: true }),
-        ]
+        [(5, Seen::Hpd(false)), (500_005, Seen::Hpd(true)),]
     );
 }
 
@@ -204,12 +222,9 @@ fn while_unplugged_nothing_answers() {
     let changes: Vec<_> = events(&bench)
         .into_iter()
         .map(|(_, e)| e)
-        .filter(|e| !matches!(e, Event::Note { .. }))
+        .filter(|e| !matches!(e, Seen::Note { .. }))
         .collect();
-    assert_eq!(
-        changes,
-        [Event::Plug { plugged: false }, Event::Hpd { high: false }]
-    );
+    assert_eq!(changes, [Seen::Plug(false), Seen::Hpd(false)]);
     // An HPD low on an unplugged sink is no change.
     bench.hpd(false);
 }
@@ -237,15 +252,15 @@ fn plug_brings_a_fresh_sink_back() {
     let plugs: Vec<_> = events(&bench)
         .into_iter()
         .map(|(_, e)| e)
-        .filter(|e| !matches!(e, Event::Register { .. }))
+        .filter(|e| !matches!(e, Seen::Register))
         .collect();
     assert_eq!(
         plugs,
         [
-            Event::Plug { plugged: false },
-            Event::Hpd { high: false },
-            Event::Plug { plugged: true },
-            Event::Hpd { high: true },
+            Seen::Plug(false),
+            Seen::Hpd(false),
+            Seen::Plug(true),
+            Seen::Hpd(true),
         ]
     );
 }
@@ -330,15 +345,9 @@ fn while_detached_every_call_fails_and_takes_no_time() {
     let adapter: Vec<_> = events(&bench)
         .into_iter()
         .map(|(_, e)| e)
-        .filter(|e| matches!(e, Event::Adapter { .. }))
+        .filter(|e| matches!(e, Seen::Adapter(_)))
         .collect();
-    assert_eq!(
-        adapter,
-        [
-            Event::Adapter { attached: false },
-            Event::Adapter { attached: true },
-        ]
-    );
+    assert_eq!(adapter, [Seen::Adapter(false), Seen::Adapter(true),]);
 }
 
 #[test]

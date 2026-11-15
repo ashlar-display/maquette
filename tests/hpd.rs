@@ -272,7 +272,7 @@ fn the_groups_and_their_defaults() {
     assert_eq!(RegisterGroup::SourceVersion.registers(), [0x02]);
     assert_eq!(RegisterGroup::Config.registers(), [0x30, 0x31]);
     let config = SinkConfig::new();
-    for group in RegisterGroup::ALL {
+    for &group in RegisterGroup::ALL {
         assert_eq!(config.hpd_reset(group), HpdReset::OnHpdLow);
     }
 }

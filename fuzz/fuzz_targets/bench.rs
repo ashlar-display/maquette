@@ -108,9 +108,7 @@ impl Input<'_> {
             // Ratios that do not fit the rate.
             5 => tmds(594_000, TmdsClockRatio::Div10, true),
             6 => tmds(297_000, TmdsClockRatio::Div40, true),
-            _ => Line::Frl {
-                rate: HdmiForumFrl::Rate6Gbps4Lanes,
-            },
+            _ => Line::frl(HdmiForumFrl::Rate6Gbps4Lanes),
         }
     }
 
@@ -121,7 +119,7 @@ impl Input<'_> {
         let mut config = SinkConfig::new();
         // Each group's HPD reset: the default (on any low), never, as HPD rises, or after
         // 50 ms.
-        for (i, group) in RegisterGroup::ALL.into_iter().enumerate() {
+        for (i, &group) in RegisterGroup::ALL.iter().enumerate() {
             let reset = match (c >> (2 * i)) & 0b11 {
                 0 => continue,
                 1 => HpdReset::Never,
@@ -338,6 +336,7 @@ fn check_lock_comes(bench: &Bench<'_>, config: &SinkConfig) {
                 from,
                 to,
                 by: Actor::Sink,
+                ..
             } if from & 1 != 0 && to & 1 == 0 => Some(record.at),
             Event::Line(_) | Event::Plug { .. } | Event::Hpd { .. } => Some(record.at),
             _ => None,

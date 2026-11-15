@@ -139,7 +139,7 @@ fn errors_come_back_unchanged_and_a_failed_call_changes_nothing() {
     let events: Vec<_> = bench
         .transcript()
         .filter_map(|record| match record.event {
-            Event::Phy { call, result } => Some((call, result)),
+            Event::Phy { call, result, .. } => Some((call, result)),
             _ => None,
         })
         .collect();
@@ -167,9 +167,7 @@ fn frl_and_power_pass_through_and_follow_the_contract() {
     let bench = bench();
     let mut phy = Coupled::new(Double::default(), &bench);
     phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
-    let frl = Line::Frl {
-        rate: HdmiForumFrl::Rate6Gbps4Lanes,
-    };
+    let frl = Line::frl(HdmiForumFrl::Rate6Gbps4Lanes);
     assert_eq!(bench.line(), frl);
     phy.send_ltp(LanePatterns::default()).unwrap();
     phy.set_frl_output(FrlOutput::Active).unwrap();
@@ -214,12 +212,7 @@ fn the_last_change_to_the_line_wins() {
     assert_eq!(bench.line(), tmds(true));
     // The simulated PHY drives the same line.
     sim.set_frl_rate(HdmiForumFrl::Rate3Gbps3Lanes).unwrap();
-    assert_eq!(
-        bench.line(),
-        Line::Frl {
-            rate: HdmiForumFrl::Rate3Gbps3Lanes
-        }
-    );
+    assert_eq!(bench.line(), Line::frl(HdmiForumFrl::Rate3Gbps3Lanes));
 }
 
 #[test]

@@ -112,6 +112,16 @@ impl Target for Device {
     }
 }
 
+/// A target's note, as (address, code, value).
+fn note(event: Event) -> Option<(u8, u32, u32)> {
+    match event {
+        Event::Note {
+            addr, code, value, ..
+        } => Some((addr, code, value)),
+        _ => None,
+    }
+}
+
 fn bus_records<const LOG: usize>(bench: &Bench<'_, LOG>) -> Vec<(Timestamp, BusRecord)> {
     bench
         .transcript()
@@ -465,14 +475,7 @@ fn a_targets_notes_follow_its_bus_record() {
     let records: Vec<Record> = bench.transcript().collect();
     assert_eq!(records.len(), 2);
     assert!(matches!(records[0].event, Event::Bus(_)));
-    assert_eq!(
-        records[1].event,
-        Event::Note {
-            addr: SCDC,
-            code: 1,
-            value: 1
-        }
-    );
+    assert_eq!(note(records[1].event), Some((SCDC, 1, 1)));
     assert_eq!(records[1].at, Timestamp::from_micros(500));
 }
 
@@ -529,29 +532,9 @@ fn advance_lets_every_target_see_the_new_time() {
     bench.advance(us(40));
     let notes: Vec<_> = bench
         .transcript()
-        .map(|record| (record.at.as_micros(), record.event))
+        .map(|record| (record.at.as_micros(), note(record.event)))
         .collect();
-    assert_eq!(
-        notes,
-        [
-            (
-                40,
-                Event::Note {
-                    addr: 1,
-                    code: 2,
-                    value: 40
-                }
-            ),
-            (
-                40,
-                Event::Note {
-                    addr: 2,
-                    code: 2,
-                    value: 40
-                }
-            ),
-        ]
-    );
+    assert_eq!(notes, [(40, Some((1, 2, 40))), (40, Some((2, 2, 40)))]);
 }
 
 #[test]

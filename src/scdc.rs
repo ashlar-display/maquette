@@ -245,7 +245,7 @@ impl Scdc {
             }
             (Some(since), _) => since,
         };
-        for group in RegisterGroup::ALL {
+        for &group in RegisterGroup::ALL {
             let due = match self.hpd_resets[group.index()] {
                 HpdReset::OnHpdLow => true,
                 HpdReset::OnHpdRise => env.hpd(),

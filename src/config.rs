@@ -419,8 +419,9 @@ pub enum RegisterGroup {
 }
 
 impl RegisterGroup {
-    /// Every group.
-    pub const ALL: [Self; 4] = [
+    /// Every group, in the order the sink resets them. A slice, so a group added later
+    /// changes no type.
+    pub const ALL: &'static [Self] = &[
         Self::TmdsConfig,
         Self::Status,
         Self::SourceVersion,

@@ -435,7 +435,8 @@ pub enum Line {
     Off,
     /// TMDS at `character_rate_khz`, the clock at `ratio`, scrambled or not.
     Tmds { character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool },
-    /// FRL at `rate`; what it carries comes with the sink's FRL responses.
+    /// FRL at `rate`; what it carries comes with the sink's FRL responses, so the variant
+    /// is `#[non_exhaustive]`: built with `Line::frl(rate)`, matched with `..`.
     Frl { rate: HdmiForumFrl },
 }
 
@@ -508,6 +509,8 @@ pub struct Record {
     pub event: Event,
 }
 
+/// Each variant with fields is `#[non_exhaustive]` too: the bench makes records, a test
+/// matches them with `..`, and a variant may gain a field without a breaking change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
@@ -773,7 +776,7 @@ pub enum PhyErrorKind {
   before it returns, so a deadline counted from before it is visibly late.
 - **The line:** the PHY drives it whenever its own output changes: running TMDS output is
   `Line::Tmds { character_rate_khz, ratio, scrambled }` from the configuration and the
-  scrambler; FRL is `Line::Frl { rate }`; anything else is `Line::Off`. A test's own
+  scrambler; FRL is `Line::frl(rate)`; anything else is `Line::Off`. A test's own
   `set_line` changes it too, and holds until the PHY's output next changes: the last change
   wins.
 - **Records:** every call is an `Event::Phy { call, result }`, with `PhyCall` the call and

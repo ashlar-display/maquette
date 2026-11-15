@@ -35,9 +35,18 @@ pub enum Line {
         /// Whether the characters are scrambled.
         scrambled: bool,
     },
-    /// FRL at `rate`; what it carries comes with the sink's FRL responses.
+    /// FRL at `rate`; what it carries comes with the sink's FRL responses, so it is built
+    /// with [`Line::frl`] and matched with `..`.
+    #[non_exhaustive]
     Frl {
         /// The FRL rate.
         rate: HdmiForumFrl,
     },
+}
+
+impl Line {
+    /// FRL at `rate`.
+    pub const fn frl(rate: HdmiForumFrl) -> Self {
+        Self::Frl { rate }
+    }
 }

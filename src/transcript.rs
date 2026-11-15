@@ -19,6 +19,10 @@ pub struct Record {
 }
 
 /// What a [`Record`] records.
+///
+/// The bench makes the records; a test reads them. Each variant with fields is
+/// `#[non_exhaustive]`, so it may gain one without a breaking change: match it with `..`,
+/// and compare what a test cares about rather than a whole built `Event`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Event {
@@ -26,6 +30,7 @@ pub enum Event {
     /// ended, refused calls included.
     Bus(BusRecord),
     /// A register of a built-in target changed, by the source or by the sink.
+    #[non_exhaustive]
     Register {
         /// The target's address.
         addr: u8,
@@ -39,6 +44,7 @@ pub enum Event {
         by: Actor,
     },
     /// A built-in target ignored a write, and why.
+    #[non_exhaustive]
     IgnoredWrite {
         /// The target's address.
         addr: u8,
@@ -52,21 +58,25 @@ pub enum Event {
     /// What the source transmits changed ([`Bench::set_line`](crate::Bench::set_line)).
     Line(Line),
     /// HPD changed.
+    #[non_exhaustive]
     Hpd {
         /// Whether HPD is now high.
         high: bool,
     },
     /// The sink was unplugged or plugged in.
+    #[non_exhaustive]
     Plug {
         /// Whether the sink is now plugged in.
         plugged: bool,
     },
     /// The adapter was detached or reattached.
+    #[non_exhaustive]
     Adapter {
         /// Whether the adapter is now attached.
         attached: bool,
     },
     /// The sink refused to set the scrambling bit right away (`SinkConfig`'s refusals).
+    #[non_exhaustive]
     Refusal {
         /// Which attempt, counted from 1: a write of `TMDS_Config` with `Scrambling_Enable`
         /// set.
@@ -75,6 +85,7 @@ pub enum Event {
         kind: RefusalKind,
     },
     /// A scheduled fault struck the bus operation recorded before it.
+    #[non_exhaustive]
     Fault {
         /// The fault.
         id: FaultId,
@@ -84,6 +95,7 @@ pub enum Event {
         point: Point,
     },
     /// A call of the simulated PHY, and how it ended, recorded when it returned.
+    #[non_exhaustive]
     Phy {
         /// The call, with its arguments.
         call: PhyCall,
@@ -91,6 +103,7 @@ pub enum Event {
         result: Result<(), PhyErrorKind>,
     },
     /// A test's target's own event, recorded with [`Env::note`](crate::Env::note).
+    #[non_exhaustive]
     Note {
         /// The address the target noted it for.
         addr: u8,

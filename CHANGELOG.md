@@ -48,7 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The transcript**, `Bench::transcript`: one `Record` per bus call (`BusRecord`, refused
   calls included, a split read per piece) and per target note, in order, with its time;
   what does not fit is counted. `Event` also has the variants the built-in targets will
-  record (`Register`, `IgnoredWrite`, with `Actor` and `Ignored`).
+  record (`Register`, `IgnoredWrite`, with `Actor` and `Ignored`). Each variant with fields
+  is `#[non_exhaustive]`: a test matches records with `..`, and a variant may gain a field.
 - **The sink's SCDC registers** at 0x54, the built-in target routed after a test's own: a
   write sets the offset with its first byte, a read reads from it, the offset persists. The
   source's registers (`Source_Version`, `TMDS_Config`, `Config_0`, `Config_1`,
@@ -70,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `with_missing_segment` (`MissingSegment::Nack` by default; `Ack`) and
   `with_block_boundary` (`BlockBoundary::Continue` by default; `Wrap`), with getters.
 - **The line and the sink's events:** `Line` (`Off`, `Tmds` with rate, ratio and
-  scrambling, `Frl`), set by `Bench::set_line` and seen by targets through `Env::line`;
+  scrambling, `Frl`, built with `Line::frl` and open to more fields), set by
+  `Bench::set_line` and seen by targets through `Env::line`;
   `Bench::hpd` and `hpd_pulse`; `unplug` and `plug` (a fresh sink with new stores and
   settings; nothing answers while unplugged, the test's own targets included); `detach` and
   `reattach` (every call that passes the checks fails `Detached`, taking no time). Each is a
@@ -101,8 +103,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SourceVersion`, `Config`) to 0 once, as its `HpdReset` says: `OnHpdLow`, the default for
   every group; `After(d)`, taken at the first event at or after it or when HPD rises;
   `OnHpdRise`, losing what was written during the low too; or `Never`. Set by
-  `SinkConfig::with_hpd_reset`. Each reset register is a `Register` event by `Actor::Sink`;
-  resetting `TMDS_Config` loses the scrambling lock.
+  `SinkConfig::with_hpd_reset`; `RegisterGroup::ALL`, a slice, lists the groups. Each reset
+  register is a `Register` event by `Actor::Sink`; resetting `TMDS_Config` loses the
+  scrambling lock.
 - **The simulated PHY**, `Bench::phy`: a `Copy` handle implementing hdmi-hal's `TmdsPhy`,
   `FrlPhy` and `PhyPower` to their contracts, the mode rule included, with `PhyError`s
   (`PhyErrorKind::PoweredOff`, `NotConfigured`, `Running`, `Unsupported`, `NotInFrl`,

@@ -248,6 +248,7 @@ fn writes_after_the_offset_are_ignored_and_recorded() {
                 reg,
                 value,
                 why,
+                ..
             } => Some((addr, reg, value, why)),
             _ => None,
         })

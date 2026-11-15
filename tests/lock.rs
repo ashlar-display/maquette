@@ -307,7 +307,7 @@ fn a_sink_can_withhold_the_status_for_its_first_attempts() {
     let refusals: Vec<_> = bench
         .transcript()
         .filter_map(|record| match record.event {
-            Event::Refusal { attempt, kind } => Some((attempt, kind)),
+            Event::Refusal { attempt, kind, .. } => Some((attempt, kind)),
             _ => None,
         })
         .collect();

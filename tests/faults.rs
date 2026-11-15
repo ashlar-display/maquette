@@ -54,14 +54,15 @@ fn before_the_sink_sees_it_nothing_is_applied() {
     let events: Vec<_> = bench.transcript().map(|record| record.event).collect();
     assert_eq!(events.len(), 2);
     assert!(matches!(events[0], Event::Bus(bus) if bus.result == Err(NACK_ADDRESS)));
-    assert_eq!(
+    assert!(matches!(
         events[1],
         Event::Fault {
-            id,
+            id: struck,
             effect: Effect::Fail(NACK_ADDRESS),
-            point: Point::Before
-        }
-    );
+            point: Point::Before,
+            ..
+        } if struck == id
+    ));
     // It struck once and left the schedule.
     assert_eq!(bench.scheduled_faults(), 0);
     bench.ddc().write(SCDC, &[0x20, 0x03]).unwrap();

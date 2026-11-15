@@ -121,12 +121,7 @@ fn the_plain_async_traits_come_through_the_blanket_implementations() {
         &mut phy,
         &mut delay
     )));
-    assert_eq!(
-        bench.line(),
-        Line::Frl {
-            rate: HdmiForumFrl::Rate3Gbps3Lanes
-        }
-    );
+    assert_eq!(bench.line(), Line::frl(HdmiForumFrl::Rate3Gbps3Lanes));
 }
 
 #[test]

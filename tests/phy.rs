@@ -48,7 +48,7 @@ fn phy_events(bench: &Bench<'_>) -> Vec<(PhyCall, Result<(), PhyErrorKind>)> {
     bench
         .transcript()
         .filter_map(|record| match record.event {
-            Event::Phy { call, result } => Some((call, result)),
+            Event::Phy { call, result, .. } => Some((call, result)),
             _ => None,
         })
         .collect()
@@ -252,12 +252,7 @@ fn entering_one_mode_leaves_the_other() {
     phy.configure(high()).unwrap();
     phy.start_output().unwrap();
     phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
-    assert_eq!(
-        bench.line(),
-        Line::Frl {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes
-        }
-    );
+    assert_eq!(bench.line(), Line::frl(HdmiForumFrl::Rate6Gbps4Lanes));
     // FRL left TMDS: the configuration is gone.
     assert_eq!(kind(phy.start_output()), PhyErrorKind::NotConfigured);
     phy.send_ltp(LanePatterns::default()).unwrap();
@@ -328,22 +323,14 @@ fn every_call_is_recorded_with_its_result_and_line_change() {
     phy.configure(low()).unwrap();
     phy.start_output().unwrap();
     let events: Vec<Event> = bench.transcript().map(|record| record.event).collect();
+    assert_eq!(events.len(), 4);
+    assert_eq!(events[3], Event::Line(line(low(), true)));
     assert_eq!(
-        events,
+        phy_events(&bench),
         [
-            Event::Phy {
-                call: PhyCall::StartOutput,
-                result: Err(PhyErrorKind::NotConfigured)
-            },
-            Event::Phy {
-                call: PhyCall::Configure(low()),
-                result: Ok(())
-            },
-            Event::Phy {
-                call: PhyCall::StartOutput,
-                result: Ok(())
-            },
-            Event::Line(line(low(), true)),
+            (PhyCall::StartOutput, Err(PhyErrorKind::NotConfigured)),
+            (PhyCall::Configure(low()), Ok(())),
+            (PhyCall::StartOutput, Ok(())),
         ]
     );
 }
