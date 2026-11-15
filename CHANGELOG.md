@@ -153,7 +153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a segment pointer, an address where nothing answers). Argument and capability refusals,
   empty buffers, the EDID read from segment 0 (without a pointer too) and segment 1, and
   `NoAcknowledge` where nothing answers; every call safe on a real device, points without a
-  description skipped. `run_threads` (with `std`) runs it from several threads at once;
+  description skipped. `run_threads` (with `std`) runs it from as many threads at once as
+  asked for, at least one;
   `run_async` (with `async`) over hdmi-hal-async's `DdcBus`. Failures are
   `check::DdcBusFailure`s.
 - **The `ScdcTransport` check** (`check::ScdcTransportCheck`): over a register image the
@@ -161,7 +162,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ones that change by themselves), `read` of every known register, `read_block` of 16
   registers wherever they fit agreeing register by register, empty buffers `Ok`, reads past
   0xFF returning, and, with a `check::FailNext` hook (implemented by `Bench`), an error
-  reaching the caller with its kind and the transport working after it. `run_async` over
+  reaching the caller with its kind and the transport working after it; a failure the hook
+  cannot arm is `NotArmed`, the setup's and not the transport's, and one no transfer took
+  is withdrawn. `run_async` over
   hdmi-hal-async's `ScdcTransport`. Failures are `check::ScdcTransportFailure`s.
 - **The PHY check** (`check::PhyCheck`): hdmi-hal's PHY contracts with a configuration the
   PHY can do and a `check::OutputProbe` (implemented by `Bench`) for whether its output

@@ -62,15 +62,25 @@ impl Default for ScdcImage {
 
 /// Makes the next transfer fail, so a check can see what follows an error.
 pub trait FailNext {
-    /// The next transfer fails with `kind`.
-    fn fail_next(&self, kind: DdcErrorKind);
+    /// Makes the next transfer fail with `kind`; whether it could. A check that cannot arm
+    /// a failure records that, and blames the setup, not the implementation.
+    fn fail_next(&self, kind: DdcErrorKind) -> bool;
+
+    /// Withdraws a failure [`fail_next`](Self::fail_next) armed that no transfer has taken,
+    /// so it does not strike a later one. By default nothing: a failure that cannot outlast
+    /// its point.
+    fn withdraw(&self) {}
 }
 
 /// The next SCDC operation on the bench's bus fails: a scheduled fault, before the sink sees
-/// it. Needs room for one fault in the schedule.
+/// it. Needs room for one fault in the schedule: without it `fail_next` is `false`.
 impl<const LOG: usize, const FAULTS: usize> FailNext for Bench<'_, LOG, FAULTS> {
-    fn fail_next(&self, kind: DdcErrorKind) {
-        let _ = self.schedule(Fault::new(Effect::Fail(kind)).on(Filter::ANY.with_addr(SCDC)));
+    fn fail_next(&self, kind: DdcErrorKind) -> bool {
+        self.arm(Fault::new(Effect::Fail(kind)).on(Filter::ANY.with_addr(SCDC)))
+    }
+
+    fn withdraw(&self) {
+        self.withdraw_armed();
     }
 }
 
@@ -115,6 +125,12 @@ pub enum ScdcTransportFailure {
         /// What the caller got.
         found: Result<(), DdcErrorKind>,
     },
+    /// The hook could not arm a failure with `kind`: the setup's failure, not the
+    /// transport's (for the bench, its fault schedule is full).
+    NotArmed {
+        /// The kind.
+        kind: DdcErrorKind,
+    },
 }
 
 impl fmt::Display for ScdcTransportFailure {
@@ -135,6 +151,10 @@ impl fmt::Display for ScdcTransportFailure {
             Self::Hidden { expected, found } => {
                 write!(f, "a transfer failed with {expected:?} came back {found:?}")
             }
+            Self::NotArmed { kind } => write!(
+                f,
+                "could not make a transfer fail with {kind:?}: the setup, not the transport"
+            ),
         }
     }
 }
@@ -154,7 +174,9 @@ const RECOVERABLE: [DdcErrorKind; 3] = [
 ///   and agrees with the image register by register; an empty buffer is `Ok`; a read past
 ///   0xFF returns, `Ok` or an error.
 /// - **After an error,** with [`with_faults`](Self::with_faults): a transfer failed with a
-///   recoverable kind reaches the caller with that kind, and the next read succeeds.
+///   recoverable kind reaches the caller with that kind, and the next read succeeds. A
+///   failure the hook cannot arm is [`ScdcTransportFailure::NotArmed`]; one the transport
+///   never takes is withdrawn before the next point.
 ///
 /// Whether a block read is one transaction on the wire cannot be seen from outside.
 pub struct ScdcTransportCheck<'i> {
@@ -260,8 +282,12 @@ macro_rules! body {
         let known = (0..=255u8).find_map(|reg| image.get(reg).map(|value| (reg, value)));
         if let (Some(faults), Some((reg, value))) = ($check.faults, known) {
             for kind in RECOVERABLE {
-                faults.fail_next(kind);
+                if !faults.fail_next(kind) {
+                    report.record(Some(ScdcTransportFailure::NotArmed { kind }));
+                    continue;
+                }
                 let found = $transport.read(reg) $($await)*;
+                faults.withdraw();
                 let found = found.map(|_| ()).map_err(|error| error.kind());
                 report.record((found != Err(kind)).then_some(ScdcTransportFailure::Hidden {
                     expected: kind,

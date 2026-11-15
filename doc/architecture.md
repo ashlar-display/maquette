@@ -1064,7 +1064,7 @@ pub struct DdcBusCheck<'d> { /* the device; settings with `with_*` */ }
 impl<'d> DdcBusCheck<'d> {
     pub const fn new(device: DdcDevice<'d>) -> Self;
     pub fn run<B: DdcBus + ?Sized>(&self, bus: &B) -> Report<DdcBusFailure>;
-    #[cfg(feature = "std")]   // concurrent calls from `threads` threads, without a panic
+    #[cfg(feature = "std")]   // concurrent calls from `threads` (> 0) threads, without a panic
     pub fn run_threads<B: DdcBus + Sync + ?Sized>(&self, bus: &B, threads: usize)
         -> Report<DdcBusFailure>;
     #[cfg(feature = "async")]
@@ -1080,9 +1080,11 @@ pub struct ScdcImage { /* 256 × Option<u8> */ }
 
 /// Makes the next transfer fail, so a check can see what follows an error.
 pub trait FailNext {
-    fn fail_next(&self, kind: DdcErrorKind);
+    fn fail_next(&self, kind: DdcErrorKind) -> bool; // whether it could
+    fn withdraw(&self) {}                             // a failure no transfer took
 }
-// Implemented for `Bench` (a scheduled fault on the next operation).
+// Implemented for `Bench` (a scheduled fault on the next operation; `false` when the schedule
+// is full). A failure the hook cannot arm is the setup's: `ScdcTransportFailure::NotArmed`.
 
 pub struct ScdcTransportCheck<'i> { /* the image; an optional `&dyn FailNext` */ }
 impl<'i> ScdcTransportCheck<'i> {

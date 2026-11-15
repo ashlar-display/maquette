@@ -111,6 +111,8 @@ struct State<'a, const LOG: usize, const FAULTS: usize> {
     spent: u64,
     transcript: Transcript<LOG>,
     faults: Schedule<FAULTS>,
+    /// The fault a check armed through `FailNext`, until it withdraws it.
+    armed: Option<FaultId>,
     phy: PhyState,
     /// What the PHY last put on the line: it drives the line only when this changes, so a
     /// test's own `set_line` holds until the PHY's output changes.
@@ -481,6 +483,29 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
         self.locked(|state, _| state.faults.remove(id))
     }
 
+    /// Schedules `fault` for a check, remembered until [`withdraw_armed`]; whether there was
+    /// room. A fault armed before and not withdrawn is withdrawn first.
+    ///
+    /// [`withdraw_armed`]: Self::withdraw_armed
+    pub(crate) fn arm(&self, fault: Fault) -> bool {
+        self.locked(|state, _| {
+            if let Some(id) = state.armed.take() {
+                state.faults.remove(id);
+            }
+            state.armed = state.faults.add(fault).ok();
+            state.armed.is_some()
+        })
+    }
+
+    /// Removes the fault [`arm`](Self::arm) scheduled, if no operation has taken it yet.
+    pub(crate) fn withdraw_armed(&self) {
+        self.locked(|state, _| {
+            if let Some(id) = state.armed.take() {
+                state.faults.remove(id);
+            }
+        });
+    }
+
     /// Removes every scheduled fault.
     pub fn clear_faults(&self) {
         self.locked(|state, _| state.faults.clear());
@@ -810,6 +835,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
                 spent: 0,
                 transcript: Transcript::new(),
                 faults: Schedule::new(),
+                armed: None,
                 phy: PhyState::new(self.phy_settings, self.phy_capabilities),
                 phy_line: Line::Off,
             })),

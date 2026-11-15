@@ -5,7 +5,9 @@ use core::cell::Cell;
 
 use maquette::check::{ScdcImage, ScdcOp, ScdcTransportCheck, ScdcTransportFailure};
 use maquette::hdmi_hal::scdc::{ScdcOverDdc, ScdcTransport};
-use maquette::{Bench, Ddc, DdcCapabilities, DdcError, DdcErrorKind, SinkConfig};
+use maquette::{
+    Bench, Ddc, DdcBus, DdcCapabilities, DdcError, DdcErrorKind, NoAcknowledgeSource, SinkConfig,
+};
 
 /// A bench whose SCDC registers each hold a value of their own: `reg ^ 0x5A`.
 fn bench() -> Bench<'static> {
@@ -233,6 +235,71 @@ fn a_transport_that_fails_an_empty_buffer_is_caught() {
 }
 
 #[test]
+fn a_full_fault_schedule_is_the_setups_failure_not_the_transports() {
+    let bench = Bench::builder(&[]).capacities::<256, 0>().build().unwrap();
+    for reg in 0..=255u8 {
+        bench.preset_scdc(reg, reg ^ 0x5A);
+    }
+    let bus = bench.ddc();
+    let image = ScdcImage::of(&bench);
+    let mut transport = ScdcOverDdc::new(&bus).unwrap();
+    let report = ScdcTransportCheck::new(&image)
+        .with_faults(&bench)
+        .run(&mut transport);
+    let failures: Vec<_> = report.failures().copied().collect();
+    assert_eq!(
+        failures,
+        [
+            DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data),
+            DdcErrorKind::Busy,
+            DdcErrorKind::Timeout,
+        ]
+        .map(|kind| ScdcTransportFailure::NotArmed { kind })
+    );
+}
+
+/// A transport that never reaches the bus: it answers from a copy of the registers.
+struct Offline([u8; 256]);
+
+impl ScdcTransport for Offline {
+    type Error = DdcErrorKind;
+
+    fn read(&self, reg: u8) -> Result<u8, DdcErrorKind> {
+        Ok(self.0[usize::from(reg)])
+    }
+
+    fn write(&mut self, reg: u8, value: u8) -> Result<(), DdcErrorKind> {
+        self.0[usize::from(reg)] = value;
+        Ok(())
+    }
+
+    fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), DdcErrorKind> {
+        for (i, byte) in buf.iter_mut().enumerate() {
+            *byte = self.0[usize::from(reg.wrapping_add(i as u8))];
+        }
+        Ok(())
+    }
+}
+
+#[test]
+fn a_failure_no_transfer_took_is_withdrawn() {
+    let bench = bench();
+    let mut copy = [0; 256];
+    for reg in 0..=255u8 {
+        copy[usize::from(reg)] = bench.sink().scdc(reg).unwrap();
+    }
+    let image = ScdcImage::of(&bench);
+    let report = ScdcTransportCheck::new(&image)
+        .with_faults(&bench)
+        .run(&mut Offline(copy));
+    // It hides every error, since it never sees one; and leaves no fault behind.
+    assert_eq!(report.failed(), 3);
+    assert_eq!(bench.scheduled_faults(), 0);
+    let mut status = [0];
+    bench.ddc().write_read(0x54, &[0x21], &mut status).unwrap();
+}
+
+#[test]
 fn a_sink_without_scdc_fails_every_read() {
     let bench = Bench::new(SinkConfig::new().without_scdc(), &[]).unwrap();
     let bus = bench.ddc();
@@ -260,6 +327,9 @@ fn failures_print_what_went_wrong() {
             expected: DdcErrorKind::Timeout,
             found: Ok(()),
         },
+        ScdcTransportFailure::NotArmed {
+            kind: DdcErrorKind::Busy,
+        },
     ]
     .map(|failure| failure.to_string());
     assert_eq!(
@@ -268,6 +338,7 @@ fn failures_print_what_went_wrong() {
             "Read of register 0x20 gave 0x00, not 0x03",
             "ReadBlock at register 0xf0 failed: Busy",
             "a transfer failed with Timeout came back Ok(())",
+            "could not make a transfer fail with Busy: the setup, not the transport",
         ]
     );
     let image = ScdcImage::new();

@@ -474,17 +474,23 @@ impl<'d> DdcBusCheck<'d> {
     /// Runs the check from `threads` threads at once against `bus`, which must take
     /// concurrent calls without a panic: every thread's points, and a panicked thread as a
     /// failure.
+    ///
+    /// # Panics
+    ///
+    /// If `threads` is 0: a run with no thread checks nothing.
     #[cfg(feature = "std")]
     pub fn run_threads<B: DdcBus + Sync + ?Sized>(
         &self,
         bus: &B,
         threads: usize,
     ) -> Report<DdcBusFailure> {
+        assert!(threads > 0, "run_threads needs at least one thread");
         let mut report = Report::new();
         std::thread::scope(|scope| {
-            let handles: [Option<std::thread::ScopedJoinHandle<'_, Report<DdcBusFailure>>>; 16] =
-                core::array::from_fn(|n| (n < threads).then(|| scope.spawn(|| self.run(bus))));
-            for handle in handles.into_iter().flatten() {
+            let handles: std::vec::Vec<_> = (0..threads)
+                .map(|_| scope.spawn(|| self.run(bus)))
+                .collect();
+            for handle in handles {
                 match handle.join() {
                     Ok(thread) => report.absorb(thread),
                     Err(_) => report.record(Some(DdcBusFailure::Panicked)),

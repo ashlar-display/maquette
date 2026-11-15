@@ -79,6 +79,18 @@ fn concurrent_calls_pass_from_several_threads() {
     let report = check.run_threads(&bench.ddc(), 4);
     report.assert_ok();
     assert_eq!(report.points(), 4 * single);
+    // As many threads as asked for, past any fixed number.
+    let report = check.run_threads(&bench.ddc(), 40);
+    report.assert_ok();
+    assert_eq!(report.points(), 40 * single);
+}
+
+#[cfg(feature = "std")]
+#[test]
+#[should_panic(expected = "at least one thread")]
+fn run_threads_needs_a_thread() {
+    let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
+    DdcBusCheck::new(DdcDevice::new()).run_threads(&bench.ddc(), 0);
 }
 
 #[cfg(feature = "async")]

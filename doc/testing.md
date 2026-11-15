@@ -102,7 +102,7 @@ parts are built.
   future is polled.
 - **`tests/ddc_check.rs`** — the `DdcBus` check: the bench's bus passing with a described
   device, as a narrow SMBus-style bus, without a segment pointer, without a description,
-  from several threads and async; and buses broken one way each caught — doing more than
+  from several threads (past 16, and none refused) and async; and buses broken one way each caught — doing more than
   they claim, accepting an empty write, writing the pointer for segment 0, corrupting what
   they read, answering where nothing does, panicking; unreachable addresses and no
   segmented reads refused; failures from several threads counted; every failure printed.
@@ -110,7 +110,8 @@ parts are built.
   bench passing, block and bytewise, behind a 16-byte bus, without faults and async; and
   transports broken one way each caught with exact counts — block reads from the wrong
   register, no 16-byte reads, hidden errors, stuck after an error, failing an empty buffer —
-  and a sink without SCDC failing every read; the failures printed.
+  and a sink without SCDC failing every read; a full fault schedule failing the setup, not
+  the transport; a failure no transfer took withdrawn; the failures printed.
 - **`tests/phy_check.rs`** — the PHY check: the bench's PHY passing every run under both
   `configure`-while-running settings and both rates, a PHY coupled to the bench passing,
   capabilities refusing or skipping `set_scrambling(true)`, a probe that cannot tell
