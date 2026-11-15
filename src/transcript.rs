@@ -226,51 +226,77 @@ pub enum Ignored {
     Hook,
 }
 
-/// The transcript's storage: `LOG` records, then a count of those that did not fit.
+/// The transcript's storage: a ring of `LOG` records, addressed by sequence number (the
+/// count of records pushed before), and a count of those it did not keep. It keeps the
+/// oldest by default, or the newest.
 #[derive(Debug)]
 pub(crate) struct Transcript<const LOG: usize> {
     records: [Option<Record>; LOG],
+    /// The sequence number of the oldest record kept.
+    first: usize,
     len: usize,
     overflow: usize,
+    keep_newest: bool,
 }
 
 impl<const LOG: usize> Transcript<LOG> {
     pub(crate) const fn new() -> Self {
         Self {
             records: [None; LOG],
+            first: 0,
             len: 0,
             overflow: 0,
+            keep_newest: false,
         }
     }
 
-    /// Appends `record`, returning its index, or counts it when the transcript is full.
+    /// Keeps the newest records once full, dropping the oldest.
+    pub(crate) const fn keeping_newest(mut self) -> Self {
+        self.keep_newest = true;
+        self
+    }
+
+    /// Appends `record`, returning its sequence number, or counts it when it is not kept:
+    /// once full, the record itself, or the oldest it replaces when keeping the newest.
     pub(crate) fn push(&mut self, record: Record) -> Option<usize> {
-        match self.records.get_mut(self.len) {
-            Some(slot) => {
-                *slot = Some(record);
-                self.len += 1;
-                Some(self.len - 1)
-            }
-            None => {
-                self.overflow = self.overflow.saturating_add(1);
-                None
-            }
+        if LOG == 0 {
+            self.overflow = self.overflow.saturating_add(1);
+            return None;
         }
+        let seq = self.first + self.len;
+        if self.len < LOG {
+            self.len += 1;
+        } else if self.keep_newest {
+            self.first += 1;
+            self.overflow = self.overflow.saturating_add(1);
+        } else {
+            self.overflow = self.overflow.saturating_add(1);
+            return None;
+        }
+        self.records[seq % LOG] = Some(record);
+        Some(seq)
     }
 
-    /// Sets the result of the bus record at `index`.
-    pub(crate) fn set_result(&mut self, index: Option<usize>, result: Result<(), DdcErrorKind>) {
-        if let Some(Some(Record {
+    /// Sets the result of the bus record numbered `seq`, if it is still kept.
+    pub(crate) fn set_result(&mut self, seq: Option<usize>, result: Result<(), DdcErrorKind>) {
+        let Some(seq) = seq.filter(|&seq| seq >= self.first && seq < self.first + self.len) else {
+            return;
+        };
+        if let Some(Record {
             event: Event::Bus(bus),
             ..
-        })) = index.and_then(|index| self.records.get_mut(index))
+        }) = &mut self.records[seq % LOG]
         {
             bus.result = result;
         }
     }
 
+    /// The `index`-th record kept, oldest first.
     pub(crate) fn get(&self, index: usize) -> Option<Record> {
-        self.records[..self.len].get(index).copied().flatten()
+        if index >= self.len {
+            return None;
+        }
+        self.records[(self.first + index) % LOG]
     }
 
     pub(crate) fn len(&self) -> usize {
@@ -283,6 +309,7 @@ impl<const LOG: usize> Transcript<LOG> {
 
     pub(crate) fn clear(&mut self) {
         self.records = [None; LOG];
+        self.first = 0;
         self.len = 0;
         self.overflow = 0;
     }
@@ -361,5 +388,45 @@ mod tests {
         let mut transcript = Transcript::<0>::new();
         assert_eq!(transcript.push(note(1)), None);
         assert_eq!(transcript.overflow(), 1);
+    }
+
+    #[test]
+    fn keeping_the_newest_drops_the_oldest_and_counts_them() {
+        let mut transcript = Transcript::<2>::new().keeping_newest();
+        assert_eq!(transcript.push(note(1)), Some(0));
+        assert_eq!(transcript.push(note(2)), Some(1));
+        assert_eq!(transcript.push(note(3)), Some(2));
+        assert_eq!(transcript.len(), 2);
+        assert_eq!(transcript.overflow(), 1);
+        assert_eq!(transcript.get(0), Some(note(2)));
+        assert_eq!(transcript.get(1), Some(note(3)));
+        assert_eq!(transcript.get(2), None);
+        transcript.clear();
+        assert_eq!(transcript.push(note(4)), Some(0));
+        assert_eq!(transcript.get(0), Some(note(4)));
+    }
+
+    #[test]
+    fn a_result_reaches_only_a_bus_record_still_kept() {
+        let mut transcript = Transcript::<2>::new().keeping_newest();
+        let first = transcript.push(bus());
+        transcript.push(note(1));
+        transcript.push(note(2));
+        // The bus record was dropped: its slot holds a note now, which keeps its own event.
+        transcript.set_result(first, Err(DdcErrorKind::Busy));
+        assert_eq!(transcript.get(1), Some(note(2)));
+        let kept = transcript.push(bus());
+        transcript.set_result(kept, Err(DdcErrorKind::Busy));
+        assert!(matches!(
+            transcript.get(1).unwrap().event,
+            Event::Bus(BusRecord {
+                result: Err(DdcErrorKind::Busy),
+                ..
+            })
+        ));
+        // A transcript of no records keeps none.
+        let mut none = Transcript::<0>::new().keeping_newest();
+        assert_eq!(none.push(note(1)), None);
+        assert_eq!(none.overflow(), 1);
     }
 }

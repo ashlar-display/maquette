@@ -730,3 +730,35 @@ fn the_plain_values_have_defaults_and_hash() {
     let _: HashSet<_> = [Ignored::SinkOwned].into_iter().collect();
     let _: HashSet<_> = [Effect::Fail(DdcErrorKind::Busy)].into_iter().collect();
 }
+
+#[test]
+fn a_session_can_keep_the_newest_records() {
+    use maquette::{Effect, Fault};
+    let bench = Bench::builder(&[])
+        .capacities::<4, 16>()
+        .keep_newest_records()
+        .build()
+        .unwrap();
+    for value in 0..10u8 {
+        bench.ddc().write(SCDC, &[0x30, value]).unwrap();
+    }
+    // The last write fails: its record, among the newest, carries the result.
+    bench
+        .schedule(Fault::new(Effect::Fail(DdcErrorKind::Busy)))
+        .unwrap();
+    bench.ddc().write(SCDC, &[0x30, 0xAA]).unwrap_err();
+    let records: Vec<Record> = bench.transcript().collect();
+    assert_eq!(records.len(), 4);
+    assert_eq!(bench.transcript_overflow(), 10 * 2 + 2 - 4);
+    assert!(matches!(
+        records[2].event,
+        Event::Bus(BusRecord {
+            result: Err(DdcErrorKind::Busy),
+            ..
+        })
+    ));
+    assert!(matches!(records[3].event, Event::Fault { .. }));
+    assert!(
+        format!("{:?}", Bench::builder(&[]).keep_newest_records()).contains("keep_newest: true")
+    );
+}

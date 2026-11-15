@@ -32,6 +32,10 @@ use maquette::{
 /// The most actions one input runs.
 const MAX_ACTIONS: usize = 256;
 
+/// The fuzz bench's transcript: room for every record an input makes (the longest seen
+/// make under a thousand), so the invariants see them all; `run` asserts none overflowed.
+const LOG: usize = 4096;
+
 /// Two segments of EDID: segment 0 holds 0x00–0x7F, segment 1 holds 0x80–0xBF. A byte read
 /// from segment 1 cannot pass for one of segment 0, and the 0xFF read past a store is
 /// neither.
@@ -311,7 +315,7 @@ fn tmds(character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool) -> Line
 }
 
 /// Checks the invariants that hold after every action.
-fn check_state(bench: &Bench<'_>) {
+fn check_state(bench: &Bench<'_, LOG>) {
     let sink = bench.sink();
     let (Some(status), Some(config)) = (sink.scrambling_status(), sink.tmds_config()) else {
         return;
@@ -343,14 +347,11 @@ fn check_state(bench: &Bench<'_>) {
 /// have begun to hold at a change of `TMDS_Config`'s two bits, a change of the line, a plug,
 /// any change of HPD (a long low resets the status, recorded only if it changes it) or the
 /// sink's own clearing of the status; while HPD is low a reset may still come.
-fn check_lock_comes(bench: &Bench<'_>, config: &SinkConfig) {
+fn check_lock_comes(bench: &Bench<'_, LOG>, config: &SinkConfig) {
     let Trigger::After(delay) = config.scrambling_lock() else {
         return;
     };
-    if config.strict_lock()
-        || config.scrambling_refusals().attempts > 0
-        || bench.transcript_overflow() > 0
-    {
+    if config.strict_lock() || config.scrambling_refusals().attempts > 0 {
         return;
     }
     let sink = bench.sink();
@@ -410,9 +411,9 @@ fn check_lock_comes(bench: &Bench<'_>, config: &SinkConfig) {
 /// Checks that a successful plain read at 0x50 read segment 0.
 /// A read a `Corrupt` fault struck is not checked: its bytes are garbled on purpose. The
 /// fault is recorded after the read's bus record, the last one, with a scheduled action's
-/// records possibly after it; once the transcript is full, nothing tells.
+/// records possibly after it.
 fn check_edid_read(
-    bench: &Bench<'_>,
+    bench: &Bench<'_, LOG>,
     result: &Result<(), maquette::BusError>,
     addr: u8,
     buf: &[u8],
@@ -421,18 +422,17 @@ fn check_edid_read(
     let read = records
         .iter()
         .rposition(|record| matches!(record.event, Event::Bus(_)));
-    let corrupted = bench.transcript_overflow() > 0
-        || read.is_some_and(|read| {
-            records[read..].iter().any(|record| {
-                matches!(
-                    record.event,
-                    Event::Fault {
-                        effect: Effect::Corrupt { .. },
-                        ..
-                    }
-                )
-            })
-        });
+    let corrupted = read.is_some_and(|read| {
+        records[read..].iter().any(|record| {
+            matches!(
+                record.event,
+                Event::Fault {
+                    effect: Effect::Corrupt { .. },
+                    ..
+                }
+            )
+        })
+    });
     if result.is_ok() && addr == 0x50 && !corrupted {
         assert!(
             !buf.iter().any(|byte| (0x80..=0xBF).contains(byte)),
@@ -447,6 +447,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
     let config = input.config();
     let displayid: Option<&'static [u8]> = if input.bit() { Some(&DISPLAYID) } else { None };
     let mut builder = Bench::builder(&EDID)
+        .capacities::<LOG, 16>()
         .sink(config)
         .ddc_capabilities(input.capabilities())
         .budget(None);
@@ -598,6 +599,11 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
     assert!(
         records.windows(2).all(|pair| pair[0].at <= pair[1].at),
         "the transcript's times went backwards"
+    );
+    assert_eq!(
+        bench.transcript_overflow(),
+        0,
+        "the fuzz bench's transcript must keep every record"
     );
     (records, bench.transcript_overflow())
 }

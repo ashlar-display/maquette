@@ -20,14 +20,16 @@ parts are built.
   (with `async`); against the host's clock (with `std`), a host clock passing, a clock 1000
   times fast and simulated time caught, the async form; the reference's failures printed.
 - **`src/transcript.rs`** — the transcript's storage: order, overflow past the capacity
-  (a capacity of 0 included), clearing, and completing a bus record's result.
+  (a capacity of 0 included), clearing, and completing a bus record's result; keeping the
+  newest, the oldest dropped and counted, and a result reaching only a record still kept.
 - **`tests/bus.rs`** — the bench's DDC bus over targets the test defines: routing to the
   first target that answers, a transaction no target takes, a target taking all of its
   transaction; `read_segmented` with and without the segment pointer and split into pieces;
   every refusal by argument and by capability, in hdmi-hal's order, reaching no target and
   taking no time; empty buffers; timing per byte and per transaction; a target's error with
   what it applied kept and the read filled with the pattern; notes and `Env`; `advance`
-  updating every target; the transcript's overflow; the EDID store's lengths; SCDC through
+  updating every target; the transcript's overflow, and a session keeping the newest
+  records; the EDID store's lengths; SCDC through
   hdmi-hal's `ScdcOverDdc`; the time handle passing the clock check; `Send`, `Sync` and
   threads; calls from several threads following one another in time, a fault counting them
   in the transcript's order.
@@ -168,8 +170,9 @@ the EDID read) live with those crates, which use maquette as a dev-dependency.
 `fuzz/fuzz_targets/bench.rs` drives a bench with arbitrary sequences of bus calls, PHY calls,
 line changes, HPD, plug and adapter changes, presets, faults, scheduled actions (all but a
 plug, which would change the sink's settings unseen) and clock advances, on a sink whose
-settings and bus capabilities the input chooses; it decodes the input bytes itself. After
-every action it checks the invariants a simulator must keep:
+settings and bus capabilities the input chooses; it decodes the input bytes itself. Its bench
+holds 4096 records, and it asserts none overflowed, so the invariants see every record.
+After every action it checks the invariants a simulator must keep:
 
 - the same input gives the same transcript (each input runs twice);
 - nothing panics and no arithmetic overflows (the budget is off; an input runs at most 256

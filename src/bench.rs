@@ -430,6 +430,7 @@ impl<'a> Bench<'a> {
             scdc_hook: None,
             phy_capabilities: DEFAULT_PHY_CAPABILITIES,
             phy_settings: PhySettings::DEFAULT,
+            keep_newest: false,
         }
     }
 }
@@ -651,7 +652,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
         })
     }
 
-    /// How many records did not fit in the transcript, past `LOG`.
+    /// How many records the transcript did not keep, past `LOG`: the newest by default, the
+    /// oldest with [`BenchBuilder::keep_newest_records`].
     pub fn transcript_overflow(&self) -> usize {
         self.locked(|state, _| state.transcript.overflow())
     }
@@ -844,6 +846,7 @@ pub struct BenchBuilder<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
     scdc_hook: Option<Hook<'a>>,
     phy_capabilities: TmdsPhyCapabilities,
     phy_settings: PhySettings,
+    keep_newest: bool,
 }
 
 /// The test's SCDC hook, as given to the bench.
@@ -911,6 +914,17 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
         Self { targets, ..self }
     }
 
+    /// A transcript that keeps its newest `LOG` records once full, dropping the oldest, for a
+    /// session-length test that asks about what came late. By default it keeps the oldest,
+    /// which a test of one procedure asks about. Either way
+    /// [`Bench::transcript_overflow`] counts what it did not keep.
+    pub fn keep_newest_records(self) -> Self {
+        Self {
+            keep_newest: true,
+            ..self
+        }
+    }
+
     /// The test's quirk on top of the built-in SCDC sink: it decides each byte the source
     /// writes and what each read returns. Kept across a [`Bench::plug`].
     pub fn scdc_hook(self, hook: &'a mut (dyn ScdcHook + Send)) -> Self {
@@ -934,6 +948,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
             scdc_hook: self.scdc_hook,
             phy_capabilities: self.phy_capabilities,
             phy_settings: self.phy_settings,
+            keep_newest: self.keep_newest,
         }
     }
 
@@ -957,7 +972,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
                 plugged: true,
                 attached: true,
                 spent: 0,
-                transcript: Transcript::new(),
+                transcript: if self.keep_newest {
+                    Transcript::new().keeping_newest()
+                } else {
+                    Transcript::new()
+                },
                 faults: Schedule::new(),
                 armed: None,
                 phy: PhyState::new(self.phy_settings, self.phy_capabilities),
@@ -981,6 +1000,7 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for BenchBuilder<'_, LOG,
             .field("scdc_hook", &self.scdc_hook.is_some())
             .field("phy_capabilities", &self.phy_capabilities)
             .field("phy_settings", &self.phy_settings)
+            .field("keep_newest", &self.keep_newest)
             .finish()
     }
 }

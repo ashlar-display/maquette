@@ -53,7 +53,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keeps it.
 - **The transcript**, `Bench::transcript`: one `Record` per bus call (`BusRecord`, refused
   calls included, a split read per piece) and per target note, in order, with its time;
-  what does not fit is counted. `Event` also has the variants the built-in targets will
+  what does not fit is counted; `BenchBuilder::keep_newest_records` keeps the newest
+  instead, for a session-length test. `Event` also has the variants the built-in targets will
   record (`Register`, `IgnoredWrite`, with `Actor` and `Ignored`). Each variant with fields
   is `#[non_exhaustive]`: a test matches records with `..`, and a variant may gain a field.
 - **The sink's SCDC registers** at 0x54, the built-in target routed after a test's own: a

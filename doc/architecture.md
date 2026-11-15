@@ -600,7 +600,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 Records are `Copy` and hold no slices, so the transcript needs no `alloc`; a bus record keeps
 the first byte written, which for SCDC and the EDID is the register or offset, and the
 register events carry the values. When the transcript is full, later records are counted,
-not stored: the oldest are the ones a test of a bring-up asks about.
+not stored: the oldest are the ones a test of a bring-up asks about. A session-length test
+asks about what came late (the retrain after a health reading), so
+`BenchBuilder::keep_newest_records` keeps the newest `LOG` instead, the oldest dropped and
+counted. The storage is a ring addressed by sequence number, so a bus record's result,
+completed after its transaction, reaches it only while it is still kept.
 
 ---
 
@@ -1303,9 +1307,10 @@ See [`testing.md`](testing.md). maquette's own tests check its implementations a
 conformance checks, the checks' negative cases against broken doubles, and the sink's rules
 against the sources above.
 
-A fuzz target drives the bench with arbitrary sequences of bus calls, PHY calls, line
-changes, HPD, plug and adapter changes, presets, faults, scheduled actions and clock
-advances, on a sink whose settings and bus capabilities the input also chooses. It decodes
+A fuzz target, its bench holding 4096 records so that none overflows (it asserts so), drives
+the bench with arbitrary sequences of bus calls, PHY calls, line changes, HPD, plug and
+adapter changes, presets, faults, scheduled actions and clock advances, on a sink whose
+settings and bus capabilities the input also chooses. It decodes
 the input bytes itself, as the stack's other fuzz targets do. After every action it checks
 the invariants a simulator must keep:
 
