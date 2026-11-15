@@ -407,8 +407,12 @@ pub struct BusTiming {
 
 impl BusTiming {
     /// 90 µs a byte, nothing per transaction: a byte is eight data bits and the acknowledge,
-    /// nine clocks, and 100 kHz is I²C standard mode's maximum clock (DDC/CI 1.1), the
-    /// fastest a DDC bus runs.
+    /// nine clocks, at 100 kHz, I²C standard mode's maximum clock. DDC/CI 1.1 assumes
+    /// standard mode without precluding faster ones; sources use 100 kHz: i915 as its
+    /// conservative default (github.com/torvalds/linux `e9954f3fbddd`,
+    /// `drivers/gpu/drm/i915/display/intel_gmbus.c:960–961`), Xilinx for its DDC clock
+    /// divider (embeddedsw `97f2baf7f69e`,
+    /// `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:1580`).
     pub const STANDARD_MODE: Self = Self {
         per_byte: Duration::from_micros(90),
         per_transaction: Duration::ZERO,

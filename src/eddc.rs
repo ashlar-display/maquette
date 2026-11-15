@@ -20,9 +20,10 @@ const SEGMENT: usize = 256;
 ///
 /// - The pointer is 0 at the start of every transaction: the sink resets it on a NACK or STOP
 ///   (8.1.1, Table 9-1) and at the end of each command sequence (2.2.5), so a write to 0x30
-///   matters only to the reads in the same transaction. A read at 0x30 is refused, the pointer
-///   being effectively write-only (2.2.5); of several bytes written to it, the first counts
-///   (*chosen*).
+///   matters only to the reads in the same transaction. A read at 0x30 is refused
+///   (*chosen*: 2.2.5 calls the pointer effectively write-only because it resets after each
+///   command sequence, and does not say what a read gets); of several bytes written to it,
+///   the first counts (*chosen*).
 /// - Each structure's word offset persists between transactions and advances with every byte
 ///   read: a read with no offset written reads at the current address (6.1, 6.3).
 /// - For segment 1 and higher the sink acknowledges the pointer value (6.4, 6.5); for a

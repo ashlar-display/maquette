@@ -61,8 +61,9 @@ impl SinkConfig {
         }
     }
 
-    /// A sink without SCDC: nothing answers 0x54 (*chosen*: no source says how such a sink
-    /// answers).
+    /// A sink without SCDC: nothing answers 0x54 (*chosen* on one source: Xilinx takes a
+    /// failed `Source_Version` write for a sink without SCDC, embeddedsw `97f2baf7f69e`,
+    /// `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–807`).
     pub const fn without_scdc(self) -> Self {
         Self {
             scdc: false,

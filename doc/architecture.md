@@ -230,8 +230,8 @@ a bare target the user supplies one. The state is borrowed only inside
 - a `delay(d)`: by `d`, or by `d` plus a configured overshoot, so deadline arithmetic is
   tested against a delay that sleeps long, as a real one may;
 - a bus transfer: a charge per transfer and per byte, by default the byte time at 100 kHz,
-  I²C standard mode's maximum clock (DDC/CI 1.1), so the fastest a DDC bus runs; a slow sink
-  is a setting. A timeout fault charges the bus's `stretch_timeout_us` where it has one;
+  I²C standard mode's maximum clock, which sources use [14]; a faster or slower bus is a
+  setting. A timeout fault charges the bus's `stretch_timeout_us` where it has one;
 - the test (`advance(d)`).
 
 `now` never moves backwards, never reads the host, and saturates rather than overflowing. A
@@ -361,7 +361,8 @@ The built-in targets:
 
 - **SCDC (0x54):** a 256-byte register file [9]. A write sets the offset with its first
   byte, then writes from there; a read starts at the offset, which advances with every byte,
-  and persists between transactions. What a byte written does depends on the register:
+  and persists between transactions (*chosen*: every source surveyed writes the offset
+  before reading). What a byte written does depends on the register:
   - **the source's** — `Source_Version` (0x02), `TMDS_Config` (0x20), `Config_0` (0x30),
     `Config_1` (0x31), `Test_Read_Request` (0xC0) and the manufacturer's block past its
     identification (0xDE–0xFF, which Amlogic marks `RW`) [12]: stored as written;
@@ -383,9 +384,10 @@ The built-in targets:
   is 256 bytes (E-DDC 1.3 §2.2.5).
   - The pointer is 0 at the start of every transaction: it resets on a NACK or STOP
     (§8.1.1, Table 9-1) and at the end of each command sequence (§2.2.5), so a write to
-    0x30 matters only to the reads in the same transaction. It is effectively write-only
-    (§2.2.5): a read at 0x30 is refused, `NoAcknowledge(Address)`; of several bytes written
-    to it, the first counts (*chosen*).
+    0x30 matters only to the reads in the same transaction. A read at 0x30 is refused,
+    `NoAcknowledge(Address)` (*chosen*: §2.2.5 calls the pointer effectively write-only
+    because it resets after each command sequence, and does not say what a read gets); of
+    several bytes written to it, the first counts (*chosen*).
   - Each structure's word offset persists between transactions and advances with every
     byte read: a read with no offset written reads at the current address (§6.1, §6.3).
     Past 0xFF it wraps within the segment.
@@ -572,7 +574,7 @@ source settles is marked *chosen*.
 | `TMDS_Config` and other registers reset around an HPD low | settled that sources restore it [6]; the public sinks reset `TMDS_Config` as HPD falls [13]; for the other registers one sink each way [13] | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config}`): `HpdReset::OnHpdLow`, the default for every group (the least forgiving; *chosen* after Amlogic for all but `TMDS_Config`); `HpdReset::After(d)`; `HpdReset::OnHpdRise`, as Xilinx clears `FRL_Rate`, losing what was written during the low too; or `HpdReset::Never`. The `Status` group is `Scrambling_Status`, the update flags and the status flags (0x40–0x42). Each group resets once per HPD low, before the lock is evaluated; only registers that change are recorded |
 | `Source_Version` written by the source, `Sink_Version` reported | [7] | `Sink_Version` a setting (default 1); `Source_Version` stored |
 | Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset; the rule that sets them a setting, with the status flags and FRL responses they report |
-| A sink without SCDC | no source for its answer | NACKs 0x54 (*chosen*) |
+| A sink without SCDC | one source: a failed `Source_Version` write means no SCDC [7] | NACKs 0x54 (*chosen*) |
 | A write to an SCDC register the sink owns | no source | a setting: acknowledged and ignored, recorded (*chosen*), or `NoAcknowledge(Data)` at that byte |
 | An SCDC read or write past 0xFF | left to the sink: hdmi-hal's `ScdcTransport` leaves it open, and no source covers it | a setting: the offset wraps to 0x00 (*chosen*, an 8-bit offset register), or `NoAcknowledge(Data)` past 0xFF |
 | A read past the end of the EDID or DisplayID store, in a segment the sink has | E-DDC covers only the data a display has | a setting: reads 0xFF (*chosen*), wraps to the start of the store, or `NoAcknowledge(Data)` |
@@ -679,8 +681,9 @@ asks; a test that wants a backend to misbehave uses a fault.
   ```
 
   A byte is eight data bits and the acknowledge, nine clocks; at 100 kHz, I²C standard
-  mode's maximum clock (DDC/CI 1.1), that is 90 µs, the fastest a DDC bus runs. A slower
-  sink or adapter is a setting.
+  mode's maximum clock, that is 90 µs. DDC/CI 1.1 assumes standard mode without precluding
+  fast mode (400 kHz); sources use 100 kHz [14]. A faster or slower sink or adapter is a
+  setting.
 
 ---
 
@@ -1215,13 +1218,14 @@ Driver source read at these commits; line numbers refer to them.
 | [4] | Displays that refuse to set the scrambling bit right away | DRM helper `drivers/gpu/drm/display/drm_hdmi_helper.c:521–523` |
 | [5] | The sink disabling scrambling without a scrambled clock within 100 ms | i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2767–2770` |
 | [6] | Restoring `TMDS_Config` when the sink may have lost it | i915, vc4 and the DRM helper (one lineage) `drivers/gpu/drm/i915/display/intel_ddi.c:4851–4880`, `drivers/gpu/drm/vc4/vc4_hdmi.c:276–354`, `drivers/gpu/drm/display/drm_hdmi_helper.c:640–641` (the sink's SCDC status "is reset and must be explicitly restored"); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:5053–5062`, `4786–4796` |
-| [7] | `Source_Version` and `Sink_Version` | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:592–600` (when `Sink_Version` is 1); Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:322–350`; dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:2112–2115`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–806` |
+| [7] | `Source_Version` and `Sink_Version` | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:592–600` (when `Sink_Version` is 1); Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:322–350`; dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:2112–2115`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–807` (a failed write: a sink without SCDC) |
 | [8] | Update flags cleared by writing them back as 1 | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:178–200` (`FLT_update`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:446–463` (`FLT_update`), `hdmitx21/hdmi_tx_scdc.c:106–107` (`Status_update`, `CED_update`, `RSED_update`) |
 | [9] | The SCDC register map: addresses, bits, and which registers the source writes | Linux `include/drm/display/drm_scdc.h:27–53`; amdgpu `drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h:58–65`, `dc/link/protocols/link_ddc.c:602–609`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:41–49`, `645–669`, `719–743`, `790`, `870`; Amlogic `drivers/media/vout/hdmitx21/hw/hdmi_tx_ddc.h:16–56` (the source's registers marked `RW`) |
 | [10] | 1/40 and scrambling above 340 Mcsc, 1/10 at or below | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:262–267` (comment); i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2437–2440` (`port_clock > 340000`); amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:575`, `604–605` (`pix_clk > 340000` writes `TMDS_Config` 3); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:740–743` (the ratio bit above 3.4 Gbps) |
 | [11] | A ratio change: suspend, write `TMDS_Bit_Clock_Ratio`, resume 1 to 100 ms after | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:300–305` (waits 1–2 ms after the write); dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:1407–1419`; Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:510–517` |
 | [12] | The sink's test and manufacturer registers | `Source_Test_Configuration` (0x35) read by the source: amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:58`, `98`, `220`, `310`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1_frl.c:360`, `538` (`xv_hdmitx1_hw.h:44`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_scdc.c:198–200`, and not marked `RW` in `hw/hdmi_tx_ddc.h:56`. Amlogic marks 0xC0 and 0xDE–0xFF `RW` (`hw/hdmi_tx_ddc.h:85`, `93`), not 0xD0–0xDD |
 | [13] | What the sink resets around HPD | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:740–765` (lowering HPD resets FRL, raising it clears `FRL_Rate`), `xv_hdmirx1_frl.c:76`, `1480–1502` (the reset clears `TMDS_Config` bits 1:0, in FRL builds), `xv_hdmirx1_intr.c:1168–1182` (the cable's 5 V lost clears all of SCDC); Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw.c:2045–2069`, `2854–2870` (SCDC cleared on T7 and later chips, or the HPD state handed to the IP's SCDC block), called with HPD low from `hdmi_rx_wrapper.c:3663`, `4794–4797` |
+| [14] | DDC at 100 kHz | i915 `drivers/gpu/drm/i915/display/intel_gmbus.c:960–961` ("a conservative clock rate"); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:1580` (the DDC clock divider) |
 
 Standards (VESA, public):
 
@@ -1229,7 +1233,8 @@ Standards (VESA, public):
   Table 9-1); a display without one (§8.1.2, §9.5.1); the current-address read (§6.1);
   segments (§6.4–§6.5); reading across 128 bytes (§2.2.6); the EDID available whenever +5 V
   is present (§4.2.2), and readable with the display powered off (§9.2, §9.5.3).
-- **DDC/CI 1.1:** I²C standard mode, at most 100 kHz.
+- **DDC/CI 1.1:** I²C standard mode, 100 kHz, assumed in its examples; fast mode (400 kHz)
+  and high-speed mode not precluded.
 
 Standards (DDWG, public):
 

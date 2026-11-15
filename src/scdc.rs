@@ -405,7 +405,9 @@ impl Target for Scdc {
     }
 
     /// A write sets the offset with its first byte, then writes from there; a read reads from
-    /// the offset. The offset advances with every byte and persists between transactions.
+    /// the offset. The offset advances with every byte and persists between transactions,
+    /// so a read with no offset written reads where the last transaction stopped (*chosen*:
+    /// every source surveyed writes the offset first).
     /// Past 0xFF a burst wraps to 0x00, or with `ScdcPastEnd::Nack` fails on the next byte.
     fn transaction(
         &mut self,
