@@ -1,10 +1,10 @@
 //! The PHY check: it passes the bench's PHY and a PHY coupled to the bench, and catches PHYs
 //! broken in one way each.
 
-use maquette::check::{OutputProbe, PhyCheck, PhyFailure, PhyPoint};
+use maquette::check::{NoProbe, OutputProbe, PhyCheck, PhyFailure, PhyPoint};
 use maquette::{
     Bench, ColorBitDepth, ColorFormat, ConfigureWhileRunning, Coupled, EqParams, FrlOutput, FrlPhy,
-    HdmiForumFrl, LanePatterns, Phy, PhyErrorKind, PhyPower, PhySettings, SinkConfig,
+    HdmiForumFrl, LanePatterns, Line, Phy, PhyErrorKind, PhyPower, PhySettings, SinkConfig,
     TmdsClockRatio, TmdsPhy, TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo,
 };
 
@@ -78,19 +78,13 @@ fn what_the_capabilities_rule_out_is_refused_or_skipped() {
 
 #[test]
 fn a_probe_that_cannot_tell_skips_its_points() {
-    struct Blind;
-    impl OutputProbe for Blind {
-        fn running(&self) -> Option<bool> {
-            None
-        }
-    }
     let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
-    let blind = PhyCheck::new(config(true), &Blind).run_powered(&mut bench.phy());
+    let blind = PhyCheck::new(config(true), &NoProbe).run_powered(&mut bench.phy());
     blind.assert_ok();
     let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
     let seeing = PhyCheck::new(config(true), &bench).run_powered(&mut bench.phy());
     assert!(blind.points() < seeing.points());
-    assert!(format!("{:?}", PhyCheck::new(config(true), &Blind)).starts_with("PhyCheck"));
+    assert!(format!("{:?}", PhyCheck::new(config(true), &NoProbe)).starts_with("PhyCheck"));
 }
 
 #[cfg(feature = "async")]
@@ -123,10 +117,15 @@ enum Flaw {
     PowerOnRemembers,
     /// `set_scrambling(true)` fails above 340 Mcsc, where scrambling is needed.
     RefusesScrambling,
+    /// `set_scrambling` reports success and does nothing.
+    IgnoresScrambling,
+    /// `configure` takes 148 500 kHz at 1/10, whatever it is asked.
+    IgnoresRate,
 }
 
 /// The bench's PHY with one flaw.
 struct Broken<'b> {
+    bench: &'b Bench<'static>,
     inner: Phy<'b>,
     flaw: Flaw,
     in_frl: bool,
@@ -134,8 +133,9 @@ struct Broken<'b> {
     last: Option<TmdsPhyConfig>,
 }
 
-fn broken<'b>(bench: &'b Bench<'_>, flaw: Flaw) -> Broken<'b> {
+fn broken<'b>(bench: &'b Bench<'static>, flaw: Flaw) -> Broken<'b> {
     Broken {
+        bench,
         inner: bench.phy(),
         flaw,
         in_frl: false,
@@ -159,6 +159,11 @@ impl TmdsPhy for Broken<'_> {
         if self.flaw == Flaw::ConfigureKeepsFrl && self.in_frl {
             return Ok(());
         }
+        let config = if self.flaw == Flaw::IgnoresRate {
+            self::config(false)
+        } else {
+            config
+        };
         let result = kind(self.inner.configure(config));
         if result.is_ok() {
             self.in_frl = false;
@@ -175,6 +180,9 @@ impl TmdsPhy for Broken<'_> {
             .is_some_and(|config| config.character_rate_khz > 340_000);
         if self.flaw == Flaw::RefusesScrambling && enabled && high {
             return Err(PhyErrorKind::Unsupported);
+        }
+        if self.flaw == Flaw::IgnoresScrambling {
+            return Ok(());
         }
         kind(self.inner.set_scrambling(enabled))
     }
@@ -341,6 +349,129 @@ fn at_340_000_khz_a_scrambler_for_high_rates_only_may_refuse() {
     }
 }
 
+/// A probe that reads the PHY it is handed: here, the bench behind the double.
+struct ThroughThePhy;
+
+impl OutputProbe<Broken<'_>> for ThroughThePhy {
+    fn line(&self, phy: &Broken<'_>) -> Option<Line> {
+        Some(phy.bench.line())
+    }
+}
+
+#[test]
+fn a_phy_whose_set_scrambling_does_nothing_is_caught() {
+    // After configure the scrambler is off for the high rate; set_scrambling(true) leaves it.
+    let failures = failures(Flaw::IgnoresScrambling, PhySettings::DEFAULT);
+    assert_eq!(
+        failures,
+        [PhyFailure::Line {
+            point: PhyPoint::ScramblerOnRunning,
+            found: Line::Tmds {
+                character_rate_khz: 594_000,
+                ratio: TmdsClockRatio::Div40,
+                scrambled: false
+            }
+        }]
+    );
+}
+
+#[test]
+fn a_phy_whose_configure_ignores_the_rate_is_caught() {
+    // Asked for 594 000 kHz at 1/40, it transmits 148 500 kHz at 1/10.
+    let failures = failures(Flaw::IgnoresRate, PhySettings::DEFAULT);
+    for point in [PhyPoint::Start, PhyPoint::ScramblerOffRunning] {
+        assert!(
+            failures.iter().any(|&failure| matches!(
+                failure,
+                PhyFailure::Line {
+                    point: p,
+                    found: Line::Tmds {
+                        character_rate_khz: 148_500,
+                        ratio: TmdsClockRatio::Div10,
+                        ..
+                    },
+                } if p == point
+            )),
+            "{point:?}: {failures:?}"
+        );
+    }
+}
+
+#[test]
+fn a_probe_can_read_the_phy_it_is_handed() {
+    let bench = bench_with(PhySettings::DEFAULT);
+    let mut phy = broken(&bench, Flaw::IgnoresRate);
+    let report = PhyCheck::new(config(true), &ThroughThePhy)
+        .with_frl_rate(RATE)
+        .run_frl(&mut phy);
+    assert!(report.failures().any(|failure| matches!(
+        failure,
+        PhyFailure::Line {
+            point: PhyPoint::Start,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn run_tmds_catches_a_phy_that_starts_unconfigured() {
+    let bench = bench_with(PhySettings::DEFAULT);
+    let mut phy = broken(&bench, Flaw::StartsUnconfigured);
+    let failures: Vec<PhyFailure> = PhyCheck::new(config(true), &bench)
+        .run_tmds(&mut phy)
+        .failures()
+        .copied()
+        .collect();
+    assert!(failures.contains(&PhyFailure::Succeeded {
+        point: PhyPoint::StartUnconfigured
+    }));
+}
+
+#[cfg(feature = "async")]
+mod asynch {
+    use super::*;
+    use maquette::hdmi_hal_async::phy::SendTmdsPhy;
+
+    /// The broken PHY behind hdmi-hal-async's `TmdsPhy`.
+    struct Async<'b>(Broken<'b>);
+
+    impl SendTmdsPhy for Async<'_> {
+        type Error = Kind;
+
+        fn capabilities(&self) -> TmdsPhyCapabilities {
+            TmdsPhy::capabilities(&self.0)
+        }
+
+        async fn configure(&mut self, config: TmdsPhyConfig) -> Result<(), Kind> {
+            TmdsPhy::configure(&mut self.0, config)
+        }
+
+        async fn set_scrambling(&mut self, enabled: bool) -> Result<(), Kind> {
+            TmdsPhy::set_scrambling(&mut self.0, enabled)
+        }
+
+        async fn start_output(&mut self) -> Result<(), Kind> {
+            TmdsPhy::start_output(&mut self.0)
+        }
+
+        async fn stop_output(&mut self) -> Result<(), Kind> {
+            TmdsPhy::stop_output(&mut self.0)
+        }
+    }
+
+    #[test]
+    fn run_tmds_async_catches_a_phy_that_starts_unconfigured() {
+        let bench = bench_with(PhySettings::DEFAULT);
+        let mut phy = Async(broken(&bench, Flaw::StartsUnconfigured));
+        let report =
+            pollster::block_on(PhyCheck::new(config(true), &bench).run_tmds_async(&mut phy));
+        assert!(report.failures().any(|failure| *failure
+            == PhyFailure::Succeeded {
+                point: PhyPoint::StartUnconfigured
+            }));
+    }
+}
+
 #[test]
 fn failures_print_what_went_wrong() {
     let printed = [
@@ -355,6 +486,10 @@ fn failures_print_what_went_wrong() {
             expected: false,
             found: true,
         },
+        PhyFailure::Line {
+            point: PhyPoint::Start,
+            found: Line::Off,
+        },
     ]
     .map(|failure| failure.to_string());
     assert_eq!(
@@ -363,6 +498,7 @@ fn failures_print_what_went_wrong() {
             "Start: the call failed",
             "StartUnconfigured: the call should have failed",
             "PowerOff: the output was running, not stopped",
+            "Start: transmits Off, not what the configuration and the calls ask",
         ]
     );
 }

@@ -10,17 +10,30 @@ use super::Report;
 use crate::bench::Bench;
 use crate::line::{Line, RATIO_40_ABOVE_KHZ};
 
-/// Whether a PHY's output is running: what the traits cannot show.
-pub trait OutputProbe {
-    /// `Some(true)` when the PHY transmits (TMDS or FRL), `Some(false)` when it does not,
-    /// `None` when the probe cannot tell; the points that need it are then skipped.
-    fn running(&self) -> Option<bool>;
+/// What a PHY transmits: what the traits cannot show.
+///
+/// The probe is handed the PHY, so a PHY that knows its own output is probed by a type that
+/// reads it.
+pub trait OutputProbe<P: ?Sized> {
+    /// What `phy` transmits: `Some(Line::Off)` when nothing, `None` when the probe cannot
+    /// tell; the points that need it are then skipped.
+    fn line(&self, phy: &P) -> Option<Line>;
 }
 
-/// The bench's line: running when it is not `Line::Off`.
-impl<const LOG: usize, const FAULTS: usize> OutputProbe for Bench<'_, LOG, FAULTS> {
-    fn running(&self) -> Option<bool> {
-        Some(self.line() != Line::Off)
+/// The bench's line, whichever PHY drives it.
+impl<P: ?Sized, const LOG: usize, const FAULTS: usize> OutputProbe<P> for Bench<'_, LOG, FAULTS> {
+    fn line(&self, _phy: &P) -> Option<Line> {
+        Some(self.line())
+    }
+}
+
+/// A probe that cannot tell: the points that need one are skipped.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NoProbe;
+
+impl<P: ?Sized> OutputProbe<P> for NoProbe {
+    fn line(&self, _phy: &P) -> Option<Line> {
+        None
     }
 }
 
@@ -99,6 +112,15 @@ pub enum PhyFailure {
         /// Whether it ran.
         found: bool,
     },
+    /// After the call, the output ran but not as the configuration and the calls ask: TMDS
+    /// at another rate or ratio, scrambled or not against `set_scrambling`, or FRL at
+    /// another rate.
+    Line {
+        /// The point.
+        point: PhyPoint,
+        /// What the probe saw.
+        found: Line,
+    },
 }
 
 impl fmt::Display for PhyFailure {
@@ -119,12 +141,18 @@ impl fmt::Display for PhyFailure {
                     state(expected)
                 )
             }
+            Self::Line { point, found } => write!(
+                f,
+                "{point:?}: transmits {found:?}, not what the configuration and the calls ask"
+            ),
         }
     }
 }
 
 /// The PHY check: the points of hdmi-hal's PHY contracts, with a configuration the PHY can
-/// do and a probe for whether its output runs.
+/// do and a probe for what it transmits: whether its output runs, and, once it runs, TMDS at
+/// the configuration's rate and ratio, scrambled as `set_scrambling` last said, or FRL at
+/// the rate entered.
 ///
 /// - **`run_tmds`**, `TmdsPhy` alone, on a PHY fresh from creation: `stop_output` before
 ///   anything; `start_output` refused before `configure`; `configure` leaving the output
@@ -139,14 +167,21 @@ impl fmt::Display for PhyFailure {
 /// - **`run_frl`**, with `FrlPhy` too and [`with_frl_rate`](Self::with_frl_rate): the mode
 ///   rule — a rate enters FRL and leaves TMDS (`start_output` refused until `configure`),
 ///   `configure` leaves FRL, `stop_output` leaves FRL, `NotSupported` enters nothing.
-#[derive(Clone, Copy)]
-pub struct PhyCheck<'p> {
+pub struct PhyCheck<'p, R: ?Sized> {
     config: TmdsPhyConfig,
-    probe: &'p dyn OutputProbe,
+    probe: &'p R,
     frl_rate: Option<HdmiForumFrl>,
 }
 
-impl fmt::Debug for PhyCheck<'_> {
+impl<R: ?Sized> Clone for PhyCheck<'_, R> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<R: ?Sized> Copy for PhyCheck<'_, R> {}
+
+impl<R: ?Sized> fmt::Debug for PhyCheck<'_, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PhyCheck")
             .field("config", &self.config)
@@ -155,9 +190,10 @@ impl fmt::Debug for PhyCheck<'_> {
     }
 }
 
-impl<'p> PhyCheck<'p> {
-    /// The check with `config`, one the PHY can do, and `probe` for whether it transmits.
-    pub const fn new(config: TmdsPhyConfig, probe: &'p dyn OutputProbe) -> Self {
+impl<'p, R: ?Sized> PhyCheck<'p, R> {
+    /// The check with `config`, one the PHY can do, and `probe` for what it transmits
+    /// ([`NoProbe`] when nothing can tell).
+    pub const fn new(config: TmdsPhyConfig, probe: &'p R) -> Self {
         Self {
             config,
             probe,
@@ -175,12 +211,11 @@ impl<'p> PhyCheck<'p> {
 }
 
 /// Records the check's points.
-struct Points<'r, 'p> {
+struct Points<'r> {
     report: &'r mut Report<PhyFailure>,
-    probe: &'p dyn OutputProbe,
 }
 
-impl Points<'_, '_> {
+impl Points<'_> {
     /// A call the contract says succeeds.
     fn ok<E>(&mut self, point: PhyPoint, result: Result<(), E>) -> bool {
         let ok = result.is_ok();
@@ -195,9 +230,10 @@ impl Points<'_, '_> {
             .record(result.is_ok().then_some(PhyFailure::Succeeded { point }));
     }
 
-    /// Whether the output runs after `point`, as the probe sees it.
-    fn running(&mut self, point: PhyPoint, expected: bool) {
-        if let Some(found) = self.probe.running() {
+    /// Whether the output runs after `point`, as the probe sees `line`.
+    fn running(&mut self, point: PhyPoint, line: Option<Line>, expected: bool) {
+        if let Some(line) = line {
+            let found = line != Line::Off;
             self.report
                 .record((found != expected).then_some(PhyFailure::Running {
                     point,
@@ -205,6 +241,50 @@ impl Points<'_, '_> {
                     found,
                 }));
         }
+    }
+
+    /// Whether the output runs TMDS at `config`'s rate and ratio after `point`, scrambled
+    /// as `scrambled` says where it says.
+    fn tmds(
+        &mut self,
+        point: PhyPoint,
+        line: Option<Line>,
+        config: TmdsPhyConfig,
+        scrambled: Option<bool>,
+    ) {
+        let Some(line) = line else { return };
+        self.report.record(match line {
+            Line::Off => Some(PhyFailure::Running {
+                point,
+                expected: true,
+                found: false,
+            }),
+            Line::Tmds {
+                character_rate_khz,
+                ratio,
+                scrambled: found,
+            } if character_rate_khz == config.character_rate_khz
+                && ratio == config.clock_ratio
+                && scrambled.is_none_or(|expected| expected == found) =>
+            {
+                None
+            }
+            found => Some(PhyFailure::Line { point, found }),
+        });
+    }
+
+    /// Whether the output runs FRL at `rate` after `point`.
+    fn frl(&mut self, point: PhyPoint, line: Option<Line>, rate: HdmiForumFrl) {
+        let Some(line) = line else { return };
+        self.report.record(match line {
+            Line::Off => Some(PhyFailure::Running {
+                point,
+                expected: true,
+                found: false,
+            }),
+            Line::Frl { rate: found } if found == rate => None,
+            found => Some(PhyFailure::Line { point, found }),
+        });
     }
 }
 
@@ -223,11 +303,11 @@ macro_rules! tmds {
         let config = $check.config;
         let caps = $phy.capabilities();
         $points.ok(P::StopFresh, $phy.stop_output() $($await)*);
-        $points.running(P::StopFresh, false);
+        $points.running(P::StopFresh, $check.probe.line(&*$phy), false);
         $points.refused(P::StartUnconfigured, $phy.start_output() $($await)*);
-        $points.running(P::StartUnconfigured, false);
+        $points.running(P::StartUnconfigured, $check.probe.line(&*$phy), false);
         if $points.ok(P::Configure, $phy.configure(config) $($await)*) {
-            $points.running(P::Configure, false);
+            $points.running(P::Configure, $check.probe.line(&*$phy), false);
             $points.ok(P::ScramblerOffStopped, $phy.set_scrambling(false) $($await)*);
             if scrambles(config, caps) {
                 $points.ok(P::ScramblerOnStopped, $phy.set_scrambling(true) $($await)*);
@@ -235,20 +315,25 @@ macro_rules! tmds {
                 $points.refused(P::ScramblerOnStopped, $phy.set_scrambling(true) $($await)*);
             }
             if $points.ok(P::Start, $phy.start_output() $($await)*) {
-                $points.running(P::Start, true);
-                $points.ok(P::ScramblerOffRunning, $phy.set_scrambling(false) $($await)*);
-                if scrambles(config, caps) {
-                    $points.ok(P::ScramblerOnRunning, $phy.set_scrambling(true) $($await)*);
+                $points.tmds(P::Start, $check.probe.line(&*$phy), config, None);
+                if $points.ok(P::ScramblerOffRunning, $phy.set_scrambling(false) $($await)*) {
+                    let line = $check.probe.line(&*$phy);
+                    $points.tmds(P::ScramblerOffRunning, line, config, Some(false));
                 }
-                $points.running(P::ScramblerOnRunning, true);
+                if scrambles(config, caps)
+                    && $points.ok(P::ScramblerOnRunning, $phy.set_scrambling(true) $($await)*)
+                {
+                    let line = $check.probe.line(&*$phy);
+                    $points.tmds(P::ScramblerOnRunning, line, config, Some(true));
+                }
                 // Either behaviour is the contract's; a success stops the output.
                 if $phy.configure(config) $($await)*.is_ok() {
-                    $points.running(P::ConfigureRunning, false);
+                    $points.running(P::ConfigureRunning, $check.probe.line(&*$phy), false);
                 }
             }
         }
         $points.ok(P::Stop, $phy.stop_output() $($await)*);
-        $points.running(P::Stop, false);
+        $points.running(P::Stop, $check.probe.line(&*$phy), false);
         $points.ok(P::StopStopped, $phy.stop_output() $($await)*);
     }};
 }
@@ -260,16 +345,16 @@ macro_rules! power {
         if $points.ok(P::Configure, $phy.configure(config) $($await)*)
             && $points.ok(P::Start, $phy.start_output() $($await)*)
         {
-            $points.running(P::Start, true);
+            $points.tmds(P::Start, $check.probe.line(&*$phy), config, None);
             $points.ok(P::PowerOnAgain, $phy.power_on() $($await)*);
-            $points.running(P::PowerOnAgain, true);
+            $points.tmds(P::PowerOnAgain, $check.probe.line(&*$phy), config, None);
         }
         $points.ok(P::PowerOff, $phy.power_off() $($await)*);
-        $points.running(P::PowerOff, false);
+        $points.running(P::PowerOff, $check.probe.line(&*$phy), false);
         $points.ok(P::StopPoweredOff, $phy.stop_output() $($await)*);
         $points.refused(P::ConfigurePoweredOff, $phy.configure(config) $($await)*);
         $points.ok(P::PowerOn, $phy.power_on() $($await)*);
-        $points.running(P::PowerOn, false);
+        $points.running(P::PowerOn, $check.probe.line(&*$phy), false);
         $points.refused(P::StartAfterPowerOn, $phy.start_output() $($await)*);
     }};
 }
@@ -280,35 +365,35 @@ macro_rules! frl {
         if let Some(rate) = $check.frl_rate {
             let config = $check.config;
             if $points.ok(P::EnterFrl, $phy.set_frl_rate(rate) $($await)*) {
-                $points.running(P::EnterFrl, true);
+                $points.frl(P::EnterFrl, $check.probe.line(&*$phy), rate);
                 $points.refused(P::StartInFrl, $phy.start_output() $($await)*);
                 $points.ok(P::ConfigureLeavesFrl, $phy.configure(config) $($await)*);
-                $points.running(P::ConfigureLeavesFrl, false);
+                $points.running(P::ConfigureLeavesFrl, $check.probe.line(&*$phy), false);
             }
             if $points.ok(P::EnterFrl, $phy.set_frl_rate(rate) $($await)*) {
                 $points.ok(P::StopLeavesFrl, $phy.stop_output() $($await)*);
-                $points.running(P::StopLeavesFrl, false);
+                $points.running(P::StopLeavesFrl, $check.probe.line(&*$phy), false);
             }
             if $points.ok(P::EnterFrl, $phy.set_frl_rate(rate) $($await)*) {
                 $points.ok(P::FrlOff, $phy.set_frl_rate(HdmiForumFrl::NotSupported) $($await)*);
-                $points.running(P::FrlOff, false);
+                $points.running(P::FrlOff, $check.probe.line(&*$phy), false);
                 $points.refused(P::StartInFrl, $phy.start_output() $($await)*);
             }
         }
     }};
 }
 
-impl PhyCheck<'_> {
+impl<R: ?Sized> PhyCheck<'_, R> {
     /// The TMDS points, against a PHY fresh from creation (`start_output` is refused before
     /// its first `configure`).
     pub fn run_tmds<P>(&self, phy: &mut P) -> Report<PhyFailure>
     where
         P: hdmi_hal::phy::TmdsPhy + ?Sized,
+        R: OutputProbe<P>,
     {
         let mut report = Report::new();
         let mut points = Points {
             report: &mut report,
-            probe: self.probe,
         };
         let check = self;
         tmds!(check, points, phy,);
@@ -319,11 +404,11 @@ impl PhyCheck<'_> {
     pub fn run_powered<P>(&self, phy: &mut P) -> Report<PhyFailure>
     where
         P: hdmi_hal::phy::TmdsPhy + hdmi_hal::phy::PhyPower + ?Sized,
+        R: OutputProbe<P>,
     {
         let mut report = Report::new();
         let mut points = Points {
             report: &mut report,
-            probe: self.probe,
         };
         let check = self;
         points.ok(PhyPoint::PowerOff, phy.power_off());
@@ -337,11 +422,11 @@ impl PhyCheck<'_> {
     pub fn run_frl<P>(&self, phy: &mut P) -> Report<PhyFailure>
     where
         P: hdmi_hal::phy::TmdsPhy + hdmi_hal::phy::PhyPower + hdmi_hal::phy::FrlPhy + ?Sized,
+        R: OutputProbe<P>,
     {
         let mut report = self.run_powered(phy);
         let mut points = Points {
             report: &mut report,
-            probe: self.probe,
         };
         let check = self;
         frl!(check, points, phy,);
@@ -353,11 +438,11 @@ impl PhyCheck<'_> {
     pub async fn run_tmds_async<P>(&self, phy: &mut P) -> Report<PhyFailure>
     where
         P: hdmi_hal_async::phy::TmdsPhy + ?Sized,
+        R: OutputProbe<P>,
     {
         let mut report = Report::new();
         let mut points = Points {
             report: &mut report,
-            probe: self.probe,
         };
         let check = self;
         tmds!(check, points, phy, .await);
@@ -369,11 +454,11 @@ impl PhyCheck<'_> {
     pub async fn run_powered_async<P>(&self, phy: &mut P) -> Report<PhyFailure>
     where
         P: hdmi_hal_async::phy::TmdsPhy + hdmi_hal_async::phy::PhyPower + ?Sized,
+        R: OutputProbe<P>,
     {
         let mut report = Report::new();
         let mut points = Points {
             report: &mut report,
-            probe: self.probe,
         };
         let check = self;
         points.ok(PhyPoint::PowerOff, phy.power_off().await);
@@ -391,11 +476,11 @@ impl PhyCheck<'_> {
             + hdmi_hal_async::phy::PhyPower
             + hdmi_hal_async::phy::FrlPhy
             + ?Sized,
+        R: OutputProbe<P>,
     {
         let mut report = self.run_powered_async(phy).await;
         let mut points = Points {
             report: &mut report,
-            probe: self.probe,
         };
         let check = self;
         frl!(check, points, phy, .await);

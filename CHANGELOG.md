@@ -171,8 +171,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is withdrawn. `run_async` over
   hdmi-hal-async's `ScdcTransport`. Failures are `check::ScdcTransportFailure`s.
 - **The PHY check** (`check::PhyCheck`): hdmi-hal's PHY contracts with a configuration the
-  PHY can do and a `check::OutputProbe` (implemented by `Bench`) for whether its output
-  runs. `run_tmds` (`TmdsPhy` alone, a fresh PHY), `run_powered` (with `PhyPower`, from a
+  PHY can do and a `check::OutputProbe` (implemented by `Bench`, and `check::NoProbe` for
+  one that cannot tell) for what it transmits: once its output runs, TMDS at the
+  configuration's rate and ratio, scrambled as `set_scrambling` says, or FRL at the rate
+  entered. The probe is handed the PHY, so a PHY can be probed through its own state. `run_tmds` (`TmdsPhy` alone, a fresh PHY), `run_powered` (with `PhyPower`, from a
   power cycle) and `run_frl` (with `FrlPhy`: the mode rule), and their async forms. Failures
   are `check::PhyFailure`s naming a `check::PhyPoint`.
 - **`check::Report`**, what every check returns: the points run, every failed point counted,

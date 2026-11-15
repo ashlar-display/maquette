@@ -918,7 +918,8 @@ not reported: without `std` it ends the check.
   after `configure`; `set_scrambling` with the output on and off; `configure` leaving the
   output stopped; `power_on` leaving it stopped; after `power_off`, `configure` again before
   `start_output`; the mode rule on a PHY implementing both mode traits. What the traits
-  cannot show — whether the output is running — comes from a probe the implementor passes.
+  cannot show — what the PHY transmits: whether its output runs, at which rate and ratio,
+  scrambled or not, or FRL at which rate — comes from a probe the implementor passes.
 
 **What each can see.** Run against the bench, everything above. Against Linux's `i2c-stub`
 or a board, only what the trait returns: an allowed operation to an address where nothing
@@ -1096,25 +1097,28 @@ impl<'i> ScdcTransportCheck<'i> {
     // run_async with the `async` feature, over hdmi-hal-async's `ScdcTransport`.
 }
 
-/// Whether the PHY's output is running: what the traits cannot show.
-pub trait OutputProbe {
-    /// `None` when it cannot tell; the points that need it are then skipped.
-    fn running(&self) -> Option<bool>;
+/// What the PHY transmits: what the traits cannot show. Handed the PHY, so a PHY that knows
+/// its own output is probed by a type that reads it.
+pub trait OutputProbe<P: ?Sized> {
+    /// `Some(Line::Off)` when nothing; `None` when it cannot tell, and the points that need
+    /// it are then skipped.
+    fn line(&self, phy: &P) -> Option<Line>;
 }
-// Implemented for `Bench` (its line is not `Line::Off`).
+// Implemented for `Bench` (its line, whichever PHY drives it) and `NoProbe` (`None`).
 
-pub struct PhyCheck<'p> { /* a configuration the PHY can do, an optional FRL rate, the probe */ }
-impl<'p> PhyCheck<'p> {
-    pub const fn new(config: TmdsPhyConfig, probe: &'p dyn OutputProbe) -> Self;
+pub struct PhyCheck<'p, R: ?Sized> { /* a configuration the PHY can do, an optional FRL rate, the probe */ }
+impl<'p, R: ?Sized> PhyCheck<'p, R> {
+    pub const fn new(config: TmdsPhyConfig, probe: &'p R) -> Self;
     pub const fn with_frl_rate(self, rate: HdmiForumFrl) -> Self;
     /// `TmdsPhy` alone: the points that need no power or FRL.
-    pub fn run_tmds<P: TmdsPhy + ?Sized>(&self, phy: &mut P) -> Report<PhyFailure>;
+    pub fn run_tmds<P>(&self, phy: &mut P) -> Report<PhyFailure>
+    where P: TmdsPhy + ?Sized, R: OutputProbe<P>;
     /// With `PhyPower`: the power points too.
     pub fn run_powered<P>(&self, phy: &mut P) -> Report<PhyFailure>
-    where P: TmdsPhy + PhyPower + ?Sized;
+    where P: TmdsPhy + PhyPower + ?Sized, R: OutputProbe<P>;
     /// With `FrlPhy`: the mode rule too (needs `with_frl_rate`).
     pub fn run_frl<P>(&self, phy: &mut P) -> Report<PhyFailure>
-    where P: TmdsPhy + PhyPower + FrlPhy + ?Sized;
+    where P: TmdsPhy + PhyPower + FrlPhy + ?Sized, R: OutputProbe<P>;
     // The async forms with the `async` feature.
 }
 ```
@@ -1132,8 +1136,10 @@ impl<'p> PhyCheck<'p> {
   offset, so `run_threads` leaves it out.
 - **The PHY's errors are `Debug` only**, so its failures say which point failed and how
   (`Failed` where the contract says it succeeds, `Succeeded` where it says it fails,
-  `Running { expected, found }` from the probe), not why. The configuration is the
-  caller's: one the PHY can do.
+  `Running { expected, found }` and `Line { found }` from the probe), not why. Once the
+  output runs, the probe's line must be TMDS at the configuration's rate and ratio,
+  scrambled as `set_scrambling` last said where it has been called while running, or FRL
+  at the rate entered. The configuration is the caller's: one the PHY can do.
 - **Failure types** follow the clock check's: `#[non_exhaustive]` enums naming the point
   (`DdcBusFailure`, `ScdcTransportFailure`, `PhyFailure`), `Copy`, with `Display`.
 

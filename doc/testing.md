@@ -117,11 +117,12 @@ parts are built.
 - **`tests/phy_check.rs`** — the PHY check: the bench's PHY passing every run under both
   `configure`-while-running settings and both rates, a PHY coupled to the bench passing,
   capabilities refusing or skipping `set_scrambling(true)`, a probe that cannot tell
-  skipping its points, a scrambler for high rates only at 340 000 kHz and just above, the
-  async forms; and PHYs broken one way each caught at their point —
-  starting unconfigured, `configure` keeping the output running, `stop_output` failing
-  while off, `configure` not leaving FRL, `power_on` remembering the configuration,
-  `set_scrambling(true)` refused at high rates.
+  skipping its points, a probe reading the PHY it is handed, a scrambler for high rates
+  only at 340 000 kHz and just above, the async forms; and PHYs broken one way each caught
+  at their point — starting unconfigured (through `run_tmds` and its async form too),
+  `configure` keeping the output running, `stop_output` failing while off, `configure` not
+  leaving FRL, `power_on` remembering the configuration, `set_scrambling(true)` refused at
+  high rates, `set_scrambling` doing nothing, `configure` ignoring the rate and ratio.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed
