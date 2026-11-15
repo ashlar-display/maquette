@@ -8,6 +8,8 @@
 //! - `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
 //!   scrambled TMDS at the matching ratio, and that ratio fits the rate (no action presets
 //!   the status);
+//! - once the lock's conditions have held for a time trigger, the status is set (for sinks
+//!   neither strict nor refusing, checked after an advance or a delay);
 //! - no `Register` event changes a register the sink owns by `Actor::Source`;
 //! - the segment pointer never outlives its command sequence: every EDID read at 0x50 that
 //!   succeeds reads segment 0;
@@ -21,9 +23,9 @@ use libfuzzer_sys::fuzz_target;
 use maquette::{
     Actor, Bench, BlockBoundary, Clock, ColorBitDepth, ColorFormat, DdcBus, DdcCapabilities,
     DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, Event, Fault, Filter, FrlPhy,
-    HdmiForumFrl, Line, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite, PastStore,
-    PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, ScdcPastEnd, SinkConfig,
-    Times, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger,
+    HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite,
+    PastStore, PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, RegisterGroup,
+    ScdcPastEnd, SinkConfig, Times, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger,
 };
 
 /// The most actions one input runs.
@@ -115,7 +117,18 @@ impl Input<'_> {
     fn config(&mut self) -> SinkConfig {
         let a = self.byte();
         let b = self.byte();
+        let c = self.byte();
         let mut config = SinkConfig::new();
+        // Each group's HPD reset: the default, never, on any low, or after 50 ms.
+        for (i, group) in RegisterGroup::ALL.into_iter().enumerate() {
+            let reset = match (c >> (2 * i)) & 0b11 {
+                0 => continue,
+                1 => HpdReset::Never,
+                2 => HpdReset::OnHpdLow,
+                _ => HpdReset::After(Duration::from_millis(50)),
+            };
+            config = config.with_hpd_reset(group, reset);
+        }
         if a & 0x01 != 0 {
             config = config.without_segment_pointer();
         }
@@ -274,6 +287,75 @@ fn check_state(bench: &Bench<'_>) {
     }
 }
 
+/// Checks that the sink is locked once the lock's conditions have held for the trigger: for
+/// the sinks whose conditions the transcript shows (a time trigger, not strict, no
+/// refusals), after an advance or a delay, at which the sink evaluates. The conditions may
+/// have begun to hold at a change of `TMDS_Config`'s two bits, a change of the line, a plug,
+/// any change of HPD (a long low resets the status, recorded only if it changes it) or the
+/// sink's own clearing of the status; while HPD is low a reset may still come.
+fn check_lock_comes(bench: &Bench<'_>, config: &SinkConfig) {
+    let Trigger::After(delay) = config.scrambling_lock() else {
+        return;
+    };
+    if config.strict_lock()
+        || config.scrambling_refusals().attempts > 0
+        || bench.transcript_overflow() > 0
+    {
+        return;
+    }
+    let sink = bench.sink();
+    let (Some(status), Some(tmds_config), true) =
+        (sink.scrambling_status(), sink.tmds_config(), sink.hpd())
+    else {
+        return;
+    };
+    let holds = tmds_config & 1 != 0
+        && match bench.line() {
+            Line::Tmds {
+                character_rate_khz,
+                ratio,
+                scrambled: true,
+            } => {
+                let div40 = ratio == TmdsClockRatio::Div40;
+                div40 == (character_rate_khz > 340_000) && div40 == (tmds_config & 2 != 0)
+            }
+            _ => false,
+        };
+    let since = bench
+        .transcript()
+        .filter_map(|record| match record.event {
+            Event::Register {
+                addr: 0x54,
+                reg: 0x20,
+                from,
+                to,
+                ..
+            } if (from ^ to) & 0b11 != 0 => Some(record.at),
+            Event::Register {
+                addr: 0x54,
+                reg: 0x21,
+                from,
+                to,
+                by: Actor::Sink,
+            } if from & 1 != 0 && to & 1 == 0 => Some(record.at),
+            Event::Line(_) | Event::Plug { .. } | Event::Hpd { .. } => Some(record.at),
+            _ => None,
+        })
+        .max();
+    let (true, Some(since)) = (holds, since) else {
+        return;
+    };
+    if since
+        .checked_add(delay)
+        .is_some_and(|due| bench.now() >= due)
+    {
+        assert!(
+            status & 1 != 0,
+            "the conditions held since {since:?} for the trigger, but the status is not set"
+        );
+    }
+}
+
 /// Checks that a successful plain read at 0x50 read segment 0.
 fn check_edid_read(result: &Result<(), maquette::BusError>, addr: u8, buf: &[u8]) {
     if result.is_ok() && addr == 0x50 {
@@ -297,6 +379,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
         builder = builder.displayid(store);
     }
     let bench = builder.build().expect("the stores are whole blocks");
+    let mut sink = config;
     let bus = bench.ddc();
     let clock = bench.time();
     let mut delay = bench.time();
@@ -357,11 +440,18 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 bench
                     .plug(&EDID, displayid, config)
                     .expect("the stores are whole blocks");
+                sink = config;
             }
             9 => bench.detach(),
             10 => bench.reattach(),
-            11 => bench.advance(input.micros()),
-            12 => delay.delay(input.micros()),
+            11 => {
+                bench.advance(input.micros());
+                check_lock_comes(&bench, &sink);
+            }
+            12 => {
+                delay.delay(input.micros());
+                check_lock_comes(&bench, &sink);
+            }
             13 => {
                 let reg = input.byte();
                 let value = input.byte();

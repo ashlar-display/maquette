@@ -575,17 +575,19 @@ source settles is marked *chosen*.
 | A segment the sink does not have | E-DDC requires an acknowledge of the pointer for segments that exist (§6.4–§6.5), not what follows for others | a setting: `NoAcknowledge(Data)` at the pointer value (*chosen*, as hdmi-hal's `DdcBus` contract reads it), or acknowledged and read as past the store |
 | Reading across the 128-byte boundary at 0x50 or 0x52 | "some implementations may support" it (E-DDC 1.3 §2.2.6) | a setting: continues into the next block (*chosen*), or wraps to the start of the block |
 
-**The scrambling lock, in full.** The SCDC target keeps the time of the write that set
-`Scrambling_Enable` (from 0 to 1; a rewrite that keeps it set, as a quick restore makes, does
-not restart it) and the time the line became scrambled TMDS at its current ratio.
+**The scrambling lock, in full.** The lock's conditions: `Scrambling_Enable` is set, the
+line is scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate
+(1/40 above 340 Mcsc, 1/10 at or below), and no refusal withholds the status. The SCDC
+target keeps the time they last began to hold: the write that set `Scrambling_Enable` (from
+0 to 1; a rewrite that keeps it set, as a quick restore makes, does not restart it), a write
+that made the ratio match, an attempt accepted after a withheld one, or the line becoming
+what it is, whichever came last.
 
-- **Locking:** `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
-  scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate (1/40
-  above 340 Mcsc, 1/10 at or below), and the lock trigger has passed since the later of the
-  two times.
+- **Locking:** `Scrambling_Status` is set once the lock trigger has passed since that time.
 - **The sink's own reset:** an HPD reset of the `Status` group loses the lock along with
-  the status; if the conditions still hold, the lock is gained again once the trigger has
-  passed since the reset. Only a test's preset of the status holds against the lock.
+  the status, and the conditions begin to hold again at the reset: the lock is gained again
+  once the trigger has passed since. Only a test's preset of the status holds against the
+  lock.
 - **The strict sink** (`with_strict_lock(true)`; off by default): when scrambled output was
   already running at the write, the sink does not lock until the output stops and starts
   again after it.
@@ -598,7 +600,10 @@ not restart it) and the time the line became scrambled TMDS at its current ratio
   refusal is an `Event::Refusal`.
 - **Giving up** (`with_enable_timeout(Some(d))`; off by default): without scrambled TMDS at
   the matching ratio within `d` of the write that set `Scrambling_Enable`, the sink clears
-  `Scrambling_Enable` itself.
+  `Scrambling_Enable` itself, at the first event at or after the deadline. Output that
+  starts at or after the deadline is late, whether or not an SCDC event fell between: the
+  line and the registers change only at events, so the sink knows what held since the last
+  one.
 
 Every change the sink makes on its own is a `Register` event by `Actor::Sink`. The sink
 changes `Scrambling_Status` only when its lock is gained or lost, so a test's preset of the
@@ -1148,6 +1153,9 @@ the invariants a simulator must keep:
 - `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
   scrambled TMDS at the matching ratio, and that ratio fits the rate (the input presets any
   register but the status; its lines include ratios that do not fit);
+- once the lock's conditions have held for a time trigger, the status is set: for sinks
+  neither strict nor refusing, after an advance or a delay, with HPD high (the input picks
+  each register group's HPD reset);
 - no `Register` event changes a register the sink owns by `Actor::Source`;
 - the segment pointer never outlives its command sequence: every EDID read at 0x50 that
   succeeds reads segment 0;

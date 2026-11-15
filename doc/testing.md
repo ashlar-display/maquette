@@ -59,7 +59,10 @@ parts are built.
   ratio match, the ratio fitting the rate on both sides of 340 000 kHz, scrambling at 1/10
   and unscrambled output; the lock lost when the output
   stops or `Scrambling_Enable` is cleared; a rewrite not restarting it; the count trigger;
-  refusals of both kinds; the enable timeout, with and without output in time; a delay on
+  refusals of both kinds, the trigger counting from the accepted attempt; the trigger
+  counting from the write that makes the ratio match; the count trigger restarting when a
+  condition fails; the enable timeout, with and without output in time, and output late
+  though the time passed on the bus; a delay on
   the time handle as the event that sets it; a preset status holding until the lock
   changes; the defaults.
 - **`tests/hpd.rs`** — the HPD resets: `Config` on every low and the rest after 100 ms by
@@ -147,6 +150,9 @@ every action it checks the invariants a simulator must keep:
 - `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
   scrambled TMDS at the matching ratio, and that ratio fits the rate (no action presets
   the status; the input's lines include ratios that do not fit);
+- once the lock's conditions have held for a time trigger, the status is set (for sinks
+  neither strict nor refusing, after an advance or a delay, with HPD high; the input picks
+  each register group's HPD reset);
 - no `Register` event changes a register the sink owns by `Actor::Source`;
 - the segment pointer never outlives its command sequence: the EDID's segment 0 holds
   0x00–0x7F and segment 1 0x80–0xBF, so every EDID read at 0x50 that succeeds must hold no

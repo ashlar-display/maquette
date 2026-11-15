@@ -85,13 +85,18 @@ fn role(reg: u8) -> Role {
 ///
 /// The lock: `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
 /// scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate (1/40
-/// above 340 Mcsc, 1/10 at or below), and the trigger has passed since
-/// the latest of the write that set `Scrambling_Enable` (from 0 to 1), the line becoming
-/// what it is, and the sink's own last reset of the status. It is cleared when any condition
+/// above 340 Mcsc, 1/10 at or below), no refusal withholds it, and the trigger has passed
+/// since these conditions last began to hold: the write that set `Scrambling_Enable` (from
+/// 0 to 1), a write that made the ratio match, an attempt accepted after a withheld one, or
+/// the line becoming what it is, whichever came last. It is cleared when any condition
 /// fails. The sink changes the status only when its lock is gained or lost, so a test's
-/// preset holds until then; the sink's own reset of the status loses the lock, which is then
-/// gained again as from the reset. Evaluated at every
-/// event: each transaction, each byte written, each read of the status, and every update.
+/// preset holds until then; the sink's own reset of the status loses the lock, and the
+/// conditions begin to hold again at the reset.
+///
+/// Evaluated at every event: each transaction, each byte written, each read of the status,
+/// and every update. The line and the registers change only at events, so what an
+/// evaluation sees has held since the one before: a condition that begins to hold is seen
+/// when it does, and one seen late, past a deadline, was late.
 #[derive(Debug)]
 pub(crate) struct Scdc {
     regs: [u8; 256],
@@ -113,12 +118,11 @@ pub(crate) struct Scdc {
     /// Attempts so far, and whether the last one is withheld.
     attempts: u32,
     withheld: bool,
-    /// The time the current lock conditions hold from, and reads of the status since.
+    /// Since when the lock's conditions hold, `None` while they do not; and reads of the
+    /// status since.
     lock_from: Option<Timestamp>,
     reads: u32,
     locked: bool,
-    /// When the sink last reset `Scrambling_Status` itself: the lock holds from no earlier.
-    status_reset_at: Timestamp,
     hpd_resets: [HpdReset; 4],
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
@@ -152,7 +156,6 @@ impl Scdc {
             lock_from: None,
             reads: 0,
             locked: false,
-            status_reset_at: Timestamp::from_micros(0),
             hpd_resets: config.hpd_resets,
             hpd_low_since: None,
             reset_done: [false; 4],
@@ -218,7 +221,7 @@ impl Scdc {
                     }
                     if reg == SCRAMBLING_STATUS {
                         self.locked = false;
-                        self.status_reset_at = now;
+                        self.lock_from = None;
                     }
                 }
             }
@@ -237,6 +240,7 @@ impl Scdc {
         if line != self.line {
             self.line = line;
             self.line_since = now;
+            self.lock_from = None;
         }
         let config = self.get(TMDS_CONFIG);
         let matching = match line {
@@ -251,23 +255,22 @@ impl Scdc {
             }
             _ => false,
         };
-        // Giving up: no scrambled TMDS at the matching ratio within the timeout.
+        // Giving up: no scrambled TMDS at the matching ratio before the deadline. Seen at or
+        // past it, it came too late.
         if let Some(at) = self.enable_at {
-            self.seen_since_enable |= matching;
-            let expired = self
+            let deadline = self
                 .enable_timeout
-                .and_then(|timeout| at.checked_add(timeout))
-                .is_some_and(|deadline| now >= deadline);
-            if expired && !self.seen_since_enable {
+                .and_then(|timeout| at.checked_add(timeout));
+            let in_time = deadline.is_none_or(|deadline| now < deadline);
+            self.seen_since_enable |= matching && in_time;
+            if !in_time && !self.seen_since_enable {
                 self.set(TMDS_CONFIG, config & !SCRAMBLING_ENABLE, Actor::Sink, env);
             }
         }
-        let lock_from = match self.enable_at {
-            Some(at) if matching && !self.withheld && !(self.strict && self.line_since < at) => {
-                Some(at.max(self.line_since).max(self.status_reset_at))
-            }
-            _ => None,
-        };
+        let holds = self
+            .enable_at
+            .is_some_and(|at| matching && !self.withheld && !(self.strict && self.line_since < at));
+        let lock_from = holds.then(|| self.lock_from.unwrap_or(now));
         if lock_from != self.lock_from {
             self.lock_from = lock_from;
             self.reads = 0;

@@ -200,6 +200,23 @@ fn a_rewrite_that_keeps_scrambling_enabled_does_not_restart_the_lock() {
 }
 
 #[test]
+fn the_trigger_counts_from_the_write_that_makes_the_ratio_match() {
+    let bench = bench(SinkConfig::new());
+    bench.set_line(SCRAMBLED_40);
+    write_config(&bench, 0b01);
+    bench.advance(ms(50));
+    assert_eq!(read_status(&bench), 0, "the ratio does not match");
+    write_config(&bench, 0b11);
+    assert_eq!(
+        read_status(&bench),
+        0,
+        "the trigger has not passed since the ratio matched"
+    );
+    bench.advance(ms(1));
+    assert_eq!(read_status(&bench), 1);
+}
+
+#[test]
 fn the_lock_can_come_on_a_count_of_reads() {
     let config = SinkConfig::new().with_scrambling_lock(Trigger::AfterReads(3));
     assert_eq!(config.scrambling_lock(), Trigger::AfterReads(3));
@@ -208,6 +225,15 @@ fn the_lock_can_come_on_a_count_of_reads() {
     bench.set_line(SCRAMBLED_40);
     bench.advance(ms(100));
     assert_eq!(read_status(&bench), 0);
+    assert_eq!(read_status(&bench), 0);
+    assert_eq!(read_status(&bench), 1);
+    // A condition failing and holding again restarts the count.
+    let bench = self::bench(SinkConfig::new().with_scrambling_lock(Trigger::AfterReads(2)));
+    write_config(&bench, 0b11);
+    bench.set_line(SCRAMBLED_40);
+    assert_eq!(read_status(&bench), 0);
+    bench.set_line(Line::Off);
+    bench.set_line(SCRAMBLED_40);
     assert_eq!(read_status(&bench), 0);
     assert_eq!(read_status(&bench), 1);
     // Reads before the conditions held do not count.
@@ -231,8 +257,11 @@ fn a_sink_can_withhold_the_status_for_its_first_attempts() {
     write_config(&bench, 0b11);
     bench.advance(ms(10));
     assert_eq!(read_status(&bench), 0);
-    // The third attempt is not refused; Scrambling_Enable has been set since the first.
+    // The third attempt is not refused; Scrambling_Enable has been set since the first, but
+    // the lock's conditions hold only from the accepted attempt, so the trigger counts from it.
     write_config(&bench, 0b11);
+    assert_eq!(read_status(&bench), 0);
+    bench.advance(ms(1));
     assert_eq!(read_status(&bench), 1);
     let refusals: Vec<_> = bench
         .transcript()
@@ -283,6 +312,23 @@ fn a_sink_can_give_up_on_scrambling_enable() {
         sink_sets(&bench, 0x20),
         [(written.as_micros() + 100_000, 0b10)]
     );
+    // Output that starts after the deadline is late, even when no SCDC event fell between:
+    // here the time passes reading the EDID.
+    static EDID: [u8; 128] = [0; 128];
+    let bench = Bench::builder(&EDID)
+        .sink(SinkConfig::new().with_enable_timeout(Some(ms(10))))
+        .build()
+        .unwrap();
+    write_config(&bench, 0b11);
+    let deadline = bench.now().as_micros() + 10_000;
+    let mut block = [0; 128];
+    while bench.now().as_micros() < deadline + 5_000 {
+        bench.ddc().write_read(0x50, &[0], &mut block).unwrap();
+    }
+    bench.set_line(SCRAMBLED_40);
+    bench.advance(ms(5));
+    assert_eq!(bench.sink().tmds_config(), Some(0b10));
+    assert_eq!(read_status(&bench), 0);
     // Scrambled output in time keeps it.
     let bench = self::bench(SinkConfig::new().with_enable_timeout(Some(ms(100))));
     write_config(&bench, 0b11);
