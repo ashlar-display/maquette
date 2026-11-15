@@ -32,6 +32,7 @@
 #[cfg(feature = "std")]
 extern crate std;
 
+mod action;
 #[cfg(feature = "async")]
 mod asynch;
 mod bench;
@@ -53,6 +54,7 @@ mod transcript;
 #[doc = include_str!("../README.md")]
 struct ReadmeDoctests;
 
+pub use action::{Action, When};
 pub use bench::{
     Bench, BenchBuilder, BenchError, DEFAULT_BUDGET, DEFAULT_PHY_CAPABILITIES, Sink, Time,
 };

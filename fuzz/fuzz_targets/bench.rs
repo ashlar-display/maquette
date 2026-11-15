@@ -21,11 +21,12 @@ use core::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
 use maquette::{
-    Actor, Bench, BlockBoundary, Clock, ColorBitDepth, ColorFormat, DdcBus, DdcCapabilities,
-    DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, Event, Fault, Filter, FrlPhy,
-    HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite,
+    Action, Actor, Bench, BlockBoundary, Clock, ColorBitDepth, ColorFormat, DdcBus,
+    DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, Event, Fault, Filter,
+    FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite,
     PastStore, PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, RegisterGroup,
     ScdcPastEnd, SinkConfig, Times, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger,
+    When,
 };
 
 /// The most actions one input runs.
@@ -190,6 +191,65 @@ impl Input<'_> {
             .with_stretch_timeout_us(if byte & 0x08 != 0 { Some(2_000) } else { None })
     }
 
+    /// A filter, the fields `b` sets read from the input.
+    fn filter(&mut self, b: u8) -> Filter {
+        let mut filter = Filter::ANY;
+        if b & 0x01 != 0 {
+            filter = filter.with_addr(self.addr());
+        }
+        if b & 0x02 != 0 {
+            filter = filter.with_op(match self.byte() % 4 {
+                0 => OpKind::Write,
+                1 => OpKind::WriteRead,
+                2 => OpKind::Read,
+                _ => OpKind::ReadSegmented,
+            });
+        }
+        if b & 0x04 != 0 {
+            filter = filter.with_first(self.byte());
+        }
+        filter
+    }
+
+    /// A scheduled action and its moment. No plug: it would change the sink's settings at a
+    /// moment `check_lock_comes` does not know. No preset of the status, as for presets.
+    fn action(&mut self) -> (Action<'static>, When) {
+        let a = self.byte();
+        let action = match a % 6 {
+            0 => {
+                let reg = self.byte();
+                Action::Preset {
+                    reg: if reg == 0x21 { 0x20 } else { reg },
+                    value: self.byte(),
+                }
+            }
+            1 => Action::Hpd(self.bit()),
+            2 => Action::Unplug,
+            3 => Action::Line(self.line()),
+            4 => Action::Detach,
+            _ => Action::Reattach,
+        };
+        let nth = u32::from(self.byte() % 4);
+        let when = match (a >> 3) % 3 {
+            0 => {
+                let b = self.byte();
+                When::BeforeOp {
+                    filter: self.filter(b),
+                    nth,
+                }
+            }
+            1 => {
+                let b = self.byte();
+                When::AfterOp {
+                    filter: self.filter(b),
+                    nth,
+                }
+            }
+            _ => When::PhyCall { kind: None, nth },
+        };
+        (action, when)
+    }
+
     fn fault(&mut self) -> Fault {
         let kinds = [
             DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address),
@@ -212,21 +272,7 @@ impl Input<'_> {
             },
         };
         let b = self.byte();
-        let mut filter = Filter::ANY;
-        if b & 0x01 != 0 {
-            filter = filter.with_addr(self.addr());
-        }
-        if b & 0x02 != 0 {
-            filter = filter.with_op(match self.byte() % 4 {
-                0 => OpKind::Write,
-                1 => OpKind::WriteRead,
-                2 => OpKind::Read,
-                _ => OpKind::ReadSegmented,
-            });
-        }
-        if b & 0x04 != 0 {
-            filter = filter.with_first(self.byte());
-        }
+        let filter = self.filter(b);
         let times = if b & 0x08 != 0 {
             Times::UntilCleared
         } else {
@@ -391,7 +437,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
         }
         let mut bytes = [0u8; 8];
         let mut buf = [0u8; 64];
-        match input.byte() % 21 {
+        match input.byte() % 22 {
             0 => {
                 let addr = input.addr();
                 let _ = bus.write(addr, input.bytes(&mut bytes));
@@ -496,6 +542,10 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                     fault = fault.after_effect();
                 }
                 let _ = bench.schedule_phy(fault);
+            }
+            20 => {
+                let (action, when) = input.action();
+                let _ = bench.schedule_action(action, when);
             }
             _ => {
                 let _ = clock.now();

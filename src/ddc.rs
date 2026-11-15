@@ -66,6 +66,7 @@ impl<'b> Ddc<'b> {
 
     fn run_serialized(&self, record: BusRecord, ops: &mut [Operation<'_>]) -> Result<(), BusError> {
         let strike = self.core.strike(&record);
+        self.core.run_actions(true);
         let data: usize = ops.iter().map(Operation::len).sum();
         // The result, and how many bytes went out (`None`: nothing, the adapter is gone).
         let (result, wire_bytes) = match strike {
@@ -95,6 +96,7 @@ impl<'b> Ddc<'b> {
                 (result, wire(reach, ops))
             }
         };
+        self.core.run_actions(false);
         if let Some(bytes) = wire_bytes {
             let timing = self.core.timing();
             let bytes = u32::try_from(bytes).unwrap_or(u32::MAX);

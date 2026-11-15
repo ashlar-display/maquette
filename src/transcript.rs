@@ -117,6 +117,12 @@ pub enum Event {
         /// A value that goes with it.
         value: u32,
     },
+    /// A scheduled action came: the events it makes follow.
+    #[non_exhaustive]
+    Action {
+        /// The id [`Bench::schedule_action`](crate::Bench::schedule_action) returned.
+        id: FaultId,
+    },
 }
 
 /// A bus operation as the transcript records it: read, not built (see [`Record`]).

@@ -5,6 +5,7 @@ use core::time::Duration;
 
 use hdmi_hal::ddc::DdcErrorKind;
 
+use crate::action::{Action, When};
 use crate::phy::{PhyCall, PhyFault};
 use crate::transcript::{BusOp, BusRecord};
 
@@ -92,10 +93,7 @@ impl Fault {
 
     /// Whether this fault counts `record`'s operation.
     fn matches(&self, record: &BusRecord) -> bool {
-        let filter = &self.filter;
-        filter.addr.is_none_or(|addr| addr == record.addr)
-            && filter.op.is_none_or(|op| op == OpKind::of(record.op))
-            && filter.first.is_none_or(|first| Some(first) == record.first)
+        self.filter.matches(record)
     }
 }
 
@@ -145,6 +143,15 @@ impl Filter {
             first: Some(first),
             ..self
         }
+    }
+}
+
+impl Filter {
+    /// Whether `record`'s operation matches.
+    pub(crate) fn matches(&self, record: &BusRecord) -> bool {
+        self.addr.is_none_or(|addr| addr == record.addr)
+            && self.op.is_none_or(|op| op == OpKind::of(record.op))
+            && self.first.is_none_or(|first| Some(first) == record.first)
     }
 }
 
@@ -246,19 +253,22 @@ pub(crate) struct Strike {
     pub(crate) point: Point,
 }
 
-/// A scheduled fault: the bus's or the PHY's.
+/// A scheduled fault, the bus's or the PHY's, or a scheduled action.
 #[derive(Debug, Clone, Copy)]
-enum Kind {
+enum Kind<'a> {
     Bus(Fault),
     Phy(PhyFault),
+    Action(Action<'a>, When),
 }
 
-/// A scheduled fault and how many matching operations it has counted.
+/// A scheduled fault or action, how many matching operations it has counted, and, for an
+/// action, whether its moment has come.
 #[derive(Debug, Clone, Copy)]
-struct Scheduled {
+struct Scheduled<'a> {
     id: FaultId,
-    kind: Kind,
+    kind: Kind<'a>,
     seen: u32,
+    due: bool,
 }
 
 /// Counts one more matching operation; whether it is struck, and whether the fault's last
@@ -275,14 +285,15 @@ fn count(seen: &mut u32, nth: u32, times: Times) -> (bool, bool) {
     }
 }
 
-/// The fault schedule: `FAULTS` slots, shared by the bus's faults and the PHY's.
+/// The fault schedule: `FAULTS` slots, shared by the bus's faults, the PHY's and the
+/// scheduled actions.
 #[derive(Debug)]
-pub(crate) struct Schedule<const FAULTS: usize> {
-    slots: [Option<Scheduled>; FAULTS],
+pub(crate) struct Schedule<'a, const FAULTS: usize> {
+    slots: [Option<Scheduled<'a>>; FAULTS],
     next_id: u32,
 }
 
-impl<const FAULTS: usize> Schedule<FAULTS> {
+impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
     pub(crate) const fn new() -> Self {
         Self {
             slots: [None; FAULTS],
@@ -290,7 +301,7 @@ impl<const FAULTS: usize> Schedule<FAULTS> {
         }
     }
 
-    fn insert(&mut self, kind: Kind) -> Result<FaultId, ScheduleFull> {
+    fn insert(&mut self, kind: Kind<'a>) -> Result<FaultId, ScheduleFull> {
         let slot = self
             .slots
             .iter_mut()
@@ -298,7 +309,12 @@ impl<const FAULTS: usize> Schedule<FAULTS> {
             .ok_or(ScheduleFull)?;
         let id = FaultId(self.next_id);
         self.next_id = self.next_id.wrapping_add(1);
-        *slot = Some(Scheduled { id, kind, seen: 0 });
+        *slot = Some(Scheduled {
+            id,
+            kind,
+            seen: 0,
+            due: false,
+        });
         Ok(id)
     }
 
@@ -308,6 +324,41 @@ impl<const FAULTS: usize> Schedule<FAULTS> {
 
     pub(crate) fn add_phy(&mut self, fault: PhyFault) -> Result<FaultId, ScheduleFull> {
         self.insert(Kind::Phy(fault))
+    }
+
+    pub(crate) fn add_action(
+        &mut self,
+        action: Action<'a>,
+        when: When,
+    ) -> Result<FaultId, ScheduleFull> {
+        self.insert(Kind::Action(action, when))
+    }
+
+    /// Counts `call` for every action triggered by PHY calls; one whose call it is becomes
+    /// due.
+    pub(crate) fn phy_actions(&mut self, call: &PhyCall) {
+        for scheduled in self.slots.iter_mut().flatten() {
+            if let Kind::Action(_, When::PhyCall { kind, nth }) = scheduled.kind {
+                if kind.is_none_or(|kind| kind == call.kind()) {
+                    let (now, _) = count(&mut scheduled.seen, nth, Times::Count(1));
+                    scheduled.due |= now;
+                }
+            }
+        }
+    }
+
+    /// The first due action of the moment asked for (`before` an operation, or after one),
+    /// taken out of the schedule.
+    pub(crate) fn take_due(&mut self, before: bool) -> Option<(FaultId, Action<'a>)> {
+        let slot = self.slots.iter_mut().find(|slot| {
+            matches!(slot, Some(Scheduled { kind: Kind::Action(_, when), due: true, .. })
+                if matches!(when, When::BeforeOp { .. }) == before)
+        })?;
+        let scheduled = slot.take()?;
+        match scheduled.kind {
+            Kind::Action(action, _) => Some((scheduled.id, action)),
+            _ => None,
+        }
     }
 
     pub(crate) fn remove(&mut self, id: FaultId) -> bool {
@@ -341,8 +392,16 @@ impl<const FAULTS: usize> Schedule<FAULTS> {
             let Some(scheduled) = slot else {
                 continue;
             };
-            let Kind::Bus(fault) = scheduled.kind else {
-                continue;
+            let fault = match scheduled.kind {
+                Kind::Bus(fault) => fault,
+                Kind::Action(_, When::BeforeOp { filter, nth } | When::AfterOp { filter, nth }) => {
+                    if filter.matches(record) {
+                        let (now, _) = count(&mut scheduled.seen, nth, Times::Count(1));
+                        scheduled.due |= now;
+                    }
+                    continue;
+                }
+                _ => continue,
             };
             if !fault.matches(record) {
                 continue;

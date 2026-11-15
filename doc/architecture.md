@@ -899,6 +899,58 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 
 PHY faults are `PhyFault`s, in the same schedule (see "The simulated PHY").
 
+### Scheduled actions
+
+A test changes the sink between its own calls; a procedure under test runs many steps in
+one call. A scheduled action is a change the bench makes by itself, at a moment the test
+chose within such a call: `FLT_update` set after the source writes `Config_1`,
+`CED_update` set on the third poll of `Update_0`, an unplug partway through training.
+
+```rust
+#[non_exhaustive]
+pub enum Action<'a> {
+    Preset { reg: u8, value: u8 },        // as Bench::preset_scdc
+    Hpd(bool),                             // as Bench::set_hpd
+    Unplug,
+    Plug { edid: &'a [u8], displayid: Option<&'a [u8]>, config: SinkConfig },
+    Line(Line),                            // as Bench::set_line
+    Detach,
+    Reattach,
+}
+
+#[non_exhaustive]
+pub enum When {
+    BeforeOp { filter: Filter, nth: u32 },  // before the nth matching bus operation
+    AfterOp { filter: Filter, nth: u32 },   // after it, before its time is charged
+    PhyCall { kind: Option<PhyCallKind>, nth: u32 }, // after the nth PHY call returns
+}
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn schedule_action(&self, action: Action<'a>, when: When)
+        -> Result<FaultId, ScheduleFull>;
+}
+```
+
+- **Once.** An action comes once and leaves the schedule; a test that wants it again
+  schedules it again. `clear_fault` with its id removes it before it comes.
+- **One schedule.** Actions share the faults' `FAULTS` slots, and count what a fault would:
+  from when they are scheduled, from 1; refused, empty and detached calls do not count. A
+  call through `Coupled` counts once.
+- **Where it lands.** It runs inside the triggering call's critical section, so no other
+  handle's call falls between: before the operation is routed (`BeforeOp`), after the
+  target and before the bus charges the time (`AfterOp`), or as the PHY call returns
+  (`PhyCall`). A fault striking the same operation is recorded after its bus record, so a
+  `BeforeOp` action comes ahead of both.
+- **Records.** An `Event::Action { id }` comes first, then the events the change makes, as
+  its control makes them: a preset as a `Register` event by `Actor::Test`, HPD as
+  `Event::Hpd`, and so on. An action that cannot apply when it comes (a preset on a sink
+  without SCDC, HPD raised on an unplugged sink) is only that record: a panic in the middle
+  of the code under test would serve the test worse. A `Plug` whose stores are not whole
+  blocks is refused when it is scheduled, with a panic, as a mistake in the test.
+
+`hpd_pulse` has no action: it spans time, so a test schedules `Hpd(false)` and a later
+`Hpd(true)`.
+
 ---
 
 ## Conformance checks
@@ -1199,9 +1251,9 @@ conformance checks, the checks' negative cases against broken doubles, and the s
 against the sources above.
 
 A fuzz target drives the bench with arbitrary sequences of bus calls, PHY calls, line
-changes, HPD, plug and adapter changes, presets, faults and clock advances, on a sink whose
-settings and bus capabilities the input also chooses. It decodes the input bytes itself, as
-the stack's other fuzz targets do. After every action it checks
+changes, HPD, plug and adapter changes, presets, faults, scheduled actions and clock
+advances, on a sink whose settings and bus capabilities the input also chooses. It decodes
+the input bytes itself, as the stack's other fuzz targets do. After every action it checks
 the invariants a simulator must keep:
 
 - the same input gives the same transcript (the input is run twice);

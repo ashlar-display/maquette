@@ -7,7 +7,8 @@ for `Clock` and `Delay` implementations, and the bench: its DDC bus routed to a 
 targets, the sink's SCDC registers and its EDID and DisplayID behind the E-DDC segment
 pointer, register presets, and the transcript; the line, HPD, unplug and detach as bench
 events; the sink's scrambling lock and the registers an HPD low resets; the operation
-budget; scheduled faults; the simulated PHY (`TmdsPhy`, `FrlPhy`, `PhyPower`) and
+budget; scheduled faults and scheduled actions, which change the sink during a procedure;
+the simulated PHY (`TmdsPhy`, `FrlPhy`, `PhyPower`) and
 `Coupled<P>`, any PHY, driving the line; hdmi-hal-async's traits on the same handles; a
 fuzz target checking the simulator's invariants; and the conformance checks for `DdcBus`,
 `ScdcTransport`, `TmdsPhy`, `FrlPhy` and `PhyPower`.

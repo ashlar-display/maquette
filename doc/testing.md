@@ -82,6 +82,12 @@ parts are built.
   the first scheduled fault striking while every fault counts; a full schedule; a fault
   that never strikes; the stretch timeout, slow operations, `Detached` and `Unsupported`
   effects; a preset as an event the lock answers.
+- **`tests/actions.rs`** — scheduled actions: before an operation (seen by it) and after
+  one (following its record), after a PHY call of the simulated PHY and of a coupled one;
+  every action doing what its control does; a detach before an operation failing it;
+  operations while detached not counting; an action that cannot apply only recorded; the
+  schedule shared with faults, and an action cleared before it comes; a fault and an
+  action on one operation; a plug with broken stores refused when scheduled.
 - **`tests/phy.rs`** — the simulated PHY: a bring-up driving the line until the sink locks,
   and a procedure that never sets the scrambler failing at every rate; each scrambler
   setting after `configure`, and each within the capabilities; `configure` with the output running, failing or stopping it;
@@ -149,7 +155,8 @@ the EDID read) live with those crates, which use maquette as a dev-dependency.
 ## Fuzzing
 
 `fuzz/fuzz_targets/bench.rs` drives a bench with arbitrary sequences of bus calls, PHY calls,
-line changes, HPD, plug and adapter changes, presets, faults and clock advances, on a sink whose
+line changes, HPD, plug and adapter changes, presets, faults, scheduled actions (all but a
+plug, which would change the sink's settings unseen) and clock advances, on a sink whose
 settings and bus capabilities the input chooses; it decodes the input bytes itself. After
 every action it checks the invariants a simulator must keep:
 

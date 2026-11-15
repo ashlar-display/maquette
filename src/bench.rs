@@ -9,6 +9,7 @@ use hdmi_hal::ddc::{DdcCapabilities, DdcErrorKind, NoAcknowledgeSource};
 use hdmi_hal::phy::TmdsPhyCapabilities;
 use hdmi_hal::time::{Clock, Delay, Timestamp};
 
+use crate::action::{Action, When};
 use crate::clock::SimClock;
 use crate::config::SinkConfig;
 use crate::ddc::{BusTiming, Ddc};
@@ -110,7 +111,7 @@ struct State<'a, const LOG: usize, const FAULTS: usize> {
     attached: bool,
     spent: u64,
     transcript: Transcript<LOG>,
-    faults: Schedule<FAULTS>,
+    faults: Schedule<'a, FAULTS>,
     /// The fault a check armed through `FailNext`, until it withdraws it.
     armed: Option<FaultId>,
     phy: PhyState,
@@ -229,6 +230,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
     /// and whether the call took effect before a fault failed it.
     fn phy_call(&mut self, call: PhyCall, clock: &SimClock) -> (Result<(), PhyErrorKind>, bool) {
         let strike = self.faults.strike_phy(&call);
+        self.faults.phy_actions(&call);
         let was_running = self.phy.is_running();
         let (result, took_effect) = match strike {
             Some((_, false)) => (Err(PhyErrorKind::Fault), false),
@@ -253,6 +255,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             }
         }
         self.update(at);
+        self.run_actions(at, false);
         (result, took_effect)
     }
 
@@ -268,6 +271,98 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             self.record(at, Event::Hpd { high: false });
         }
         self.update(at);
+    }
+
+    /// Plugs a sink with checked stores in at `at`.
+    fn plug(
+        &mut self,
+        at: Timestamp,
+        edid: &'a [u8],
+        displayid: Option<&'a [u8]>,
+        config: SinkConfig,
+    ) {
+        self.unplug(at);
+        self.config = config;
+        self.eddc = Eddc::new(&config, edid, displayid);
+        self.scdc = Scdc::new(&config);
+        self.plugged = true;
+        self.record(at, Event::Plug { plugged: true });
+        self.hpd = true;
+        self.record(at, Event::Hpd { high: true });
+        self.update(at);
+    }
+
+    /// Sets the line at `at`; the same line changes nothing.
+    fn set_line(&mut self, at: Timestamp, line: Line) {
+        if self.line != line {
+            self.line = line;
+            self.record(at, Event::Line(line));
+            self.update(at);
+        }
+    }
+
+    /// Sets HPD at `at`; false when raising it on an unplugged sink, which changes nothing.
+    fn set_hpd(&mut self, at: Timestamp, high: bool) -> bool {
+        if high && !self.plugged {
+            return false;
+        }
+        if self.hpd != high {
+            self.hpd = high;
+            self.record(at, Event::Hpd { high });
+            self.update(at);
+        }
+        true
+    }
+
+    /// Attaches or detaches the adapter at `at`.
+    fn set_attached(&mut self, at: Timestamp, attached: bool) {
+        if self.attached != attached {
+            self.attached = attached;
+            self.record(at, Event::Adapter { attached });
+            self.update(at);
+        }
+    }
+
+    /// Presets an SCDC register at `at`; false on a sink without SCDC, which changes nothing.
+    fn preset(&mut self, at: Timestamp, reg: u8, value: u8) -> bool {
+        let State {
+            scdc,
+            transcript,
+            hpd,
+            line,
+            ..
+        } = self;
+        let Some(scdc) = scdc else {
+            return false;
+        };
+        scdc.preset(reg, value, &mut Env::new(at, *hpd, *line, transcript));
+        self.update(at);
+        true
+    }
+
+    /// Runs the due actions of the moment (`before` an operation, or after one), each
+    /// recorded first.
+    fn run_actions(&mut self, at: Timestamp, before: bool) {
+        while let Some((id, action)) = self.faults.take_due(before) {
+            self.record(at, Event::Action { id });
+            match action {
+                Action::Preset { reg, value } => {
+                    self.preset(at, reg, value);
+                }
+                Action::Hpd(high) => {
+                    self.set_hpd(at, high);
+                }
+                Action::Unplug => self.unplug(at),
+                Action::Plug {
+                    edid,
+                    displayid,
+                    config,
+                } => self.plug(at, edid, displayid, config),
+                Action::Line(line) => self.set_line(at, line),
+                Action::Detach => self.set_attached(at, false),
+                Action::Reattach => self.set_attached(at, true),
+            }
+        }
     }
 }
 
@@ -356,13 +451,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// Sets what the source transmits: a bench event, recorded as `Event::Line`. Setting the
     /// line it already has changes nothing and records nothing.
     pub fn set_line(&self, line: Line) {
-        self.locked(|state, at| {
-            if state.line != line {
-                state.line = line;
-                state.record(at, Event::Line(line));
-                state.update(at);
-            }
-        });
+        self.locked(|state, at| state.set_line(at, line));
     }
 
     /// What the source transmits.
@@ -378,17 +467,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     ///
     /// When raising HPD on an unplugged sink: a mistake in the test, which plugs it instead.
     pub fn set_hpd(&self, high: bool) {
-        let unplugged = self.locked(|state, at| {
-            if high && !state.plugged {
-                return true;
-            }
-            if state.hpd != high {
-                state.hpd = high;
-                state.record(at, Event::Hpd { high });
-                state.update(at);
-            }
-            false
-        });
+        let unplugged = !self.locked(|state, at| state.set_hpd(at, high));
         if unplugged {
             panic!("HPD raised on an unplugged sink: plug it first");
         }
@@ -419,17 +498,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
         config: SinkConfig,
     ) -> Result<(), BenchError> {
         check_stores(edid, displayid)?;
-        self.locked(|state, at| {
-            state.unplug(at);
-            state.config = config;
-            state.eddc = Eddc::new(&config, edid, displayid);
-            state.scdc = Scdc::new(&config);
-            state.plugged = true;
-            state.record(at, Event::Plug { plugged: true });
-            state.hpd = true;
-            state.record(at, Event::Hpd { high: true });
-            state.update(at);
-        });
+        self.locked(|state, at| state.plug(at, edid, displayid, config));
         Ok(())
     }
 
@@ -446,13 +515,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     }
 
     fn set_attached(&self, attached: bool) {
-        self.locked(|state, at| {
-            if state.attached != attached {
-                state.attached = attached;
-                state.record(at, Event::Adapter { attached });
-                state.update(at);
-            }
-        });
+        self.locked(|state, at| state.set_attached(at, attached));
     }
 
     /// Whether the adapter is attached.
@@ -476,6 +539,27 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// scheduled.
     pub fn schedule_phy(&self, fault: PhyFault) -> Result<FaultId, ScheduleFull> {
         self.locked(|state, _| state.faults.add_phy(fault))
+    }
+
+    /// Schedules `action` to happen by itself `when` the test says, during a procedure; it
+    /// counts from now, and shares the schedule (and its `FAULTS` slots) with the faults.
+    /// [`clear_fault`](Self::clear_fault) with the id it returns removes it before it
+    /// comes. `ScheduleFull` when the bench's `FAULTS` slots are taken.
+    ///
+    /// # Panics
+    ///
+    /// For an [`Action::Plug`] whose stores are not whole 128-byte blocks, up to 256: a
+    /// mistake in the test, which [`plug`](Self::plug) would refuse.
+    pub fn schedule_action(&self, action: Action<'a>, when: When) -> Result<FaultId, ScheduleFull> {
+        if let Action::Plug {
+            edid, displayid, ..
+        } = action
+        {
+            if let Err(error) = check_stores(edid, displayid) {
+                panic!("a scheduled plug's stores: {error}");
+            }
+        }
+        self.locked(|state, _| state.faults.add_action(action, when))
     }
 
     /// Removes a scheduled fault; whether it was still scheduled.
@@ -525,21 +609,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     ///
     /// On a sink without SCDC: a preset there is a mistake in the test.
     pub fn preset_scdc(&self, reg: u8, value: u8) {
-        let missing = self.locked(|state, at| {
-            let State {
-                scdc,
-                transcript,
-                hpd,
-                line,
-                ..
-            } = &mut *state;
-            let Some(scdc) = scdc else {
-                return true;
-            };
-            scdc.preset(reg, value, &mut Env::new(at, *hpd, *line, transcript));
-            state.update(at);
-            false
-        });
+        let missing = !self.locked(|state, at| state.preset(at, reg, value));
         if missing {
             panic!("preset of SCDC register {reg:#04x} on a sink without SCDC");
         }
@@ -619,6 +689,9 @@ pub(crate) trait Core {
     ) -> (Result<(), DdcErrorKind>, Reach);
     /// Records a call that reached no target.
     fn record(&self, record: BusRecord);
+    /// Runs the scheduled actions due at this moment of a bus operation: `before` it, or
+    /// after it.
+    fn run_actions(&self, before: bool);
     /// A delay on the bench's clock ended: a bench event.
     fn after_delay(&self);
     /// The SCDC register `reg`; `None` for a sink without SCDC.
@@ -686,6 +759,10 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
         self.locked(|state, at| state.record(at, Event::Bus(record)));
     }
 
+    fn run_actions(&self, before: bool) {
+        self.locked(|state, at| state.run_actions(at, before));
+    }
+
     fn after_delay(&self) {
         self.locked(|state, at| state.update(at));
     }
@@ -708,6 +785,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
 
     fn coupled_call(&self, call: PhyCall, result: Result<(), PhyErrorKind>, line: Option<Line>) {
         self.locked(|state, at| {
+            state.faults.phy_actions(&call);
             state.record(at, Event::Phy { call, result });
             if let Some(line) = line {
                 if line != state.line {
@@ -716,6 +794,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
                 }
             }
             state.update(at);
+            state.run_actions(at, false);
         });
     }
 }

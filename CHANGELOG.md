@@ -143,6 +143,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the bytes that went out; each strike is an `Event::Fault` after its bus record.
   `clear_faults` and `scheduled_faults` manage the schedule. A preset is now a bench event,
   so a preset of `TMDS_Config` can lose or start the scrambling lock.
+- **Scheduled actions:** `Bench::schedule_action` takes an `Action` (`Preset`, `Hpd`,
+  `Unplug`, `Plug`, `Line`, `Detach`, `Reattach`) and a `When` (`BeforeOp` or `AfterOp`
+  the `nth` bus operation matching a `Filter`, or `PhyCall` after the `nth` PHY call), so
+  the sink changes during a procedure. An action comes once, shares the faults' schedule,
+  and is recorded as an `Event::Action` followed by the events its change makes.
 - **The operation budget:** every bus call (refused ones included), clock read and delay
   through the bench's handles counts; past `BenchBuilder::budget` (by default
   `DEFAULT_BUDGET`, 1 000 000; `None` for none) the bench panics, naming the budget, so a
