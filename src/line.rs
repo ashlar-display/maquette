@@ -50,3 +50,10 @@ impl Line {
         Self::Frl { rate }
     }
 }
+
+impl Default for Line {
+    /// [`Line::Off`]: nothing transmitted, as at a bench's creation.
+    fn default() -> Self {
+        Self::Off
+    }
+}

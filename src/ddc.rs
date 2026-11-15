@@ -393,11 +393,8 @@ impl DdcError for BusError {
 
 impl fmt::Display for BusError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{:?} at {:#04x} failed: {:?}",
-            self.op, self.addr, self.kind
-        )
+        write!(f, "{} at {:#04x} failed: ", self.op, self.addr)?;
+        crate::transcript::describe_ddc(self.kind, f)
     }
 }
 
@@ -445,5 +442,68 @@ impl BusTiming {
 impl Default for BusTiming {
     fn default() -> Self {
         Self::STANDARD_MODE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use std::string::ToString;
+
+    use hdmi_hal::ddc::{DdcErrorKind, EddcTarget, NoAcknowledgeSource};
+
+    use super::BusError;
+    use crate::transcript::BusOp;
+
+    fn error(op: BusOp, addr: u8, kind: DdcErrorKind) -> std::string::String {
+        BusError { kind, op, addr }.to_string()
+    }
+
+    #[test]
+    fn bus_errors_print_as_sentences() {
+        use DdcErrorKind as K;
+        let segmented = |target, segment| BusOp::ReadSegmented { target, segment };
+        let cases = [
+            (
+                BusOp::Write,
+                K::NoAcknowledge(NoAcknowledgeSource::Address),
+                "write at 0x50 failed: the address was not acknowledged",
+            ),
+            (
+                BusOp::WriteRead,
+                K::NoAcknowledge(NoAcknowledgeSource::Data),
+                "write_read at 0x50 failed: a data byte was not acknowledged",
+            ),
+            (
+                BusOp::Read,
+                K::NoAcknowledge(NoAcknowledgeSource::Unknown),
+                "read at 0x50 failed: a byte was not acknowledged",
+            ),
+            (
+                segmented(EddcTarget::Edid, 1),
+                K::Timeout,
+                "read_segmented of the EDID, segment 1 at 0x50 failed: it timed out",
+            ),
+            (
+                segmented(EddcTarget::DisplayId, 0),
+                K::Busy,
+                "read_segmented of the DisplayID, segment 0 at 0x50 failed: the bus was busy",
+            ),
+            (
+                BusOp::Read,
+                K::Unsupported,
+                "read at 0x50 failed: unsupported",
+            ),
+            (
+                BusOp::Read,
+                K::Detached,
+                "read at 0x50 failed: the adapter is detached",
+            ),
+            (BusOp::Read, K::Other, "read at 0x50 failed: it failed"),
+        ];
+        for (op, kind, text) in cases {
+            assert_eq!(error(op, 0x50, kind), text);
+        }
     }
 }

@@ -188,7 +188,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check of another crate's own trait that runs against the bench builds one with
   `Report::new` and `record`, so its users get the same report.
 - **Settings by value:** every method that returns a changed copy (`with_*`, `without_*`,
-  `Fault::on` and the like) is `#[must_use]`, so a dropped result warns.
+  `Fault::on` and the like) is `#[must_use]`, so a dropped result warns. `Filter`,
+  `Refusal`, `ClockCheck` and `Line` have a `Default` (`ANY`, `NONE`, `DEFAULT`, `Off`), and
+  the kinds a test may collect (`OpKind`, `BusOp`, `Actor`, `Ignored`, `RegisterGroup`,
+  `Effect`) are `Hash`.
+- **Errors in words:** `BusError` and `PhyError` print as a sentence ("write at 0x37 failed:
+  the address was not acknowledged"); `BusOp`, `PhyCallKind` and `PhyErrorKind` have a
+  `Display` of their own. `Record`, `BusRecord` and `Event` are read, not built: a test
+  compares the fields it cares about.
 
 ### Internal
 

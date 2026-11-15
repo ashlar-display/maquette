@@ -1,6 +1,8 @@
 //! The transcript: one ordered, typed record of everything the bench and the sink did.
 
-use hdmi_hal::ddc::{DdcErrorKind, EddcTarget};
+use core::fmt;
+
+use hdmi_hal::ddc::{DdcErrorKind, EddcTarget, NoAcknowledgeSource};
 use hdmi_hal::time::Timestamp;
 
 use crate::config::RefusalKind;
@@ -9,6 +11,9 @@ use crate::line::Line;
 use crate::phy::{PhyCall, PhyErrorKind};
 
 /// One entry of the transcript: what happened, and when.
+///
+/// The bench makes records and a test reads them: like [`Event`] and [`BusRecord`], it is
+/// `#[non_exhaustive]`, so a test compares the fields it cares about, not a built value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct Record {
@@ -114,7 +119,7 @@ pub enum Event {
     },
 }
 
-/// A bus operation as the transcript records it.
+/// A bus operation as the transcript records it: read, not built (see [`Record`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct BusRecord {
@@ -135,7 +140,7 @@ pub struct BusRecord {
 }
 
 /// The kind of a bus operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum BusOp {
     /// `DdcBus::write`.
@@ -153,8 +158,46 @@ pub enum BusOp {
     },
 }
 
+/// The method's name; for a `read_segmented`, the structure and the segment too.
+impl fmt::Display for BusOp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Write => f.write_str("write"),
+            Self::WriteRead => f.write_str("write_read"),
+            Self::Read => f.write_str("read"),
+            Self::ReadSegmented { target, segment } => {
+                let target = match target {
+                    EddcTarget::Edid => "the EDID",
+                    EddcTarget::DisplayId => "the DisplayID",
+                    _ => "a structure",
+                };
+                write!(f, "read_segmented of {target}, segment {segment}")
+            }
+        }
+    }
+}
+
+/// Writes what `kind` means, in words: hdmi-hal's kinds have no `Display`.
+pub(crate) fn describe_ddc(kind: DdcErrorKind, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    f.write_str(match kind {
+        DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Address) => {
+            "the address was not acknowledged"
+        }
+        DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data) => {
+            "a data byte was not acknowledged"
+        }
+        DdcErrorKind::NoAcknowledge(_) => "a byte was not acknowledged",
+        DdcErrorKind::Timeout => "it timed out",
+        DdcErrorKind::Busy => "the bus was busy",
+        DdcErrorKind::Unsupported => "unsupported",
+        DdcErrorKind::Detached => "the adapter is detached",
+        DdcErrorKind::Other => "it failed",
+        other => return write!(f, "{other:?}"),
+    })
+}
+
 /// Who changed a register.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Actor {
     /// The source, by a bus write.
@@ -166,7 +209,7 @@ pub enum Actor {
 }
 
 /// Why a built-in target ignored a write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Ignored {
     /// The register is the sink's to set, not the source's.

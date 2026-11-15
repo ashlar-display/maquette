@@ -198,6 +198,39 @@ pub enum PhyErrorKind {
     Coupled,
 }
 
+/// The method's name.
+impl fmt::Display for PhyCallKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Configure => "configure",
+            Self::SetScrambling => "set_scrambling",
+            Self::StartOutput => "start_output",
+            Self::StopOutput => "stop_output",
+            Self::PowerOn => "power_on",
+            Self::PowerOff => "power_off",
+            Self::SetFrlRate => "set_frl_rate",
+            Self::SendLtp => "send_ltp",
+            Self::SetFrlOutput => "set_frl_output",
+            Self::AdjustEqualization => "adjust_equalization",
+        })
+    }
+}
+
+/// Why, in words.
+impl fmt::Display for PhyErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::PoweredOff => "the PHY is powered off",
+            Self::NotConfigured => "not configured since the last power-on",
+            Self::Running => "the output is running",
+            Self::Unsupported => "beyond the PHY's capabilities",
+            Self::NotInFrl => "not in FRL",
+            Self::Fault => "a scheduled fault",
+            Self::Coupled => "the coupled PHY's own error",
+        })
+    }
+}
+
 /// A failed call of the simulated PHY.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -212,7 +245,7 @@ pub struct PhyError {
 
 impl fmt::Display for PhyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} failed: {:?}", self.call.kind(), self.kind)?;
+        write!(f, "{} failed: {}", self.call.kind(), self.kind)?;
         if self.took_effect {
             f.write_str(" (after it took effect)")?;
         }

@@ -659,7 +659,7 @@ fn debug_output_names_the_parts() {
     let error = bench.ddc().write(0x37, &[0]).unwrap_err();
     assert_eq!(
         error.to_string(),
-        "Write at 0x37 failed: NoAcknowledge(Address)"
+        "write at 0x37 failed: the address was not acknowledged"
     );
 }
 
@@ -706,4 +706,27 @@ fn calls_from_several_threads_follow_one_another_in_time() {
         [49],
         "the fault counted the calls in the transcript's order"
     );
+}
+
+#[cfg(feature = "std")]
+#[test]
+fn the_plain_values_have_defaults_and_hash() {
+    use maquette::check::ClockCheck;
+    use maquette::{Actor, Effect, Filter, Ignored, Line, OpKind, Refusal, RegisterGroup};
+    use std::collections::HashSet;
+    assert_eq!(Filter::default(), Filter::ANY);
+    assert_eq!(Refusal::default(), Refusal::NONE);
+    assert_eq!(ClockCheck::default(), ClockCheck::DEFAULT);
+    assert_eq!(Line::default(), Line::Off);
+    // Each can key a set.
+    let groups: HashSet<_> = RegisterGroup::ALL.iter().copied().collect();
+    assert_eq!(groups.len(), RegisterGroup::ALL.len());
+    let ops: HashSet<_> = [OpKind::Write, OpKind::Read, OpKind::Write]
+        .into_iter()
+        .collect();
+    assert_eq!(ops.len(), 2);
+    let _: HashSet<_> = [BusOp::Write, BusOp::Read].into_iter().collect();
+    let _: HashSet<_> = [Actor::Source, Actor::Sink].into_iter().collect();
+    let _: HashSet<_> = [Ignored::SinkOwned].into_iter().collect();
+    let _: HashSet<_> = [Effect::Fail(DdcErrorKind::Busy)].into_iter().collect();
 }

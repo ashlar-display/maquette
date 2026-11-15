@@ -184,6 +184,7 @@ const RECOVERABLE: [DdcErrorKind; 3] = [
 ///   never takes is withdrawn before the next point.
 ///
 /// Whether a block read is one transaction on the wire cannot be seen from outside.
+#[derive(Clone, Copy)]
 pub struct ScdcTransportCheck<'i> {
     image: &'i ScdcImage,
     faults: Option<&'i dyn FailNext>,

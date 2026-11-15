@@ -20,7 +20,6 @@ use core::time::Duration;
 /// # let _ = (STRICT, NO_SCDC);
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub struct SinkConfig {
     pub(crate) scdc: bool,
     pub(crate) sink_version: u8,
@@ -408,6 +407,13 @@ impl Refusal {
     }
 }
 
+impl Default for Refusal {
+    /// [`Refusal::NONE`].
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// How a sink refuses an attempt to enable scrambling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -419,7 +425,7 @@ pub enum RefusalKind {
 }
 
 /// A group of SCDC registers that an HPD low resets together.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum RegisterGroup {
     /// `TMDS_Config` (0x20).

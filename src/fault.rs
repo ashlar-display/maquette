@@ -148,8 +148,15 @@ impl Filter {
     }
 }
 
+impl Default for Filter {
+    /// [`Filter::ANY`].
+    fn default() -> Self {
+        Self::ANY
+    }
+}
+
 /// The kind of a bus operation, as a [`Filter`] names it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum OpKind {
     /// `DdcBus::write`.
@@ -185,7 +192,7 @@ pub enum Times {
 }
 
 /// What a fault does to the operation it strikes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum Effect {
     /// The call fails with this kind. A NACK carries its source; a timeout also charges the

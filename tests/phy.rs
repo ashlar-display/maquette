@@ -357,7 +357,7 @@ fn a_phy_fault_fails_a_call_before_or_after_it_takes_effect() {
     assert_eq!(bench.line(), line(high(), false), "it took effect");
     assert_eq!(
         error.to_string(),
-        "StartOutput failed: Fault (after it took effect)"
+        "start_output failed: a scheduled fault (after it took effect)"
     );
 }
 
@@ -387,7 +387,10 @@ fn a_fault_after_a_call_that_fails_anyway_reports_the_calls_error() {
     let error = phy.start_output().unwrap_err();
     assert_eq!(error.kind, PhyErrorKind::NotConfigured);
     assert!(!error.took_effect);
-    assert_eq!(error.to_string(), "StartOutput failed: NotConfigured");
+    assert_eq!(
+        error.to_string(),
+        "start_output failed: not configured since the last power-on"
+    );
 }
 
 #[test]
@@ -514,4 +517,36 @@ fn a_phy_fault_passes_over_other_calls() {
     phy.stop_output().unwrap();
     phy.power_on().unwrap();
     assert_eq!(kind(phy.power_off()), PhyErrorKind::Fault);
+}
+
+#[test]
+fn calls_and_error_kinds_print_in_words() {
+    use PhyErrorKind as K;
+    let kinds = [
+        (K::PoweredOff, "the PHY is powered off"),
+        (K::NotConfigured, "not configured since the last power-on"),
+        (K::Running, "the output is running"),
+        (K::Unsupported, "beyond the PHY's capabilities"),
+        (K::NotInFrl, "not in FRL"),
+        (K::Fault, "a scheduled fault"),
+        (K::Coupled, "the coupled PHY's own error"),
+    ];
+    for (kind, text) in kinds {
+        assert_eq!(kind.to_string(), text);
+    }
+    let calls = [
+        (PhyCallKind::Configure, "configure"),
+        (PhyCallKind::SetScrambling, "set_scrambling"),
+        (PhyCallKind::StartOutput, "start_output"),
+        (PhyCallKind::StopOutput, "stop_output"),
+        (PhyCallKind::PowerOn, "power_on"),
+        (PhyCallKind::PowerOff, "power_off"),
+        (PhyCallKind::SetFrlRate, "set_frl_rate"),
+        (PhyCallKind::SendLtp, "send_ltp"),
+        (PhyCallKind::SetFrlOutput, "set_frl_output"),
+        (PhyCallKind::AdjustEqualization, "adjust_equalization"),
+    ];
+    for (call, text) in calls {
+        assert_eq!(call.to_string(), text);
+    }
 }

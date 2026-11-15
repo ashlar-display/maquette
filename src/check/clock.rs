@@ -66,6 +66,13 @@ impl ClockCheck<'static> {
     };
 }
 
+impl Default for ClockCheck<'static> {
+    /// [`ClockCheck::DEFAULT`].
+    fn default() -> Self {
+        Self::DEFAULT
+    }
+}
+
 impl<'a> ClockCheck<'a> {
     /// The check with `delays` run instead.
     #[must_use]
