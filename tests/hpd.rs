@@ -12,8 +12,10 @@ fn ms(millis: u64) -> Duration {
     Duration::from_millis(millis)
 }
 
+/// A bench whose sink never gives up on `Scrambling_Enable`: most of these tests set it
+/// with no output, and are about the resets.
 fn bench(config: SinkConfig) -> Bench<'static> {
-    Bench::new(config, &[]).unwrap()
+    Bench::new(config.with_enable_timeout(None), &[]).unwrap()
 }
 
 /// Sets the registers each group holds, over the bus where the source writes them.

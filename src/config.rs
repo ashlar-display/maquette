@@ -56,7 +56,7 @@ impl SinkConfig {
             scrambling_lock: Trigger::After(Duration::from_millis(1)),
             strict_lock: false,
             refusal: Refusal::NONE,
-            enable_timeout: None,
+            enable_timeout: Some(Duration::from_millis(100)),
             hpd_resets: [
                 HpdReset::After(Duration::from_millis(100)),
                 HpdReset::After(Duration::from_millis(100)),
@@ -163,10 +163,12 @@ impl SinkConfig {
         }
     }
 
-    /// A strict sink: when scrambled output was already running at the write that set
-    /// `Scrambling_Enable`, it does not lock until the output stops and starts again after
-    /// the write. Off by default: sources that redo the whole mode set say some sinks would
-    /// accept the SCDC writes alone, and others restore with the output running.
+    /// A strict sink: the output must start after the write that set `Scrambling_Enable` or
+    /// changed `TMDS_Bit_Clock_Ratio`, and at least 1 ms after the last change of the ratio
+    /// (the source suspends the TMDS clock and data, writes the bit, and resumes 1 to 100 ms
+    /// after). Output already running at the write, or resumed sooner, is not taken until it
+    /// stops and starts again. Off by default: sources that redo the whole mode set say some
+    /// sinks would accept the SCDC writes alone, and others restore with the output running.
     pub const fn with_strict_lock(self, strict_lock: bool) -> Self {
         Self {
             strict_lock,
@@ -181,7 +183,10 @@ impl SinkConfig {
     }
 
     /// A sink that clears `Scrambling_Enable` itself when no scrambled TMDS at the matching
-    /// ratio arrives within the duration of the write that set it; off (`None`) by default.
+    /// ratio arrives within this time of the write that set it, or of a write that changed
+    /// `TMDS_Bit_Clock_Ratio` while it was set; `None` never gives up. 100 ms by default:
+    /// i915 notes that a sink may disable scrambling without a scrambled clock within 100 ms,
+    /// and a source resumes within 100 ms of a ratio change (the least forgiving default).
     pub const fn with_enable_timeout(self, enable_timeout: Option<Duration>) -> Self {
         Self {
             enable_timeout,

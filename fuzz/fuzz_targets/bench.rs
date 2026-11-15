@@ -153,7 +153,7 @@ impl Input<'_> {
                 .with_edid_during_hpd_low(DuringHpdLow::Silent);
         }
         if a & 0x80 != 0 {
-            config = config.with_enable_timeout(Some(Duration::from_millis(100)));
+            config = config.with_enable_timeout(None);
         }
         config = config.with_past_store(match b % 3 {
             0 => PastStore::Fill,

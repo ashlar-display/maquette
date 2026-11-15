@@ -564,7 +564,8 @@ source settles is marked *chosen*.
 | The ratio fits the rate: 1/40 above 340 Mcsc, 1/10 at or below | settled above 340 Mcsc [10]; no source uses 1/40 at or below | fixed: the sink does not lock on a line whose ratio does not fit its rate; at or below 340 Mcsc, 1/40 does not lock (*chosen*) |
 | A sink that does not lock when scrambled TMDS arrived before the write | sources that redo the whole mode set say some sinks would accept the SCDC writes alone; others restore with the output running [3] | a setting, off by default (the lenient sink) |
 | "Some displays refuse to set the scrambling bit right away" | one source, which reads two ways [4] | a setting in both readings: the status withheld, or `Scrambling_Enable` dropped from the write; for the first *n* attempts, an attempt being a write that sets `Scrambling_Enable`; default none (*chosen*) |
-| The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5] | a setting, default off |
+| The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5]; settled that a source resumes within 100 ms of a ratio change [11] | a setting, default 100 ms (the least forgiving), counted from the write that set `Scrambling_Enable` or one that changed `TMDS_Bit_Clock_Ratio` while it was set; `None` never gives up |
+| A ratio change: the source suspends the TMDS clock and data, writes `TMDS_Bit_Clock_Ratio`, and resumes 1 to 100 ms after | settled [11] | the strict sink (below) does not take output resumed sooner than 1 ms after the write; the 100 ms is the timeout's |
 | `TMDS_Config` and other registers reset after a long HPD low | settled that sources restore it [6]; when the sink resets it has no public source | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config}`): `HpdReset::After(d)`, *chosen* default 100 ms for `TMDS_Config`, the status and update flags and `Source_Version`; `HpdReset::OnHpdLow`, *chosen* default for `Config_0` and `Config_1`; or `HpdReset::Never`. The `Status` group is `Scrambling_Status`, the update flags and the status flags (0x40–0x42). Each group resets once per HPD low, before the lock is evaluated; only registers that change are recorded |
 | `Source_Version` written by the source, `Sink_Version` reported | [7] | `Sink_Version` a setting (default 1); `Source_Version` stored |
 | Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset; the rule that sets them a setting, with the status flags and FRL responses they report |
@@ -588,9 +589,12 @@ what it is, whichever came last.
   the status, and the conditions begin to hold again at the reset: the lock is gained again
   once the trigger has passed since. Only a test's preset of the status holds against the
   lock.
-- **The strict sink** (`with_strict_lock(true)`; off by default): when scrambled output was
-  already running at the write, the sink does not lock until the output stops and starts
-  again after it.
+- **The strict sink** (`with_strict_lock(true)`; off by default): the output must start
+  after the write that set `Scrambling_Enable` or changed `TMDS_Bit_Clock_Ratio`, and at
+  least 1 ms after the last change of the ratio. Output already running at the write, or
+  resumed sooner, is not taken until it stops and starts again. With the PHY's default
+  start latency of 1 ms, output started at once after the write meets the 1 ms; a test of
+  the source's own wait sets the latency to 0.
 - **Losing it:** the status is cleared at the first event at which a condition fails: the
   bit or the ratio changes, or the line stops, changes rate, or stops scrambling.
 - **Refusals** (`with_scrambling_refusals(Refusal { kind, attempts })`; none by default):
@@ -598,8 +602,10 @@ what it is, whichever came last.
   sink either withholds the status (`RefusalKind::WithholdStatus`: no lock until a later
   attempt) or stores the write without `Scrambling_Enable` (`RefusalKind::DropEnable`); each
   refusal is an `Event::Refusal`.
-- **Giving up** (`with_enable_timeout(Some(d))`; off by default): without scrambled TMDS at
-  the matching ratio within `d` of the write that set `Scrambling_Enable`, the sink clears
+- **Giving up** (`with_enable_timeout(Some(d))`; 100 ms by default, `None` never gives up):
+  without scrambled TMDS at the matching ratio within `d` of the write that set
+  `Scrambling_Enable`, or of one that changed `TMDS_Bit_Clock_Ratio` while it was set, the
+  sink clears
   `Scrambling_Enable` itself, at the first event at or after the deadline. Output that
   starts at or after the deadline is late, whether or not an SCDC event fell between: the
   line and the registers change only at events, so the sink knows what held since the last
@@ -1210,6 +1216,7 @@ Driver source read at these commits; line numbers refer to them.
 | [8] | Update flags cleared by writing them back as 1 | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:178–200` (`FLT_update`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:446–463` (`FLT_update`), `hdmitx21/hdmi_tx_scdc.c:106–107` (`Status_update`, `CED_update`, `RSED_update`) |
 | [9] | The SCDC register map: addresses, bits, and which registers the source writes | Linux `include/drm/display/drm_scdc.h:27–53`; amdgpu `drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h:58–65`, `dc/link/protocols/link_ddc.c:602–609`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:41–49`, `645–669`, `719–743`, `790`, `870`; Amlogic `drivers/media/vout/hdmitx21/hw/hdmi_tx_ddc.h:16–56` (the source's registers marked `RW`) |
 | [10] | 1/40 and scrambling above 340 Mcsc, 1/10 at or below | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:262–267` (comment); i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2437–2440` (`port_clock > 340000`); amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:575`, `604–605` (`pix_clk > 340000` writes `TMDS_Config` 3); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:740–743` (the ratio bit above 3.4 Gbps) |
+| [11] | A ratio change: suspend, write `TMDS_Bit_Clock_Ratio`, resume 1 to 100 ms after | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:300–305` (waits 1–2 ms after the write); dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:1407–1419`; Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:510–517` |
 
 Standards (VESA, public):
 

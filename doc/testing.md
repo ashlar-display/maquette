@@ -55,14 +55,15 @@ parts are built.
   budget counting what the handles do and not the test's own controls, panicking past it,
   and off.
 - **`tests/lock.rs`** — the scrambling lock: the status 1 ms after the later of the write
-  and scrambled output, either order; the strict sink waiting for output to start again; the
+  and scrambled output, either order; the strict sink waiting for output to start again, and for 1 ms after a ratio change; the
   ratio match, the ratio fitting the rate on both sides of 340 000 kHz, scrambling at 1/10
   and unscrambled output; the lock lost when the output
   stops or `Scrambling_Enable` is cleared; a rewrite not restarting it; the count trigger;
   refusals of both kinds, the trigger counting from the accepted attempt; the trigger
   counting from the write that makes the ratio match; the count trigger restarting when a
-  condition fails; the enable timeout, with and without output in time, and output late
-  though the time passed on the bus; a delay on
+  condition fails; the enable timeout, with and without output in time, output late
+  though the time passed on the bus, a ratio change restarting it, its 100 ms default and
+  a sink that never gives up; a delay on
   the time handle as the event that sets it; a preset status holding until the lock
   changes; the defaults.
 - **`tests/hpd.rs`** — the HPD resets: `Config` on every low and the rest after 100 ms by

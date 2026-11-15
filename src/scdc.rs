@@ -37,6 +37,15 @@ const RATIO_40: u8 = 1 << 1;
 /// `Scrambling_Status` bit 0.
 const STATUS: u8 = 1 << 0;
 
+/// The least time from a write that changes `TMDS_Bit_Clock_Ratio` to the TMDS clock and
+/// data resuming: the source suspends them, writes the bit, and resumes 1 to 100 ms after.
+/// Linux, github.com/torvalds/linux `e9954f3fbddd`:
+/// `drivers/gpu/drm/display/drm_scdc_helper.c:300–305` (the SCDC helper's wait) and
+/// `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:1407–1419` (dw-hdmi's procedure); Amlogic,
+/// github.com/CoreELEC/common_drivers `8ca9b6c3b715`:
+/// `drivers/media/vout/hdmitx21/hdmi_tx_main.c:510–517`.
+const RATIO_RESUME_MIN: Duration = Duration::from_millis(1);
+
 /// The SCDC target's address.
 pub(crate) const SCDC: u8 = 0x54;
 
@@ -111,9 +120,13 @@ pub(crate) struct Scdc {
     /// The line as last seen, and since when it is so.
     line: Line,
     line_since: Timestamp,
-    /// When `Scrambling_Enable` was last set from 0 to 1; `None` while it is 0.
-    enable_at: Option<Timestamp>,
-    /// Whether scrambled TMDS at the matching ratio was seen since `enable_at`.
+    /// When the sink last began to wait for scrambled TMDS: the write that set
+    /// `Scrambling_Enable` from 0 to 1, or one that changed `TMDS_Bit_Clock_Ratio` while it
+    /// was set; `None` while it is 0.
+    armed_at: Option<Timestamp>,
+    /// When `TMDS_Bit_Clock_Ratio` last changed.
+    ratio_at: Option<Timestamp>,
+    /// Whether scrambled TMDS at the matching ratio was seen since `armed_at`.
     seen_since_enable: bool,
     /// Attempts so far, and whether the last one is withheld.
     attempts: u32,
@@ -149,7 +162,8 @@ impl Scdc {
             enable_timeout: config.enable_timeout,
             line: Line::Off,
             line_since: Timestamp::from_micros(0),
-            enable_at: None,
+            armed_at: None,
+            ratio_at: None,
             seen_since_enable: false,
             attempts: 0,
             withheld: false,
@@ -182,13 +196,17 @@ impl Scdc {
             by,
         });
         if reg == TMDS_CONFIG {
-            match (from & SCRAMBLING_ENABLE != 0, to & SCRAMBLING_ENABLE != 0) {
-                (false, true) => {
-                    self.enable_at = Some(env.now());
-                    self.seen_since_enable = false;
-                }
-                (true, false) => self.enable_at = None,
-                _ => {}
+            let now = env.now();
+            let ratio_changed = (from ^ to) & RATIO_40 != 0;
+            if ratio_changed {
+                self.ratio_at = Some(now);
+            }
+            let (was, is) = (from & SCRAMBLING_ENABLE != 0, to & SCRAMBLING_ENABLE != 0);
+            if is && (!was || ratio_changed) {
+                self.armed_at = Some(now);
+                self.seen_since_enable = false;
+            } else if !is {
+                self.armed_at = None;
             }
         }
     }
@@ -257,7 +275,7 @@ impl Scdc {
         };
         // Giving up: no scrambled TMDS at the matching ratio before the deadline. Seen at or
         // past it, it came too late.
-        if let Some(at) = self.enable_at {
+        if let Some(at) = self.armed_at {
             let deadline = self
                 .enable_timeout
                 .and_then(|timeout| at.checked_add(timeout));
@@ -268,8 +286,8 @@ impl Scdc {
             }
         }
         let holds = self
-            .enable_at
-            .is_some_and(|at| matching && !self.withheld && !(self.strict && self.line_since < at));
+            .armed_at
+            .is_some_and(|at| matching && !self.withheld && !(self.strict && self.too_early(at)));
         let lock_from = holds.then(|| self.lock_from.unwrap_or(now));
         if lock_from != self.lock_from {
             self.lock_from = lock_from;
@@ -294,6 +312,16 @@ impl Scdc {
                 self.set(SCRAMBLING_STATUS, to, Actor::Sink, env);
             }
         }
+    }
+
+    /// For the strict sink: whether the line began too early for the write armed at `at`, so
+    /// the output must stop and start again: before that write, or within
+    /// [`RATIO_RESUME_MIN`] of the last change of `TMDS_Bit_Clock_Ratio`.
+    fn too_early(&self, at: Timestamp) -> bool {
+        let resume_from = self
+            .ratio_at
+            .and_then(|ratio_at| ratio_at.checked_add(RATIO_RESUME_MIN));
+        self.line_since < at || resume_from.is_some_and(|from| self.line_since < from)
     }
 
     /// The next register in a burst: the offset advances, wrapping past 0xFF. Returns

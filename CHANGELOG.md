@@ -82,10 +82,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   holds until then; the sink's own HPD reset of the status loses the lock, and the
   conditions begin to hold again at the reset. `SinkConfig` gains
   `with_scrambling_lock` (`Trigger::After` 1 ms by default, or `Trigger::AfterReads(n)`),
-  `with_strict_lock` (off by default), `with_scrambling_refusals` (`Refusal` with
+  `with_strict_lock` (off by default: output must start after the write that set
+  `Scrambling_Enable` or changed the ratio, and at least 1 ms after a ratio change),
+  `with_scrambling_refusals` (`Refusal` with
   `RefusalKind::WithholdStatus` or `DropEnable` for the first attempts; none by default,
-  each refusal an `Event::Refusal`) and `with_enable_timeout` (off by default: output that
-  starts at or after the deadline is late), with getters.
+  each refusal an `Event::Refusal`) and `with_enable_timeout` (100 ms by default, from the
+  write that set `Scrambling_Enable` or one that changed the ratio while it was set; output
+  that starts at or after the deadline is late; `None` never gives up), with getters.
 - **HPD resets:** while HPD is low the SCDC target resets each `RegisterGroup`
   (`TmdsConfig`, `Status` — `Scrambling_Status`, the update and status flags —
   `SourceVersion`, `Config`) to 0 once, as its `HpdReset` says: `After(d)`, taken at the

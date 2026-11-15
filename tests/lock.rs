@@ -141,8 +141,49 @@ fn a_strict_sink_waits_for_the_output_to_start_again() {
         sink_sets(&bench, 0x21),
         [(restarted.as_micros() + 1_000, 1)]
     );
-    // Output that starts after the write locks as with the lenient sink.
+    // Output that starts 1 ms after the write locks as with the lenient sink.
     let bench = self::bench(SinkConfig::new().with_strict_lock(true));
+    write_config(&bench, 0b11);
+    bench.advance(ms(1));
+    bench.set_line(SCRAMBLED_40);
+    bench.advance(ms(1));
+    assert_eq!(read_status(&bench), 1);
+}
+
+#[test]
+fn a_strict_sink_needs_1_ms_between_a_ratio_change_and_the_output() {
+    // The write sets the ratio: output resumed sooner is not taken until it starts again.
+    let bench = bench(SinkConfig::new().with_strict_lock(true));
+    write_config(&bench, 0b11);
+    // The register changed during the write, before the bus time it took.
+    let written = bench
+        .transcript()
+        .filter_map(|record| match record.event {
+            Event::Register { reg: 0x20, .. } => Some(record.at.as_micros()),
+            _ => None,
+        })
+        .last()
+        .unwrap();
+    bench.advance(Duration::from_micros(
+        written + 999 - bench.now().as_micros(),
+    ));
+    bench.set_line(SCRAMBLED_40);
+    bench.advance(ms(10));
+    assert_eq!(read_status(&bench), 0);
+    bench.set_line(Line::Off);
+    bench.set_line(SCRAMBLED_40);
+    bench.advance(ms(1));
+    assert_eq!(read_status(&bench), 1);
+    // A write that keeps the ratio needs no wait, only the output starting after it.
+    let bench = self::bench(SinkConfig::new().with_strict_lock(true));
+    write_config(&bench, 0b10);
+    bench.advance(ms(5));
+    write_config(&bench, 0b11);
+    bench.set_line(SCRAMBLED_40);
+    bench.advance(ms(1));
+    assert_eq!(read_status(&bench), 1);
+    // A lenient sink takes output resumed at once.
+    let bench = self::bench(SinkConfig::new());
     write_config(&bench, 0b11);
     bench.set_line(SCRAMBLED_40);
     bench.advance(ms(1));
@@ -338,7 +379,21 @@ fn a_sink_can_give_up_on_scrambling_enable() {
     bench.set_line(Line::Off);
     bench.advance(ms(100));
     assert_eq!(bench.sink().tmds_config(), Some(0b11));
-    assert_eq!(SinkConfig::new().enable_timeout(), None);
+    // A write that changes the ratio restarts the wait.
+    let bench = self::bench(SinkConfig::new());
+    write_config(&bench, 0b01);
+    bench.set_line(SCRAMBLED_10);
+    bench.advance(ms(5));
+    assert_eq!(read_status(&bench), 1);
+    write_config(&bench, 0b11);
+    bench.advance(ms(100));
+    assert_eq!(bench.sink().tmds_config(), Some(0b10));
+    // A sink that never gives up.
+    let bench = self::bench(SinkConfig::new().with_enable_timeout(None));
+    write_config(&bench, 0b11);
+    bench.advance(ms(1_000));
+    assert_eq!(bench.sink().tmds_config(), Some(0b11));
+    assert_eq!(SinkConfig::new().enable_timeout(), Some(ms(100)));
 }
 
 #[test]
