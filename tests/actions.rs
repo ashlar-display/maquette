@@ -1,9 +1,11 @@
 //! Scheduled actions: bench events the bench makes by itself during a procedure.
 
+use core::time::Duration;
+
 use maquette::hdmi_hal::ddc::SCDC;
 use maquette::{
     Action, Bench, ColorBitDepth, ColorFormat, Coupled, DdcBus, DdcErrorKind, Effect, Event, Fault,
-    Filter, Line, NoAcknowledgeSource, PhyCallKind, Point, ScheduleFull, SinkConfig,
+    Filter, Line, NoAcknowledgeSource, PhyCallKind, Point, ScheduleFull, SinkConfig, Timestamp,
     TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, When,
 };
 
@@ -365,4 +367,118 @@ fn a_plug_with_broken_stores_is_refused_when_scheduled() {
         },
         When::PhyCall { kind: None, nth: 1 },
     );
+}
+
+fn ms(millis: u64) -> Duration {
+    Duration::from_millis(millis)
+}
+
+#[test]
+fn an_action_at_a_time_comes_at_the_first_event_at_or_after_it() {
+    let bench = bench();
+    bench
+        .schedule_action(Action::Hpd(false), When::At(Timestamp::from_micros(5_000)))
+        .unwrap();
+    bench.advance(ms(3));
+    assert!(bench.sink().hpd());
+    bench.advance(ms(3));
+    assert!(!bench.sink().hpd());
+    // Recorded at the event that took it, at 6 ms.
+    let action = bench
+        .transcript()
+        .find(|record| matches!(record.event, Event::Action { .. }))
+        .unwrap();
+    assert_eq!(action.at.as_micros(), 6_000);
+}
+
+#[test]
+fn an_action_at_a_time_comes_before_a_bus_operation() {
+    let bench = bench();
+    bench
+        .schedule_action(
+            Action::Preset {
+                reg: 0x10,
+                value: 0x02,
+            },
+            When::At(Timestamp::from_micros(1_000)),
+        )
+        .unwrap();
+    // Each poll takes time on the bus; the first at or after 1 ms sees the flag.
+    let mut polls = 0;
+    while update_0(&bench) == 0 {
+        polls += 1;
+    }
+    assert!(polls > 0);
+    let records: Vec<_> = bench.transcript().collect();
+    let action = records
+        .iter()
+        .position(|record| matches!(record.event, Event::Action { .. }))
+        .unwrap();
+    assert!(records[action].at.as_micros() >= 1_000);
+    assert!(matches!(records[action + 2].event, Event::Bus(_)));
+    assert_eq!(records[action + 2].at, records[action].at);
+}
+
+#[test]
+fn an_action_at_a_past_time_comes_at_the_next_event() {
+    let bench = bench();
+    bench.advance(ms(10));
+    bench
+        .schedule_action(Action::Unplug, When::At(Timestamp::from_micros(0)))
+        .unwrap();
+    assert!(bench.sink().is_plugged());
+    bench.advance(Duration::ZERO);
+    assert!(!bench.sink().is_plugged());
+}
+
+#[test]
+fn an_update_inside_an_operation_takes_none_of_its_actions() {
+    // The HPD low before the write is a bench update; the preset after it waits for the
+    // write's transaction.
+    let bench = bench();
+    let first = Filter::ANY.with_addr(SCDC);
+    bench
+        .schedule_action(
+            Action::Hpd(false),
+            When::BeforeOp {
+                filter: first,
+                nth: 1,
+            },
+        )
+        .unwrap();
+    bench
+        .schedule_action(
+            Action::Preset {
+                reg: 0x10,
+                value: 0x01,
+            },
+            When::AfterOp {
+                filter: first,
+                nth: 1,
+            },
+        )
+        .unwrap();
+    bench.ddc().write(SCDC, &[0x02, 0x01]).unwrap();
+    assert_eq!(
+        seen(&bench),
+        [
+            Seen::Action,
+            Seen::Hpd(false),
+            Seen::Bus(Ok(())),
+            Seen::Register(0x02, 0x01),
+            Seen::Action,
+            Seen::Register(0x10, 0x01),
+        ]
+    );
+}
+
+#[test]
+fn an_unplug_during_an_hpd_pulse_leaves_hpd_low() {
+    let bench = bench();
+    bench
+        .schedule_action(Action::Unplug, When::At(Timestamp::from_micros(1_000)))
+        .unwrap();
+    bench.hpd_pulse(ms(5));
+    assert!(!bench.sink().is_plugged());
+    assert!(!bench.sink().hpd());
 }

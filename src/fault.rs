@@ -4,6 +4,7 @@ use core::fmt;
 use core::time::Duration;
 
 use hdmi_hal::ddc::DdcErrorKind;
+use hdmi_hal::time::Timestamp;
 
 use crate::action::{Action, When};
 use crate::phy::{PhyCall, PhyFault};
@@ -285,6 +286,18 @@ fn count(seen: &mut u32, nth: u32, times: Times) -> (bool, bool) {
     }
 }
 
+/// A moment scheduled actions come at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Moment {
+    /// Before a bus operation is routed: `BeforeOp`, and actions due by time.
+    Before,
+    /// After a bus operation or a PHY call: `AfterOp`, `PhyCall`, and actions due by time.
+    After,
+    /// At a bench update: only actions due by time, so an update inside an operation takes
+    /// none of the operation's own.
+    Time,
+}
+
 /// The fault schedule: `FAULTS` slots, shared by the bus's faults, the PHY's and the
 /// scheduled actions.
 #[derive(Debug)]
@@ -347,12 +360,28 @@ impl<'a, const FAULTS: usize> Schedule<'a, FAULTS> {
         }
     }
 
-    /// The first due action of the moment asked for (`before` an operation, or after one),
-    /// taken out of the schedule.
-    pub(crate) fn take_due(&mut self, before: bool) -> Option<(FaultId, Action<'a>)> {
-        let slot = self.slots.iter_mut().find(|slot| {
-            matches!(slot, Some(Scheduled { kind: Kind::Action(_, when), due: true, .. })
-                if matches!(when, When::BeforeOp { .. }) == before)
+    /// Marks the actions due by `now` on the clock.
+    pub(crate) fn time_actions(&mut self, now: Timestamp) {
+        for scheduled in self.slots.iter_mut().flatten() {
+            if let Kind::Action(_, When::At(at)) = scheduled.kind {
+                scheduled.due |= now >= at;
+            }
+        }
+    }
+
+    /// The first due action of `moment`, taken out of the schedule.
+    pub(crate) fn take_due(&mut self, moment: Moment) -> Option<(FaultId, Action<'a>)> {
+        let slot = self.slots.iter_mut().find(|slot| match slot {
+            Some(Scheduled {
+                kind: Kind::Action(_, when),
+                due: true,
+                ..
+            }) => match when {
+                When::BeforeOp { .. } => moment == Moment::Before,
+                When::AfterOp { .. } | When::PhyCall { .. } => moment == Moment::After,
+                When::At(_) => true,
+            },
+            _ => false,
         })?;
         let scheduled = slot.take()?;
         match scheduled.kind {

@@ -87,7 +87,10 @@ parts are built.
   every action doing what its control does; a detach before an operation failing it;
   operations while detached not counting; an action that cannot apply only recorded; the
   schedule shared with faults, and an action cleared before it comes; a fault and an
-  action on one operation; a plug with broken stores refused when scheduled.
+  action on one operation; a plug with broken stores refused when scheduled; an action at a
+  time taken at an `advance` and before a bus operation, at the event's time, and at the
+  next event once past; an update inside an operation taking none of its own actions; an
+  unplug during an HPD pulse leaving HPD low.
 - **`tests/phy.rs`** — the simulated PHY: a bring-up driving the line until the sink locks,
   and a procedure that never sets the scrambler failing at every rate; each scrambler
   setting after `configure`, and each within the capabilities; `configure` with the output running, failing or stopping it;

@@ -1,6 +1,8 @@
 //! Scheduled actions: bench events the bench makes by itself during a procedure, at a moment
 //! the test chose.
 
+use hdmi_hal::time::Timestamp;
+
 use crate::config::SinkConfig;
 use crate::fault::Filter;
 use crate::line::Line;
@@ -95,4 +97,9 @@ pub enum When {
         /// The call it comes after.
         nth: u32,
     },
+    /// At this time on the bench's clock: taken at the first bench event at or after it,
+    /// and recorded at that event's time, as a sink's own reset is. A bus operation is such
+    /// an event, and the action comes before it; so is every bench update (`advance`, a
+    /// delay, a line, HPD or PHY change). A time already past is taken at the next event.
+    At(Timestamp),
 }

@@ -25,8 +25,8 @@ use maquette::{
     DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, Event, Fault, Filter,
     FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite,
     PastStore, PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, RegisterGroup,
-    ScdcPastEnd, SinkConfig, Times, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger,
-    When,
+    ScdcPastEnd, SinkConfig, Times, Timestamp, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo,
+    Trigger, When,
 };
 
 /// The most actions one input runs.
@@ -213,7 +213,7 @@ impl Input<'_> {
 
     /// A scheduled action and its moment. No plug: it would change the sink's settings at a
     /// moment `check_lock_comes` does not know. No preset of the status, as for presets.
-    fn action(&mut self) -> (Action<'static>, When) {
+    fn action(&mut self, now: Timestamp) -> (Action<'static>, When) {
         let a = self.byte();
         let action = match a % 6 {
             0 => {
@@ -230,7 +230,7 @@ impl Input<'_> {
             _ => Action::Reattach,
         };
         let nth = u32::from(self.byte() % 4);
-        let when = match (a >> 3) % 3 {
+        let when = match (a >> 3) % 4 {
             0 => {
                 let b = self.byte();
                 When::BeforeOp {
@@ -245,7 +245,8 @@ impl Input<'_> {
                     nth,
                 }
             }
-            _ => When::PhyCall { kind: None, nth },
+            2 => When::PhyCall { kind: None, nth },
+            _ => When::At(now.checked_add(self.micros()).unwrap_or(now)),
         };
         (action, when)
     }
@@ -544,7 +545,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let _ = bench.schedule_phy(fault);
             }
             20 => {
-                let (action, when) = input.action();
+                let (action, when) = input.action(bench.now());
                 let _ = bench.schedule_action(action, when);
             }
             _ => {

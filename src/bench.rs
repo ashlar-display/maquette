@@ -14,7 +14,7 @@ use crate::clock::SimClock;
 use crate::config::SinkConfig;
 use crate::ddc::{BusTiming, Ddc};
 use crate::eddc::Eddc;
-use crate::fault::{Effect, Fault, FaultId, Schedule, ScheduleFull, Strike};
+use crate::fault::{Effect, Fault, FaultId, Moment, Schedule, ScheduleFull, Strike};
 use crate::line::Line;
 use crate::phy::{Phy, PhyCall, PhyErrorKind, PhyFault, PhySettings, PhyState};
 use crate::scdc::Scdc;
@@ -140,11 +140,14 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
         for target in routed(targets, eddc, scdc) {
             target.update(&mut env);
         }
+        self.faults.time_actions(at);
+        self.run_actions(at, Moment::Time);
     }
 
     /// Counts `record`'s operation for the scheduled faults and returns the one that
     /// strikes, if any. While detached nothing goes out, so nothing is counted.
-    fn strike(&mut self, record: &BusRecord) -> Option<Strike> {
+    fn strike(&mut self, at: Timestamp, record: &BusRecord) -> Option<Strike> {
+        self.faults.time_actions(at);
         if self.attached {
             self.faults.strike(record)
         } else {
@@ -255,7 +258,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             }
         }
         self.update(at);
-        self.run_actions(at, false);
+        self.run_actions(at, Moment::After);
         (result, took_effect)
     }
 
@@ -342,8 +345,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
 
     /// Runs the due actions of the moment (`before` an operation, or after one), each
     /// recorded first.
-    fn run_actions(&mut self, at: Timestamp, before: bool) {
-        while let Some((id, action)) = self.faults.take_due(before) {
+    fn run_actions(&mut self, at: Timestamp, moment: Moment) {
+        while let Some((id, action)) = self.faults.take_due(moment) {
             self.record(at, Event::Action { id });
             match action {
                 Action::Preset { reg, value } => {
@@ -473,11 +476,12 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
         }
     }
 
-    /// HPD low, `low_for` on the bench's clock ([`advance`](Self::advance)), then HPD high.
+    /// HPD low, `low_for` on the bench's clock ([`advance`](Self::advance)), then HPD high;
+    /// HPD stays low if a scheduled action unplugged the sink during the low.
     pub fn hpd_pulse(&self, low_for: Duration) {
         self.set_hpd(false);
         self.advance(low_for);
-        self.set_hpd(true);
+        self.locked(|state, at| state.set_hpd(at, true));
     }
 
     /// Unplugs the sink: HPD goes low, and nothing answers, the test's own targets included,
@@ -739,7 +743,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
     }
 
     fn strike(&self, record: &BusRecord) -> Option<Strike> {
-        self.locked(|state, _| state.strike(record))
+        self.locked(|state, at| state.strike(at, record))
     }
 
     fn struck_before(&self, record: BusRecord, strike: Strike, kind: DdcErrorKind) {
@@ -760,7 +764,12 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
     }
 
     fn run_actions(&self, before: bool) {
-        self.locked(|state, at| state.run_actions(at, before));
+        let moment = if before {
+            Moment::Before
+        } else {
+            Moment::After
+        };
+        self.locked(|state, at| state.run_actions(at, moment));
     }
 
     fn after_delay(&self) {
@@ -794,7 +803,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
                 }
             }
             state.update(at);
-            state.run_actions(at, false);
+            state.run_actions(at, Moment::After);
         });
     }
 }

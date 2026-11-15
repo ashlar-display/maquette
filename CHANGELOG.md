@@ -145,8 +145,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a preset of `TMDS_Config` can lose or start the scrambling lock.
 - **Scheduled actions:** `Bench::schedule_action` takes an `Action` (`Preset`, `Hpd`,
   `Unplug`, `Plug`, `Line`, `Detach`, `Reattach`) and a `When` (`BeforeOp` or `AfterOp`
-  the `nth` bus operation matching a `Filter`, or `PhyCall` after the `nth` PHY call), so
-  the sink changes during a procedure. An action comes once, shares the faults' schedule,
+  the `nth` bus operation matching a `Filter`, `PhyCall` after the `nth` PHY call, or `At`
+  a time, taken at the first bench event at or after it), so the sink changes during a
+  procedure. `hpd_pulse` leaves HPD low when a scheduled unplug came during the low. An action comes once, shares the faults' schedule,
   and is recorded as an `Event::Action` followed by the events its change makes.
 - **The operation budget:** every bus call (refused ones included), clock read and delay
   through the bench's handles counts; past `BenchBuilder::budget` (by default

@@ -923,6 +923,7 @@ pub enum When {
     BeforeOp { filter: Filter, nth: u32 },  // before the nth matching bus operation
     AfterOp { filter: Filter, nth: u32 },   // after it, before its time is charged
     PhyCall { kind: Option<PhyCallKind>, nth: u32 }, // after the nth PHY call returns
+    At(Timestamp),                          // at the first bench event at or after it
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
@@ -939,7 +940,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 - **Where it lands.** It runs inside the triggering call's critical section, so no other
   handle's call falls between: before the operation is routed (`BeforeOp`), after the
   target and before the bus charges the time (`AfterOp`), or as the PHY call returns
-  (`PhyCall`). A fault striking the same operation is recorded after its bus record, so a
+  (`PhyCall`). An action at a time (`At`) is taken at the first bench event at or after it
+  and recorded at that event's time, as a sink's own reset is: before a bus operation, or
+  at an update (`advance`, a delay, a line, HPD or PHY change). An update inside an
+  operation, made by a `BeforeOp` action's change, takes only actions due by time, so the
+  operation's own `AfterOp` actions wait for its transaction. A fault striking the same operation is recorded after its bus record, so a
   `BeforeOp` action comes ahead of both.
 - **Records.** An `Event::Action { id }` comes first, then the events the change makes, as
   its control makes them: a preset as a `Register` event by `Actor::Test`, HPD as
@@ -949,7 +954,8 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
   blocks is refused when it is scheduled, with a panic, as a mistake in the test.
 
 `hpd_pulse` has no action: it spans time, so a test schedules `Hpd(false)` and a later
-`Hpd(true)`.
+`Hpd(true)`, at two times. A scheduled unplug during a test's own `hpd_pulse` leaves HPD
+low at its end.
 
 ---
 
