@@ -117,7 +117,7 @@ pub enum DdcBusFailure {
         /// The byte read.
         found: u8,
     },
-    /// A thread of [`DdcBusCheck::run_threads`] panicked.
+    /// A thread of `DdcBusCheck::run_threads` (with `std`) panicked.
     Panicked,
 }
 

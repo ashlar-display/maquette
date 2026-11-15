@@ -119,7 +119,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   low rates included). Every call is an `Event::Phy` with its `PhyCall` and result, a bench
   event, and counts against the budget. `Bench::schedule_phy` schedules a `PhyFault`, in
   the same schedule as the bus's faults, failing a call before or after it takes effect.
-  The hdmi-hal PHY traits and types are re-exported.
+  The hdmi-hal PHY traits and types are re-exported, `PhyCall`'s FRL arguments included.
 - **`Coupled<P>`**, any PHY driving the bench's line: `Coupled::new(phy, &bench)`
   implements `TmdsPhy` with `P`'s error, and `PhyPower` and `FrlPhy` where `P` does. Calls go
   to `P` unchanged; what succeeded drives the line by the contract's guarantees (unscrambled
@@ -153,7 +153,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`OwnedWrite::Ignore` by default, or `Nack`) and `with_scdc_past_end`
   (`ScdcPastEnd::Wrap` by default, or `Nack`).
 - Re-exports of `hdmi_hal` itself and its DDC types (`DdcBus`, `DdcCapabilities`,
-  `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`).
+  `DdcError`, `DdcErrorKind`, `EddcTarget`, `NoAcknowledgeSource`). Every hdmi-hal type
+  maquette's API names is re-exported, and listed as a re-export with hdmi-hal's own docs.
 - **The `DdcBus` check** (`check::DdcBusCheck`): hdmi-hal's `DdcBus` contract as a caller
   sees it, against a device the test describes (`check::DdcDevice`: its EDID, whether it has
   a segment pointer, an address where nothing answers). Argument and capability refusals,

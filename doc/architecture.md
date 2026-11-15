@@ -200,9 +200,9 @@ pub enum BenchError {
 - **The handles name no capacity.** `Ddc<'_>`, `Phy<'_>`, `Time<'_>` and `Sink<'_>` reach the
   bench through a private interface, so a function that takes a handle works with a bench of
   any size. Every handle is `Copy`, `Send` and `Sync`.
-- **What later parts add, they add as builder methods** (the PHY's settings, the bus's
-  timing, the operation budget) and as `#[non_exhaustive]` fields and variants, without
-  changing the signature above.
+- **Settings are builder methods** (the PHY's settings, the bus's timing, the operation
+  budget), and the types grow through `#[non_exhaustive]` fields and variants, so what is
+  added later leaves the signature above unchanged.
 - **`BenchError`** implements `Display` and `core::error::Error`.
 
 `Ddc`'s error is maquette's `BusError`: a `DdcErrorKind` with the operation and the address
@@ -425,7 +425,7 @@ things can drive it:
 - `Coupled<P>`, which wraps any `TmdsPhy` (a third party's, a forwarding stub, a firmware
   PHY under hardware-in-the-loop), forwards each call and drives the line from what
   succeeded;
-- the test, directly — the only way until the PHY exists.
+- the test, directly, with `Bench::set_line`.
 
 ```rust
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -523,7 +523,7 @@ pub enum Event {
     IgnoredWrite { addr: u8, reg: u8, value: u8, why: Ignored },
     /// A test's target's own event (`Env::note`).
     Note { addr: u8, code: u32, value: u32 },
-    /// What the source transmits changed (`Bench::set_line`, later the PHY).
+    /// What the source transmits changed (`Bench::set_line`, or the PHY's output).
     Line(Line),
     /// HPD changed.
     Hpd { high: bool },
@@ -1196,10 +1196,10 @@ See [`testing.md`](testing.md). maquette's own tests check its implementations a
 conformance checks, the checks' negative cases against broken doubles, and the sink's rules
 against the sources above.
 
-A fuzz target drives the bench with arbitrary sequences of bus calls (and PHY calls, once
-the PHY exists), line changes, HPD, plug and adapter changes, presets, faults and clock
-advances, on a sink whose settings and bus capabilities the input also chooses. It decodes
-the input bytes itself, as the stack's other fuzz targets do. After every action it checks
+A fuzz target drives the bench with arbitrary sequences of bus calls, PHY calls, line
+changes, HPD, plug and adapter changes, presets, faults and clock advances, on a sink whose
+settings and bus capabilities the input also chooses. It decodes the input bytes itself, as
+the stack's other fuzz targets do. After every action it checks
 the invariants a simulator must keep:
 
 - the same input gives the same transcript (the input is run twice);

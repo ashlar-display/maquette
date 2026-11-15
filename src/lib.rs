@@ -73,22 +73,27 @@ pub use target::{Env, Operation, Target};
 pub use transcript::{Actor, BusOp, BusRecord, Event, Ignored, Record};
 
 /// hdmi-hal, whose types maquette's API is made of: a test names the same version through
-/// this re-export without depending on hdmi-hal itself.
+/// this re-export without depending on hdmi-hal itself, for what is not re-exported below
+/// (its adapters, such as `hdmi_hal::scdc::ScdcOverDdc`, and its address constants).
 pub use hdmi_hal;
-pub use hdmi_hal::ddc::{
-    DdcBus, DdcCapabilities, DdcError, DdcErrorKind, EddcTarget, NoAcknowledgeSource,
-};
-/// The hdmi-hal DDC types the bench's bus implements and uses.
-/// The hdmi-hal types the line and the PHY are made of.
-pub use hdmi_hal::phy::{
-    EqParams, FrlOutput, FrlPhy, LanePatterns, PhyPower, TmdsClockRatio, TmdsPhy,
-    TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo,
-};
-pub use hdmi_hal::{ColorBitDepth, ColorFormat, HdmiForumFrl};
 /// hdmi-hal-async, whose traits the handles implement with the `async` feature.
 #[cfg(feature = "async")]
 pub use hdmi_hal_async;
 
-/// The hdmi-hal time types `SimClock` implements and returns, re-exported so a test names
-/// the same versions maquette does without depending on hdmi-hal itself.
+// Every hdmi-hal type maquette's API names, listed as re-exports with hdmi-hal's own docs.
+// The DDC types the bench's bus implements and uses:
+#[doc(no_inline)]
+pub use hdmi_hal::ddc::{
+    DdcBus, DdcCapabilities, DdcError, DdcErrorKind, EddcTarget, NoAcknowledgeSource,
+};
+// The types the line, the PHY and its calls are made of:
+#[doc(no_inline)]
+pub use hdmi_hal::phy::{
+    EqParams, FrlOutput, FrlPhy, LaneEqParams, LanePatterns, LtpPattern, PhyPower, TmdsClockRatio,
+    TmdsPhy, TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo, TxFfeLevel, TxFfeRestrictions,
+};
+#[doc(no_inline)]
+pub use hdmi_hal::{ColorBitDepth, ColorFormat, HdmiForumFrl};
+// The time types `SimClock` implements and returns:
+#[doc(no_inline)]
 pub use hdmi_hal::time::{Clock, Delay, Timestamp};
