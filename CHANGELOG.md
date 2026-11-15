@@ -29,7 +29,8 @@ implementations of hdmi-hal's traits.
   mode, and the capacities: 256 records and 16 scheduled faults by default). `BenchError`
   refuses an EDID or DisplayID store that is not whole 128-byte blocks, up to 256 blocks.
 - **Handles** that are `Copy`, `Send` and `Sync` and name no capacity: `ddc()`, the sink's
-  DDC bus (`DdcBus`); `time()`, its clock as one `Clock` and `Delay`; `phy()`, the source's
+  DDC bus (`DdcBus`, and its own `DdcHandle`, so it passes to hdmi-hal's `ScdcOverDdc` by
+  value); `time()`, its clock as one `Clock` and `Delay`; `phy()`, the source's
   simulated PHY; `sink()`, a read-only view of the sink's registers, HPD and plug state.
   Calls from several threads are serialized: each bus call, and each delay with the event
   after it, is one step.

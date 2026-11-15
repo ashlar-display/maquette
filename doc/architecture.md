@@ -112,10 +112,10 @@ it:
 
 ```rust
 let bench = Bench::new(SinkConfig::new(), &edid_bytes)?;
-let bus = bench.ddc();     // impl DdcBus
+let bus = bench.ddc();     // impl DdcBus, and its own DdcHandle: passed by value
 let phy = bench.phy();     // impl TmdsPhy + FrlPhy + PhyPower; two phy() handles are one PHY
 let time = bench.time();   // impl Clock + Delay
-let scdc = culvert::Scdc::new(ScdcOverDdc::new(&bus).ok().unwrap());
+let scdc = culvert::Scdc::new(ScdcOverDdc::new(bus).ok().unwrap());
 let mut link = TmdsLink::new(scdc, phy, time, time);   // spiritlevel, `culvert` feature
 // … run the procedure …
 bench.hpd_pulse(Duration::from_millis(500));   // the test's controls

@@ -377,3 +377,12 @@ fn debug_output_shows_the_sink() {
     );
     assert!(format!("{bench:?}").contains("scdc: true"));
 }
+
+#[test]
+fn the_bench_bus_passes_to_scdc_over_ddc_by_value() {
+    let bench = bench(SinkConfig::new());
+    let mut scdc = ScdcOverDdc::new(bench.ddc()).expect("the bench's bus serves SCDC");
+    scdc.write(0x20, 0x03).unwrap();
+    assert_eq!(scdc.read(0x20), Ok(0x03));
+    assert_eq!(bench.sink().tmds_config(), Some(0x03));
+}

@@ -4,8 +4,8 @@ use core::fmt;
 use core::time::Duration;
 
 use hdmi_hal::ddc::{
-    DdcBus, DdcCapabilities, DdcError, DdcErrorKind, EddcTarget, MAX_SEGMENT, SEGMENT_POINTER,
-    is_usable_address,
+    DdcBus, DdcCapabilities, DdcError, DdcErrorKind, DdcHandle, EddcTarget, MAX_SEGMENT,
+    SEGMENT_POINTER, is_usable_address,
 };
 
 use crate::bench::{Core, Reach};
@@ -240,6 +240,16 @@ impl fmt::Debug for Ddc<'_> {
 
 fn saturating_len(len: usize) -> u16 {
     u16::try_from(len).unwrap_or(u16::MAX)
+}
+
+/// The bench's bus is its own handle: a `Copy` view, passed by value to code that holds a
+/// handle to a bus (`hdmi_hal::scdc::ScdcOverDdc::new(bench.ddc())`).
+impl DdcHandle for Ddc<'_> {
+    type Bus = Self;
+
+    fn bus(&self) -> &Self {
+        self
+    }
 }
 
 impl DdcBus for Ddc<'_> {

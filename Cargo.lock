@@ -26,7 +26,7 @@ dependencies = [
 [[package]]
 name = "hdmi-hal"
 version = "0.6.1"
-source = "git+https://github.com/ashlar-display/hdmi-hal?rev=29754ce9ec60c54f86170ebd43729e7fbaee043f#29754ce9ec60c54f86170ebd43729e7fbaee043f"
+source = "git+https://github.com/ashlar-display/hdmi-hal?rev=ee13fc9c8faee2ec491275dd76d493ac67627e28#ee13fc9c8faee2ec491275dd76d493ac67627e28"
 dependencies = [
  "display-types",
 ]
@@ -34,7 +34,7 @@ dependencies = [
 [[package]]
 name = "hdmi-hal-async"
 version = "0.3.1"
-source = "git+https://github.com/ashlar-display/hdmi-hal-async?rev=313e9c4218dccca80b6d7e826d234d51b98286e2#313e9c4218dccca80b6d7e826d234d51b98286e2"
+source = "git+https://github.com/ashlar-display/hdmi-hal-async?rev=38d0c38e6585b5e3b642d1e419d618d7192bc0f9#38d0c38e6585b5e3b642d1e419d618d7192bc0f9"
 dependencies = [
  "display-types",
  "hdmi-hal",

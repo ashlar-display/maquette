@@ -88,7 +88,7 @@ pub use hdmi_hal_async;
 // The DDC types the bench's bus implements and uses:
 #[doc(no_inline)]
 pub use hdmi_hal::ddc::{
-    DdcBus, DdcCapabilities, DdcError, DdcErrorKind, EddcTarget, NoAcknowledgeSource,
+    DdcBus, DdcCapabilities, DdcError, DdcErrorKind, DdcHandle, EddcTarget, NoAcknowledgeSource,
 };
 // The types the line, the PHY and its calls are made of:
 #[doc(no_inline)]

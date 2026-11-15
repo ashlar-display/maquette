@@ -25,4 +25,4 @@ bench = false
 # pushed commit of hdmi-hal's feat/tmds-phy branch, moved with it (the fuzz target does not
 # use the async feature, so hdmi-hal-async is not in its graph).
 [patch.crates-io]
-hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "29754ce9ec60c54f86170ebd43729e7fbaee043f" }
+hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "ee13fc9c8faee2ec491275dd76d493ac67627e28" }

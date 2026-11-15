@@ -11,7 +11,7 @@ use core::time::Duration;
 use hdmi_hal::HdmiForumFrl;
 use hdmi_hal::ddc::{DdcCapabilities, EddcTarget};
 use hdmi_hal::phy::{EqParams, FrlOutput, LanePatterns, TmdsPhyCapabilities, TmdsPhyConfig};
-use hdmi_hal_async::ddc::SendDdcBus;
+use hdmi_hal_async::ddc::{SendDdcBus, SendDdcHandle};
 use hdmi_hal_async::phy::{SendFrlPhy, SendPhyPower, SendTmdsPhy};
 use hdmi_hal_async::time::SendDelay;
 
@@ -19,6 +19,23 @@ use crate::bench::Time;
 use crate::clock::SimClock;
 use crate::ddc::{BusError, Ddc};
 use crate::phy::{Phy, PhyError};
+
+/// The bench's bus is its own async handle too, passed by value.
+impl hdmi_hal_async::ddc::DdcHandle for Ddc<'_> {
+    type Bus = Self;
+
+    fn bus(&self) -> &Self {
+        self
+    }
+}
+
+impl SendDdcHandle for Ddc<'_> {
+    type Bus = Self;
+
+    fn bus(&self) -> &Self {
+        self
+    }
+}
 
 impl SendDdcBus for Ddc<'_> {
     type Error = BusError;

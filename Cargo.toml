@@ -41,5 +41,5 @@ pollster = "0.4"
 # versions the requirements match today have no `DdcBus` or `TmdsPhy`. CI on main and the
 # publish workflow fail while it is here.
 [patch.crates-io]
-hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "29754ce9ec60c54f86170ebd43729e7fbaee043f" }
-hdmi-hal-async = { git = "https://github.com/ashlar-display/hdmi-hal-async", rev = "313e9c4218dccca80b6d7e826d234d51b98286e2" }
+hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "ee13fc9c8faee2ec491275dd76d493ac67627e28" }
+hdmi-hal-async = { git = "https://github.com/ashlar-display/hdmi-hal-async", rev = "38d0c38e6585b5e3b642d1e419d618d7192bc0f9" }

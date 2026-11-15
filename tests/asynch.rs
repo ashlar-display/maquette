@@ -210,3 +210,16 @@ fn a_simulated_clock_alone_is_an_async_delay() {
     let check = maquette::check::ClockCheck::DEFAULT;
     pollster::block_on(check.run_async(&clock, &mut &clock)).assert_ok();
 }
+
+#[test]
+fn the_bench_bus_passes_to_both_async_adapters_by_value() {
+    use maquette::hdmi_hal_async::scdc::{ScdcOverDdc, ScdcTransport};
+    let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
+    let mut send = SendScdcOverDdc::new(bench.ddc()).expect("the bench's bus serves SCDC");
+    pollster::block_on(SendScdcTransport::write(&mut send, 0x20, 0x03)).unwrap();
+    let plain = ScdcOverDdc::new(bench.ddc()).expect("the bench's bus serves SCDC");
+    assert_eq!(
+        pollster::block_on(ScdcTransport::read(&plain, 0x20)),
+        Ok(0x03)
+    );
+}
