@@ -85,9 +85,11 @@ fn role(reg: u8) -> Role {
 ///
 /// The lock: `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
 /// scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, and the trigger has passed since
-/// the later of the write that set `Scrambling_Enable` (from 0 to 1) and the line becoming
-/// what it is. It is cleared when any condition fails. The sink changes the status only when
-/// its lock is gained or lost, so a test's preset holds until then. Evaluated at every
+/// the latest of the write that set `Scrambling_Enable` (from 0 to 1), the line becoming
+/// what it is, and the sink's own last reset of the status. It is cleared when any condition
+/// fails. The sink changes the status only when its lock is gained or lost, so a test's
+/// preset holds until then; the sink's own reset of the status loses the lock, which is then
+/// gained again as from the reset. Evaluated at every
 /// event: each transaction, each byte written, each read of the status, and every update.
 #[derive(Debug)]
 pub(crate) struct Scdc {
@@ -114,6 +116,8 @@ pub(crate) struct Scdc {
     lock_from: Option<Timestamp>,
     reads: u32,
     locked: bool,
+    /// When the sink last reset `Scrambling_Status` itself: the lock holds from no earlier.
+    status_reset_at: Timestamp,
     hpd_resets: [HpdReset; 4],
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
@@ -147,6 +151,7 @@ impl Scdc {
             lock_from: None,
             reads: 0,
             locked: false,
+            status_reset_at: Timestamp::from_micros(0),
             hpd_resets: config.hpd_resets,
             hpd_low_since: None,
             reset_done: [false; 4],
@@ -210,6 +215,10 @@ impl Scdc {
                     if self.get(reg) != 0 {
                         self.set(reg, 0, Actor::Sink, env);
                     }
+                    if reg == SCRAMBLING_STATUS {
+                        self.locked = false;
+                        self.status_reset_at = now;
+                    }
                 }
             }
         }
@@ -250,7 +259,7 @@ impl Scdc {
         }
         let lock_from = match self.enable_at {
             Some(at) if matching && !self.withheld && !(self.strict && self.line_since < at) => {
-                Some(at.max(self.line_since))
+                Some(at.max(self.line_since).max(self.status_reset_at))
             }
             _ => None,
         };
@@ -273,7 +282,9 @@ impl Scdc {
             } else {
                 status & !STATUS
             };
-            self.set(SCRAMBLING_STATUS, to, Actor::Sink, env);
+            if to != status {
+                self.set(SCRAMBLING_STATUS, to, Actor::Sink, env);
+            }
         }
     }
 

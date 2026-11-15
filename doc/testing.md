@@ -64,7 +64,8 @@ parts are built.
 - **`tests/hpd.rs`** — the HPD resets: `Config` on every low and the rest after 100 ms by
   default; a reset taken at the first event after it is due, and when HPD rises; a group
   that never resets; a reset after zero; one reset per low; a `TMDS_Config` reset losing
-  the lock; the groups and their defaults.
+  the lock; a status reset re-arming it while a preset still holds; each change of the
+  status recorded once; the groups and their defaults.
 - **`tests/faults.rs`** — faults: before (nothing applied, the address byte charged), after
   (the write latched), partway through a write and a read (the buffer the pattern) and past
   the last byte; `nth` with a count and until cleared; filters; refused, empty and detached

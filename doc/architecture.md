@@ -581,6 +581,9 @@ not restart it) and the time the line became scrambled TMDS at its current ratio
 - **Locking:** `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
   scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, and the lock trigger has passed
   since the later of the two times.
+- **The sink's own reset:** an HPD reset of the `Status` group loses the lock along with
+  the status; if the conditions still hold, the lock is gained again once the trigger has
+  passed since the reset. Only a test's preset of the status holds against the lock.
 - **The strict sink** (`with_strict_lock(true)`; off by default): when scrambled output was
   already running at the write, the sink does not lock until the output stops and starts
   again after it.

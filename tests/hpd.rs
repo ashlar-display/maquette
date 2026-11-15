@@ -172,6 +172,61 @@ fn a_reset_of_tmds_config_loses_the_lock() {
     assert_eq!(bench.sink().scrambling_status(), Some(0));
 }
 
+/// A bench locked at 594 Mcsc, 1/40.
+fn locked(config: SinkConfig) -> Bench<'static> {
+    let bench = bench(config);
+    bench.ddc().write(SCDC, &[0x20, 0x03]).unwrap();
+    bench.set_line(Line::Tmds {
+        character_rate_khz: 594_000,
+        ratio: TmdsClockRatio::Div40,
+        scrambled: true,
+    });
+    bench.advance(ms(1));
+    assert_eq!(bench.sink().scrambling_status(), Some(1));
+    bench
+}
+
+#[test]
+fn the_sinks_own_reset_of_the_status_re_arms_the_lock() {
+    let config = SinkConfig::new().with_hpd_reset(RegisterGroup::TmdsConfig, HpdReset::Never);
+    let bench = locked(config);
+    bench.hpd_pulse(ms(200));
+    // The reset was taken at the end of the low; the lock holds again 1 ms after it.
+    assert_eq!(bench.sink().tmds_config(), Some(0x03));
+    assert_eq!(bench.sink().scrambling_status(), Some(0));
+    bench.advance(Duration::from_micros(999));
+    assert_eq!(bench.sink().scrambling_status(), Some(0));
+    bench.advance(Duration::from_micros(1));
+    assert_eq!(bench.sink().scrambling_status(), Some(1));
+}
+
+#[test]
+fn a_preset_of_the_status_still_holds() {
+    let bench = locked(SinkConfig::new());
+    bench.preset_scdc(0x21, 0x00);
+    bench.advance(ms(10));
+    assert_eq!(bench.sink().scrambling_status(), Some(0));
+}
+
+#[test]
+fn a_reset_records_each_change_of_the_status_once() {
+    let bench = locked(SinkConfig::new());
+    bench.hpd_pulse(ms(200));
+    let status: Vec<(u8, u8)> = bench
+        .transcript()
+        .filter_map(|record| match record.event {
+            Event::Register {
+                reg: 0x21,
+                from,
+                to,
+                ..
+            } => Some((from, to)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(status, [(0, 1), (1, 0)]);
+}
+
 #[test]
 fn the_groups_and_their_defaults() {
     assert_eq!(RegisterGroup::ALL.len(), 4);
