@@ -8,6 +8,9 @@ use crate::transcript::{Event, Record, Transcript};
 
 /// A device on the sink's DDC bus, as the bench routes transactions to it.
 ///
+/// A target runs with the bench locked: it sees the bench through [`Env`] only. Using the
+/// bench's handles or controls from a target panics, naming the cause.
+///
 /// A target sees what a device on the bus sees: transactions, each a sequence of writes and
 /// reads to addresses, ending in STOP. The bench turns each `DdcBus` call into one
 /// transaction: `write` and `read` into one operation, `write_read` into a write and a read,

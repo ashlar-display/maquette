@@ -437,8 +437,21 @@ impl<'a> Bench<'a> {
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// Runs `f` on the state under the lock, with the bench's time read under it.
+    ///
+    /// # Panics
+    ///
+    /// When the bench is already locked: a target, hook or check called back into the bench
+    /// through its handles or controls while the bench ran it.
     fn locked<R>(&self, f: impl FnOnce(&mut State<'a, LOG, FAULTS>, Timestamp) -> R) -> R {
-        critical_section::with(|cs| f(&mut self.state.borrow_ref_mut(cs), self.clock.now()))
+        critical_section::with(|cs| {
+            let Ok(mut state) = self.state.borrow(cs).try_borrow_mut() else {
+                panic!(
+                    "the bench is locked: a target or hook used the bench's handles or \
+                     controls while the bench ran it (use Env instead)"
+                );
+            };
+            f(&mut state, self.clock.now())
+        })
     }
 
     /// The sink's DDC bus.
@@ -831,7 +844,7 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
     }
 }
 
-/// Builds a [`Bench`]: [`Bench::builder`], the `with`-style setters, then
+/// Builds a [`Bench`]: [`Bench::builder`], its setters, then
 /// [`build`](Self::build).
 #[must_use]
 pub struct BenchBuilder<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
@@ -1009,11 +1022,11 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for BenchBuilder<'_, LOG,
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum BenchError {
-    /// The EDID store is not a whole number of 128-byte blocks, or is longer than 256; the
-    /// length given.
+    /// The EDID store is not a whole number of 128-byte blocks, or is longer than 256
+    /// blocks; the length given, in bytes.
     EdidLength(usize),
-    /// The DisplayID store is not a whole number of 128-byte blocks, or is longer than 256;
-    /// the length given.
+    /// The DisplayID store is not a whole number of 128-byte blocks, or is longer than 256
+    /// blocks; the length given, in bytes.
     DisplayIdLength(usize),
 }
 
@@ -1026,7 +1039,7 @@ impl fmt::Display for BenchError {
         write!(
             f,
             "an {store} store of {len} bytes: a store is a whole number of 128-byte blocks, \
-             at most 256"
+             at most 256 blocks"
         )
     }
 }

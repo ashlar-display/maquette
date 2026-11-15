@@ -29,7 +29,7 @@ parts are built.
   taking no time; empty buffers; timing per byte and per transaction; a target's error with
   what it applied kept and the read filled with the pattern; notes and `Env`; `advance`
   updating every target; the transcript's overflow, and a session keeping the newest
-  records; the EDID store's lengths; SCDC through
+  records; a target calling back into its bench panicking with the cause; the EDID store's lengths; SCDC through
   hdmi-hal's `ScdcOverDdc`; the time handle passing the clock check; `Send`, `Sync` and
   threads; calls from several threads following one another in time, a fault counting them
   in the transcript's order.

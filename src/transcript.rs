@@ -89,7 +89,9 @@ pub enum Event {
         /// How it refused.
         kind: RefusalKind,
     },
-    /// A scheduled fault struck the bus operation recorded before it.
+    /// A scheduled fault struck a bus operation: the last bus record before it, after which
+    /// the operation's own records (a register written before a fault after it, for
+    /// instance) may come first.
     #[non_exhaustive]
     Fault {
         /// The fault.

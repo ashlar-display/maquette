@@ -13,13 +13,17 @@
 //! assert_eq!(report.failed(), 0);
 //! ```
 //!
-//! A check's settings are a struct with a `DEFAULT` and `with_*` builders, with `run` (and
-//! `run_async` with the `async` feature) on it; the function named after the check runs it
-//! with the defaults.
+//! A check is a struct with `run` (and `run_async` with the `async` feature) on it, built
+//! from what it needs: the clock check from settings with a `DEFAULT` (and [`clock`], which
+//! runs it with them), the others from a description of what the implementation is in front
+//! of (a device, a register image, a configuration and a probe) with `new`, and `with_*` for
+//! the rest. The PHY check runs by the traits the PHY implements (`run_tmds`, `run_powered`,
+//! `run_frl`).
 //!
 //! New check points come only in a breaking release, so an implementor's CI does not turn red
 //! on `cargo update`. A panic inside the implementation under test is not reported: it ends
-//! the check, as it ends the test.
+//! the check, as it ends the test; only `DdcBusCheck::run_threads` (with `std`) counts a
+//! thread's panic as a failure.
 
 mod clock;
 mod ddc;

@@ -1089,9 +1089,12 @@ impl<F: fmt::Display, const N: usize> fmt::Display for Report<F, N> { /* one lin
 - **Failure types are the check's own** `#[non_exhaustive]` enums, `Copy` where their fields
   are, implementing `Display`, so a check can gain a point in a breaking release without
   changing the report type.
-- **A check's settings** are a `#[non_exhaustive]` struct with a `const DEFAULT` and `const`
-  `with_*` builders, and `run` (and `run_async` with the `async` feature) on it; a function
-  named after the check runs it with the defaults.
+- **A check is a struct** with `run` (and `run_async` with the `async` feature) on it, built
+  from what it needs: the clock check from settings with a `const DEFAULT` (and
+  `check::clock`, which runs it with them); the others from a description of what the
+  implementation is in front of, with `new`, since there is no default device, register
+  image or PHY configuration; `const` `with_*` builders for the rest. The PHY check runs by
+  the traits the PHY implements.
 - **The async form** takes hdmi-hal-async's trait, which their `Send` twins implement through
   their blanket implementations, so one async check covers both. It does not promise a `Send`
   future: a test drives it to completion where it is.
@@ -1195,7 +1198,7 @@ pub struct DdcDevice<'d> {
 }
 // DdcDevice::new(), with const `with_edid`, `without_segment_pointer`, `with_silent`.
 
-pub struct DdcBusCheck<'d> { /* the device; settings with `with_*` */ }
+pub struct DdcBusCheck<'d> { /* the device */ }
 impl<'d> DdcBusCheck<'d> {
     pub const fn new(device: DdcDevice<'d>) -> Self;
     pub fn run<B: DdcBus + ?Sized>(&self, bus: &B) -> Report<DdcBusFailure>;

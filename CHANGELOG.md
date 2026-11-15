@@ -44,7 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   by default, standard mode); and fills a failed read with `0xA5`. Its errors are
   `BusError`s, with the kind, the call and the address.
 - **`Target`**, a device on the sink's bus, for a test's own: `answers`, `transaction` over
-  `Operation`s, and `update`; `Env` gives it the time, HPD and `note`.
+  `Operation`s, and `update`; `Env` gives it the time, HPD and `note`. A target runs with
+  the bench locked: using the bench's handles from it panics, naming the cause.
 - **`ScdcHook`**, a test's quirk on top of the built-in SCDC sink, set with
   `BenchBuilder::scdc_hook`: it decides each byte the source writes (`HookWrite::Store`,
   `Drop`, `Nack`, `StoreRelocking`) and what each read returns, with a read-only

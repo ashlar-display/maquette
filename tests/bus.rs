@@ -578,11 +578,11 @@ fn the_edid_store_is_whole_blocks_up_to_256() {
     }
     assert_eq!(
         BenchError::EdidLength(5).to_string(),
-        "an EDID store of 5 bytes: a store is a whole number of 128-byte blocks, at most 256"
+        "an EDID store of 5 bytes: a store is a whole number of 128-byte blocks, at most 256 blocks"
     );
     assert_eq!(
         BenchError::DisplayIdLength(7).to_string(),
-        "an DisplayID store of 7 bytes: a store is a whole number of 128-byte blocks, at most 256"
+        "an DisplayID store of 7 bytes: a store is a whole number of 128-byte blocks, at most 256 blocks"
     );
 }
 
@@ -761,4 +761,35 @@ fn a_session_can_keep_the_newest_records() {
     assert!(
         format!("{:?}", Bench::builder(&[]).keep_newest_records()).contains("keep_newest: true")
     );
+}
+
+#[cfg(feature = "std")]
+#[test]
+#[should_panic(expected = "the bench is locked")]
+fn a_target_that_calls_back_into_its_bench_panics_naming_the_cause() {
+    use std::sync::OnceLock;
+
+    /// A target that reads the sink through the bench, which it must not.
+    struct Mirror<'b>(&'b OnceLock<&'b Bench<'b>>);
+
+    impl Target for Mirror<'_> {
+        fn answers(&self, addr: u8, _: &Env<'_>) -> bool {
+            addr == 0x3A
+        }
+        fn transaction(
+            &mut self,
+            _: &mut [Operation<'_>],
+            _: &mut Env<'_>,
+        ) -> Result<(), DdcErrorKind> {
+            let _ = self.0.get().unwrap().sink().scrambling_status();
+            Ok(())
+        }
+    }
+
+    let cell = OnceLock::new();
+    let mut mirror = Mirror(&cell);
+    let mut targets: [&mut (dyn Target + Send); 1] = [&mut mirror];
+    let bench = Bench::builder(&[]).targets(&mut targets).build().unwrap();
+    let _ = cell.set(&bench);
+    let _ = bench.ddc().read(0x3A, &mut [0]);
 }

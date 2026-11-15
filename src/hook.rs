@@ -6,7 +6,8 @@ use crate::target::Env;
 /// a read: a vendor quirk on top of the standard sink, which keeps its offset, bursts, lock,
 /// HPD resets and records. Set with
 /// [`BenchBuilder::scdc_hook`](crate::BenchBuilder::scdc_hook); one per bench, kept across a
-/// [`plug`](crate::Bench::plug). Presets do not pass through it: they are the test's own.
+/// [`plug`](crate::Bench::plug). Presets do not pass through it: they are the test's own. Like
+/// a target, it runs with the bench locked and sees it through [`Env`] only.
 ///
 /// ```
 /// use maquette::{Bench, DdcBus, Env, HookWrite, ScdcHook, ScdcRegisters};
