@@ -281,3 +281,37 @@ fn a_tmds_only_phy_couples_too() {
         }
     );
 }
+
+#[test]
+fn every_frl_and_power_call_reaches_the_coupled_phy() {
+    let bench = bench();
+    let mut phy = Coupled::new(Double::default(), &bench);
+    phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
+    phy.send_ltp(LanePatterns::default()).unwrap();
+    phy.set_frl_output(FrlOutput::Active).unwrap();
+    phy.adjust_equalization(EqParams::new()).unwrap();
+    phy.power_off().unwrap();
+    phy.power_on().unwrap();
+    assert_eq!(
+        phy.get_ref().calls,
+        [
+            "set_frl_rate",
+            "send_ltp",
+            "set_frl_output",
+            "adjust_equalization",
+            "power_off",
+            "power_on",
+        ]
+    );
+}
+
+#[test]
+fn power_on_while_powered_keeps_the_mode() {
+    let bench = bench();
+    let mut phy = Coupled::new(Double::default(), &bench);
+    phy.configure(high()).unwrap();
+    phy.start_output().unwrap();
+    assert_eq!(bench.line(), tmds(false));
+    phy.power_on().unwrap();
+    assert_eq!(bench.line(), tmds(false));
+}

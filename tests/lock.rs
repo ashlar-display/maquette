@@ -428,3 +428,24 @@ fn the_default_lock_is_after_1_ms_and_lenient() {
     assert_eq!(config.scrambling_lock(), Trigger::After(ms(1)));
     assert!(!config.strict_lock());
 }
+
+#[test]
+fn only_a_write_that_sets_scrambling_enable_is_an_attempt() {
+    // A clear of TMDS_Config, and an odd value to another register, are not attempts: the
+    // one refusal is still there for the enabling write.
+    let config =
+        SinkConfig::new().with_scrambling_refusals(Refusal::new(RefusalKind::DropEnable, 1));
+    let bench = bench(config);
+    write_config(&bench, 0x00);
+    bench.ddc().write(SCDC, &[0x02, 0x01]).unwrap();
+    write_config(&bench, 0b11);
+    assert_eq!(bench.sink().tmds_config(), Some(0b10));
+    let refusals: Vec<_> = bench
+        .transcript()
+        .filter_map(|record| match record.event {
+            Event::Refusal { attempt, kind, .. } => Some((attempt, kind)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(refusals, [(1, RefusalKind::DropEnable)]);
+}

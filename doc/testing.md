@@ -69,7 +69,8 @@ parts are built.
   ratio match, the ratio fitting the rate on both sides of 340 000 kHz, scrambling at 1/10
   and unscrambled output; the lock lost when the output
   stops or `Scrambling_Enable` is cleared; a rewrite not restarting it; the count trigger;
-  refusals of both kinds, the trigger counting from the accepted attempt; the trigger
+  refusals of both kinds, the trigger counting from the accepted attempt, only a write that
+  sets `Scrambling_Enable` counting as an attempt; the trigger
   counting from the write that makes the ratio match; the count trigger restarting when a
   condition fails; the enable timeout, with and without output in time, output late
   though the time passed on the bus, a ratio change restarting it, its 100 ms default and
@@ -82,6 +83,10 @@ parts are built.
   losing what was written during the low; one reset per low; a `TMDS_Config` reset losing
   the lock; a status reset re-arming it while a preset still holds; each change of the
   status recorded once; the groups and their defaults.
+- **`tests/boundaries.rs`** — exact boundaries: a budget of *n* allowing *n* operations
+  and panicking past it; only `start_output` taking the start latency; the PHY's maximum
+  rate taken and not above; segment 0x7F not refused; a segment-0 read writing no pointer;
+  a segment existing only where a store has bytes; a pointer of 0 taken without a store.
 - **`tests/faults.rs`** — faults: before (nothing applied, the address byte charged), after
   (the write latched), partway through a write and a read (the buffer the pattern), a NACK
   partway through a read falling on its address byte, and past
@@ -112,7 +117,8 @@ parts are built.
 - **`tests/coupled.rs`** — `Coupled<P>` over a double: a bring-up locking the sink; the line
   unscrambled after `configure` until `set_scrambling`, whatever the double's scrambler;
   errors returned unchanged and a failed call changing nothing, recorded as `Coupled`; the
-  budget; FRL and power passing through by the contract; the last change to the line
+  budget; FRL and power passing through by the contract, every call reaching the coupled
+  PHY, and a power-on while powered keeping the mode; the last change to the line
   winning, with the simulated PHY and the test's own line; scheduled PHY faults left to the
   simulated PHY; reaching and taking back the PHY; a TMDS-only PHY.
 - **`tests/asynch.rs`** (with `async`) — an async bring-up bounded on the `Send` twins alone,
