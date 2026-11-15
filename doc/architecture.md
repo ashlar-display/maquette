@@ -1090,6 +1090,7 @@ pub struct ScdcTransportCheck<'i> { /* the image; an optional `&dyn FailNext` */
 impl<'i> ScdcTransportCheck<'i> {
     pub const fn new(image: &'i ScdcImage) -> Self;
     pub const fn with_faults(self, faults: &'i dyn FailNext) -> Self;
+    pub const fn with_write(self, reg: u8, value: u8) -> Self; // a register safe to write
     pub fn run<T: ScdcTransport + ?Sized>(&self, transport: &mut T)
         -> Report<ScdcTransportFailure>;
     // run_async with the `async` feature, over hdmi-hal-async's `ScdcTransport`.

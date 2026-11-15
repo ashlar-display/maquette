@@ -33,6 +33,29 @@ fn scdc_over_the_bench_bus_passes() {
 }
 
 #[test]
+fn a_write_reads_back_and_the_image_is_restored() {
+    let bench = bench();
+    let bus = bench.ddc();
+    let image = ScdcImage::of(&bench);
+    let mut transport = ScdcOverDdc::new(&bus).unwrap();
+    let check = ScdcTransportCheck::new(&image).with_faults(&bench);
+    let without = check.run(&mut transport).points();
+    let report = check.with_write(0x02, 1).run(&mut transport);
+    report.assert_ok();
+    // The value, then the image's value written back.
+    assert_eq!(report.points(), without + 2);
+    assert_eq!(bench.sink().source_version(), Some(0x02 ^ 0x5A));
+    // Where the image holds the value already, one write.
+    bench.preset_scdc(0x02, 1);
+    let stated = ScdcImage::new().with(0x02, 1);
+    let report = ScdcTransportCheck::new(&stated)
+        .with_write(0x02, 1)
+        .run(&mut transport);
+    report.assert_ok();
+    assert_eq!(bench.sink().source_version(), Some(1));
+}
+
+#[test]
 fn the_bytewise_transport_passes_too() {
     let bench = bench();
     let bus = bench.ddc();
@@ -84,10 +107,12 @@ fn the_async_form_passes_the_async_adapter() {
     let bus = bench.ddc();
     let image = ScdcImage::of(&bench);
     let mut transport = SendScdcOverDdc::new(&bus).unwrap();
-    let check = ScdcTransportCheck::new(&image).with_faults(&bench);
+    let check = ScdcTransportCheck::new(&image)
+        .with_faults(&bench)
+        .with_write(0x02, 1);
     let report = pollster::block_on(check.run_async(&mut transport));
     report.assert_ok();
-    assert_eq!(report.points(), image.known() + 241 + 3 + 2 + 6);
+    assert_eq!(report.points(), image.known() + 241 + 3 + 2 + 2 + 6);
 }
 
 /// How a [`Broken`] transport is broken.
@@ -103,14 +128,21 @@ enum Flaw {
     StuckAfterError,
     /// An empty `read_block` fails.
     EmptyFails,
+    /// `write` returns `Ok` without writing.
+    NoWrite,
+    /// `write` sends the register and the value as two writes.
+    SplitWrite,
 }
 
 /// hdmi-hal's adapter over the bench's bus, with one flaw.
 struct Broken<'b> {
     inner: ScdcOverDdc<&'b Ddc<'b>>,
+    bus: &'b Ddc<'b>,
     flaw: Flaw,
     stuck: Cell<bool>,
 }
+
+const SCDC_ADDR: u8 = 0x54;
 
 impl Broken<'_> {
     fn watch<T>(&self, result: Result<T, DdcErrorKind>) -> Result<T, DdcErrorKind> {
@@ -138,7 +170,15 @@ impl ScdcTransport for Broken<'_> {
     }
 
     fn write(&mut self, reg: u8, value: u8) -> Result<(), DdcErrorKind> {
-        self.inner.write(reg, value).map_err(|error| error.kind())
+        match self.flaw {
+            Flaw::NoWrite => Ok(()),
+            Flaw::SplitWrite => {
+                let bus = self.bus;
+                bus.write(SCDC_ADDR, &[reg]).map_err(|error| error.kind())?;
+                bus.write(SCDC_ADDR, &[value]).map_err(|error| error.kind())
+            }
+            _ => self.inner.write(reg, value).map_err(|error| error.kind()),
+        }
     }
 
     fn read_block(&self, reg: u8, buf: &mut [u8]) -> Result<(), DdcErrorKind> {
@@ -166,11 +206,13 @@ fn failures(flaw: Flaw) -> (usize, Vec<ScdcTransportFailure>) {
     let image = ScdcImage::of(&bench);
     let mut transport = Broken {
         inner: ScdcOverDdc::new(&bus).unwrap(),
+        bus: &bus,
         flaw,
         stuck: Cell::new(false),
     };
     let report = ScdcTransportCheck::new(&image)
         .with_faults(&bench)
+        .with_write(0x02, 1)
         .run(&mut transport);
     (report.failed(), report.failures().copied().collect())
 }
@@ -226,6 +268,39 @@ fn a_transport_stuck_after_an_error_is_caught() {
         reg: 0x00,
         kind: DdcErrorKind::Other
     }));
+}
+
+#[test]
+fn a_write_that_does_nothing_is_caught() {
+    let (failed, failures) = failures(Flaw::NoWrite);
+    // The value written does not read back; the image's value is still there.
+    assert_eq!(failed, 1);
+    assert_eq!(
+        failures,
+        [ScdcTransportFailure::Value {
+            op: ScdcOp::Write,
+            reg: 0x02,
+            expected: 1,
+            found: 0x02 ^ 0x5A
+        }]
+    );
+}
+
+#[test]
+fn a_write_split_in_two_is_caught() {
+    // The register byte alone sets the offset; the value alone sets it again, writing
+    // nothing. Writing back the image's value then reads back what was never changed.
+    let (failed, failures) = failures(Flaw::SplitWrite);
+    assert_eq!(failed, 1);
+    assert_eq!(
+        failures,
+        [ScdcTransportFailure::Value {
+            op: ScdcOp::Write,
+            reg: 0x02,
+            expected: 1,
+            found: 0x02 ^ 0x5A
+        }]
+    );
 }
 
 #[test]
@@ -344,6 +419,6 @@ fn failures_print_what_went_wrong() {
     let image = ScdcImage::new();
     assert_eq!(
         format!("{:?}", ScdcTransportCheck::new(&image)),
-        "ScdcTransportCheck { known: 0, faults: false }"
+        "ScdcTransportCheck { known: 0, faults: false, write: None }"
     );
 }

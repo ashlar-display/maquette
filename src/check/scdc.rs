@@ -92,6 +92,8 @@ pub enum ScdcOp {
     Read,
     /// `read_block`.
     ReadBlock,
+    /// `write`: for a value, the one read back after it.
+    Write,
 }
 
 /// A failed point of the [`ScdcTransportCheck`].
@@ -173,6 +175,8 @@ const RECOVERABLE: [DdcErrorKind; 3] = [
 /// - **`read_block`** of 16 registers, at every start where they fit (0x00 to 0xF0), succeeds
 ///   and agrees with the image register by register; an empty buffer is `Ok`; a read past
 ///   0xFF returns, `Ok` or an error.
+/// - **`write`,** with [`with_write`](Self::with_write): the value written reads back, and
+///   the image's value written back after it reads back too.
 /// - **After an error,** with [`with_faults`](Self::with_faults): a transfer failed with a
 ///   recoverable kind reaches the caller with that kind, and the next read succeeds. A
 ///   failure the hook cannot arm is [`ScdcTransportFailure::NotArmed`]; one the transport
@@ -182,6 +186,7 @@ const RECOVERABLE: [DdcErrorKind; 3] = [
 pub struct ScdcTransportCheck<'i> {
     image: &'i ScdcImage,
     faults: Option<&'i dyn FailNext>,
+    write: Option<(u8, u8)>,
 }
 
 impl<'i> ScdcTransportCheck<'i> {
@@ -190,6 +195,19 @@ impl<'i> ScdcTransportCheck<'i> {
         Self {
             image,
             faults: None,
+            write: None,
+        }
+    }
+
+    /// The check writing `value` to `reg`, a register the caller knows is safe to write,
+    /// and reading it back; then, where the image knows `reg` and holds another value,
+    /// writing that back and reading it. For a sink, `Source_Version` (0x02) and 1, which a
+    /// source writes at every bring-up. A `value` other than the one `reg` holds shows a
+    /// write that does nothing.
+    pub const fn with_write(self, reg: u8, value: u8) -> Self {
+        Self {
+            write: Some((reg, value)),
+            ..self
         }
     }
 
@@ -207,6 +225,7 @@ impl fmt::Debug for ScdcTransportCheck<'_> {
         f.debug_struct("ScdcTransportCheck")
             .field("known", &self.image.known())
             .field("faults", &self.faults.is_some())
+            .field("write", &self.write)
             .finish()
     }
 }
@@ -278,6 +297,32 @@ macro_rules! body {
         for (start, len) in [(0xF8u8, 16usize), (0xFF, 2)] {
             let _ = $transport.read_block(start, &mut buf[..len]) $($await)*;
             report.record(None);
+        }
+        if let Some((reg, value)) = $check.write {
+            let mut values = [Some(value), image.get(reg).filter(|&held| held != value)];
+            for value in values.iter_mut().filter_map(Option::take) {
+                match $transport.write(reg, value) $($await)* {
+                    Err(error) => report.record(Some(ScdcTransportFailure::Failed {
+                        op: ScdcOp::Write,
+                        reg,
+                        kind: error.kind(),
+                    })),
+                    Ok(()) => report.record(match $transport.read(reg) $($await)* {
+                        Ok(found) if found == value => None,
+                        Ok(found) => Some(ScdcTransportFailure::Value {
+                            op: ScdcOp::Write,
+                            reg,
+                            expected: value,
+                            found,
+                        }),
+                        Err(error) => Some(ScdcTransportFailure::Failed {
+                            op: ScdcOp::Read,
+                            reg,
+                            kind: error.kind(),
+                        }),
+                    }),
+                }
+            }
         }
         let known = (0..=255u8).find_map(|reg| image.get(reg).map(|value| (reg, value)));
         if let (Some(faults), Some((reg, value))) = ($check.faults, known) {

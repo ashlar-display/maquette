@@ -163,7 +163,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   test knows (`check::ScdcImage`, or `ScdcImage::of(&bench)`: the bench's registers but the
   ones that change by themselves), `read` of every known register, `read_block` of 16
   registers wherever they fit agreeing register by register, empty buffers `Ok`, reads past
-  0xFF returning, and, with a `check::FailNext` hook (implemented by `Bench`), an error
+  0xFF returning; with `with_write(reg, value)`, a register the test knows is safe to write
+  (`Source_Version` and 1 on a sink) written and read back, and the image's value restored;
+  and, with a `check::FailNext` hook (implemented by `Bench`), an error
   reaching the caller with its kind and the transport working after it; a failure the hook
   cannot arm is `NotArmed`, the setup's and not the transport's, and one no transfer took
   is withdrawn. `run_async` over

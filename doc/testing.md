@@ -110,8 +110,9 @@ parts are built.
 - **`tests/scdc_check.rs`** — the `ScdcTransport` check: hdmi-hal's `ScdcOverDdc` over the
   bench passing, block and bytewise, behind a 16-byte bus, without faults and async; and
   transports broken one way each caught with exact counts — block reads from the wrong
-  register, no 16-byte reads, hidden errors, stuck after an error, failing an empty buffer —
-  and a sink without SCDC failing every read; a full fault schedule failing the setup, not
+  register, no 16-byte reads, hidden errors, stuck after an error, failing an empty buffer,
+  a `write` that does nothing, a `write` split in two — a write read back and the image
+  restored; and a sink without SCDC failing every read; a full fault schedule failing the setup, not
   the transport; a failure no transfer took withdrawn; the failures printed.
 - **`tests/phy_check.rs`** — the PHY check: the bench's PHY passing every run under both
   `configure`-while-running settings and both rates, a PHY coupled to the bench passing,
