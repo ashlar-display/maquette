@@ -52,6 +52,11 @@ jobs:
           key: fuzz-corpus-${{ matrix.target }}-${{ github.sha }}
           restore-keys: fuzz-corpus-${{ matrix.target }}-
 
+      # cargo fuzz has no --locked: check the fuzz crate's lock file is current first, so a
+      # stale one fails here instead of being rewritten on the runner.
+      - name: Fuzz lock file is current
+        run: cargo +nightly metadata --locked --format-version 1 --manifest-path fuzz/Cargo.toml > /dev/null
+
       - name: Fuzz (smoke, 60 s) — PRs and pushes
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=60

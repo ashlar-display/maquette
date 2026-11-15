@@ -32,12 +32,15 @@ The README's examples run as doctests with the others.
 
 ## `no_std` builds
 
-The crate is `no_std` without `alloc` in every build. CI checks it on a bare target:
+The crate is `no_std` without `alloc` in every build. CI checks it on bare targets, an
+embedded one (firmware without a heap) and two UEFI ones (firmware drivers with one):
 
 ```sh
-rustup target add thumbv7em-none-eabi
-cargo build --target thumbv7em-none-eabi
-cargo build --features async --target thumbv7em-none-eabi
+rustup target add thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi
+for target in thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi; do
+  cargo build --target "$target"
+  cargo build --features async --target "$target"
+done
 ```
 
 An application that runs the bench on a bare target supplies a
@@ -51,14 +54,15 @@ The MSRV is `rust-version` in `Cargo.toml`. CI checks it with
 toolchain:
 
 ```sh
-cargo install cargo-msrv --locked
+cargo install cargo-msrv --locked --version 0.19.6
 cargo msrv verify -- cargo test --locked
 cargo msrv verify -- cargo test --locked --features std
 cargo msrv verify -- cargo test --locked --features async
-cargo msrv verify --target thumbv7em-none-eabi \
-  -- cargo build --locked --target thumbv7em-none-eabi
-cargo msrv verify --target thumbv7em-none-eabi \
-  -- cargo build --locked --features async --target thumbv7em-none-eabi
+for target in thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi; do
+  cargo msrv verify --target "$target" -- cargo build --locked --target "$target"
+  cargo msrv verify --target "$target" \
+    -- cargo build --locked --features async --target "$target"
+done
 ```
 
 ## Fuzzing
@@ -66,7 +70,7 @@ cargo msrv verify --target thumbv7em-none-eabi \
 Fuzzing requires nightly and [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz):
 
 ```sh
-cargo install cargo-fuzz --locked
+cargo install cargo-fuzz --locked --version 0.13.2
 cargo +nightly fuzz run bench -- -max_total_time=60
 ```
 

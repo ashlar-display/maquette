@@ -174,9 +174,10 @@ implementations of hdmi-hal's traits.
 
 - CI: format, clippy and tests without features, with `std` and with `async`; docs with
   every feature and `-D warnings`, as docs.rs builds them; `no_std` builds for the bare
-  `thumbv7em-none-eabi` target with and without `async`; a read-only token except where
-  the coverage job opens its PR. On `main`, CI fails when `Cargo.toml` has a `[patch]`
-  section.
+  `thumbv7em-none-eabi`, `x86_64-unknown-uefi` and `aarch64-unknown-uefi` targets with and
+  without `async`; a read-only token except where the coverage job opens its PR. On `main`,
+  CI fails when `Cargo.toml` or `fuzz/Cargo.toml` has a `[patch]` section. The fuzz job
+  checks `fuzz/Cargo.lock` is current before it runs.
 - MSRV check: `cargo msrv verify` runs the tests per feature set and the bare `no_std` builds
   on the `rust-version` in `Cargo.toml` (1.85).
 - The README's examples are compiled and run as doctests.

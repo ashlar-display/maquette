@@ -31,7 +31,7 @@ jobs:
         with:
           toolchain: stable
           components: rustfmt, clippy
-          targets: thumbv7em-none-eabi
+          targets: thumbv7em-none-eabi, x86_64-unknown-uefi, aarch64-unknown-uefi
 
       - name: Cache
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -48,8 +48,9 @@ jobs:
         # drops it, so a release built with one would not build from crates.io.
         if: github.ref == 'refs/heads/main'
         run: |
-          if grep -q '^\[patch' Cargo.toml; then
-            echo "::error::Cargo.toml has a [patch] section; remove it before release"
+          # The fuzz crate is its own workspace, with its own [patch].
+          if grep -q '^\[patch' Cargo.toml fuzz/Cargo.toml; then
+            echo "::error::Cargo.toml or fuzz/Cargo.toml has a [patch] section; remove it before release"
             exit 1
           fi
 
@@ -80,11 +81,21 @@ jobs:
 
       # A host build without the std feature still has std available to the dependencies;
       # only a bare target proves no_std.
+      # thumbv7em-none-eabi stands for firmware without a heap, the UEFI targets for
+      # firmware drivers with one.
       - name: Build (no_std)
-        run: cargo build --locked --target thumbv7em-none-eabi
+        run: |
+          set -euo pipefail
+          for target in thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi; do
+            cargo build --locked --target "$target"
+          done
 
       - name: Build (no_std, async)
-        run: cargo build --locked --features async --target thumbv7em-none-eabi
+        run: |
+          set -euo pipefail
+          for target in thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi; do
+            cargo build --locked --features async --target "$target"
+          done
 
   # cargo-msrv reads the MSRV from Cargo.toml's rust-version and runs the checks on that
   # toolchain. Built from crates.io with --locked at a pinned version, not install-action:
@@ -122,23 +133,28 @@ jobs:
           key: ${{ runner.os }}-cargo-msrv-${{ env.CARGO_MSRV_VERSION }}
 
       - name: Verify MSRV (test)
-        run: cargo msrv verify --output-format minimal -- cargo test --locked
+        run: cargo msrv verify -- cargo test --locked
 
       - name: Verify MSRV (test, std)
-        run: cargo msrv verify --output-format minimal -- cargo test --locked --features std
+        run: cargo msrv verify -- cargo test --locked --features std
 
       - name: Verify MSRV (test, async)
-        run: cargo msrv verify --output-format minimal -- cargo test --locked --features async
+        run: cargo msrv verify -- cargo test --locked --features async
 
       - name: Verify MSRV (no_std)
-        run: >
-          cargo msrv verify --output-format minimal --target thumbv7em-none-eabi
-          -- cargo build --locked --target thumbv7em-none-eabi
+        run: |
+          set -euo pipefail
+          for target in thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi; do
+            cargo msrv verify --target "$target" -- cargo build --locked --target "$target"
+          done
 
       - name: Verify MSRV (no_std, async)
-        run: >
-          cargo msrv verify --output-format minimal --target thumbv7em-none-eabi
-          -- cargo build --locked --features async --target thumbv7em-none-eabi
+        run: |
+          set -euo pipefail
+          for target in thumbv7em-none-eabi x86_64-unknown-uefi aarch64-unknown-uefi; do
+            cargo msrv verify --target "$target" \
+              -- cargo build --locked --features async --target "$target"
+          done
 
   coverage:
     name: Coverage
