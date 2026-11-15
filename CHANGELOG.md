@@ -113,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   configuration and scrambler, FRL from its rate. Where the contract allows several
   behaviours, `PhySettings` sets them, each defaulting to the least forgiving one:
   `configure` fails with the output running (`ConfigureWhileRunning`), the scrambler after
-  `configure` is the opposite of what the rate needs (`ScramblerAfterConfigure`), and
+  `configure` is the opposite of what the rate needs (`ScramblerAfterConfigure`, each
+  setting within the PHY's capabilities), and
   `start_output` takes 1 ms; the PHY starts powered on. `BenchBuilder::phy_capabilities`
   sets what it can do (by default `DEFAULT_PHY_CAPABILITIES`: 600 000 kHz with a scrambler,
   low rates included). Every call is an `Event::Phy` with its `PhyCall` and result, a bench
@@ -130,7 +131,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Time` its `SendDelay`, and `Phy` its `SendTmdsPhy`, `SendFrlPhy` and `SendPhyPower`; the
   plain async traits follow through hdmi-hal-async's blanket implementations. Each async
   method runs its sync counterpart when first polled, so the futures are `Send` and complete
-  with any executor. hdmi-hal-async is re-exported as `maquette::hdmi_hal_async`.
+  with any executor. `SimClock` and `&SimClock` implement `SendDelay` too, so an async
+  procedure that needs only time needs no bench. hdmi-hal-async is re-exported as
+  `maquette::hdmi_hal_async`.
 - **Faults:** `Bench::schedule` takes a `Fault` — a `Filter` (address, `OpKind`, first byte
   written), the `nth` matching operation, `Times::Count(k)` or `UntilCleared`, an `Effect`
   (`Fail(kind)`, or `Slow(d)`) and a `Point` (`Before` the sink sees it, `After` it applied

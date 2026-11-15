@@ -16,6 +16,7 @@ use hdmi_hal_async::phy::{SendFrlPhy, SendPhyPower, SendTmdsPhy};
 use hdmi_hal_async::time::SendDelay;
 
 use crate::bench::Time;
+use crate::clock::SimClock;
 use crate::ddc::{BusError, Ddc};
 use crate::phy::{Phy, PhyError};
 
@@ -50,6 +51,20 @@ impl SendDdcBus for Ddc<'_> {
 }
 
 impl SendDelay for Time<'_> {
+    async fn delay(&mut self, duration: Duration) {
+        hdmi_hal::time::Delay::delay(self, duration)
+    }
+}
+
+/// A simulated clock's delay, for an async procedure that needs only time: no bench.
+impl SendDelay for SimClock {
+    async fn delay(&mut self, duration: Duration) {
+        hdmi_hal::time::Delay::delay(self, duration)
+    }
+}
+
+/// As for `SimClock`, through a shared reference, as the sync `Delay` is.
+impl SendDelay for &SimClock {
     async fn delay(&mut self, duration: Duration) {
         hdmi_hal::time::Delay::delay(self, duration)
     }

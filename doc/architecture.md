@@ -772,7 +772,9 @@ pub enum PhyErrorKind {
   `configure` with the output running fails (`ConfigureWhileRunning::Fail`) rather than
   stopping it. After `configure` the scrambler is set to the opposite of what the rate
   needs (`ScramblerAfterConfigure::Opposite`: on at or below 340 000 kHz, off above), so a
-  procedure that never calls `set_scrambling` fails at every rate. `start_output` takes 1 ms
+  procedure that never calls `set_scrambling` fails at every rate. Every setting stays
+  within the capabilities: the scrambler is never on without one, nor on at or below
+  340 000 kHz where the PHY cannot scramble there. `start_output` takes 1 ms
   before it returns, so a deadline counted from before it is visibly late.
 - **The line:** the PHY drives it whenever its own output changes: running TMDS output is
   `Line::Tmds { character_rate_khz, ratio, scrambled }` from the configuration and the

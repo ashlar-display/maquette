@@ -550,3 +550,45 @@ fn calls_and_error_kinds_print_in_words() {
         assert_eq!(call.to_string(), text);
     }
 }
+
+#[test]
+fn the_scrambler_after_configure_stays_within_the_capabilities() {
+    let behaviours = [
+        ScramblerAfterConfigure::Opposite,
+        ScramblerAfterConfigure::Keep,
+        ScramblerAfterConfigure::Off,
+        ScramblerAfterConfigure::FromRate,
+    ];
+    // No scrambler: never scrambled, at either rate, whatever the setting.
+    for behaviour in behaviours {
+        let bench = Bench::builder(&[])
+            .phy_capabilities(TmdsPhyCapabilities::new(600_000))
+            .phy(PhySettings::DEFAULT.with_scrambler_after_configure(behaviour))
+            .build()
+            .unwrap();
+        let mut phy = bench.phy();
+        for config in [low(), high()] {
+            phy.configure(config).unwrap();
+            phy.start_output().unwrap();
+            assert_eq!(bench.line(), line(config, false), "{behaviour:?}");
+            phy.stop_output().unwrap();
+        }
+    }
+    // A scrambler for high rates only: Opposite leaves a low rate unscrambled, FromRate
+    // scrambles a high one.
+    let caps = TmdsPhyCapabilities::new(600_000).with_scrambling(true);
+    for (behaviour, config, scrambled) in [
+        (ScramblerAfterConfigure::Opposite, low(), false),
+        (ScramblerAfterConfigure::FromRate, high(), true),
+    ] {
+        let bench = Bench::builder(&[])
+            .phy_capabilities(caps)
+            .phy(PhySettings::DEFAULT.with_scrambler_after_configure(behaviour))
+            .build()
+            .unwrap();
+        let mut phy = bench.phy();
+        phy.configure(config).unwrap();
+        phy.start_output().unwrap();
+        assert_eq!(bench.line(), line(config, scrambled), "{behaviour:?}");
+    }
+}

@@ -92,7 +92,9 @@ pub enum ConfigureWhileRunning {
     StopFirst,
 }
 
-/// The scrambler after `configure`: the contract leaves it unspecified.
+/// The scrambler after `configure`: the contract leaves it unspecified. Each rule stays within
+/// the PHY's capabilities: the scrambler is never on without one, nor on at or below
+/// 340 000 kHz where it cannot scramble there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ScramblerAfterConfigure {
@@ -410,12 +412,15 @@ impl PhyState {
                     return Err(PhyErrorKind::Running);
                 }
                 let high_rate = config.character_rate_khz > LOW_RATE_KHZ;
-                self.scrambler = match self.settings.scrambler_after_configure {
-                    ScramblerAfterConfigure::Opposite => !high_rate,
-                    ScramblerAfterConfigure::Keep => self.scrambler,
-                    ScramblerAfterConfigure::Off => false,
-                    ScramblerAfterConfigure::FromRate => high_rate,
-                };
+                let can = self.capabilities.scrambling
+                    && (high_rate || self.capabilities.scrambles_at_low_rate());
+                self.scrambler = can
+                    && match self.settings.scrambler_after_configure {
+                        ScramblerAfterConfigure::Opposite => !high_rate,
+                        ScramblerAfterConfigure::Keep => self.scrambler,
+                        ScramblerAfterConfigure::Off => false,
+                        ScramblerAfterConfigure::FromRate => high_rate,
+                    };
                 self.mode = Mode::Tmds(config);
                 self.running = false;
                 Ok(())

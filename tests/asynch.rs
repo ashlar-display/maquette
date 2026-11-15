@@ -197,3 +197,16 @@ fn every_twin_method_reaches_the_bench() {
     });
     assert_eq!(bench.operations(), 8);
 }
+
+#[test]
+fn a_simulated_clock_alone_is_an_async_delay() {
+    let mut clock = maquette::SimClock::new();
+    pollster::block_on(SendDelay::delay(&mut clock, Duration::from_millis(5)));
+    assert_eq!(Clock::now(&clock).as_micros(), 5_000);
+    let shared = &clock;
+    pollster::block_on(SendDelay::delay(&mut &*shared, Duration::from_millis(5)));
+    assert_eq!(Clock::now(&clock).as_micros(), 10_000);
+    // The clock check's async form, without a bench.
+    let check = maquette::check::ClockCheck::DEFAULT;
+    pollster::block_on(check.run_async(&clock, &mut &clock)).assert_ok();
+}

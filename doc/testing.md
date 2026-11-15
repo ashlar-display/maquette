@@ -84,7 +84,7 @@ parts are built.
   effects; a preset as an event the lock answers.
 - **`tests/phy.rs`** — the simulated PHY: a bring-up driving the line until the sink locks,
   and a procedure that never sets the scrambler failing at every rate; each scrambler
-  setting after `configure`; `configure` with the output running, failing or stopping it;
+  setting after `configure`, and each within the capabilities; `configure` with the output running, failing or stopping it;
   power and the configure-since-power-on rule; the capabilities (rate, scrambler, low-rate
   scrambling), 340 000 kHz counting as a low rate; the mode rule between TMDS and FRL, and the FRL calls outside FRL; a test's
   line holding until the PHY's output changes; the records; PHY faults before and after
@@ -100,7 +100,7 @@ parts are built.
   its future proved `Send` and run on another thread, locking the sink; the plain async
   traits through the blanket implementations; hdmi-hal-async's `SendScdcOverDdc` over the
   bench's bus; errors and records as the sync handles make them; nothing happening until a
-  future is polled.
+  future is polled; a `SimClock` alone as an async delay, passing the clock check.
 - **`tests/ddc_check.rs`** — the `DdcBus` check: the bench's bus passing with a described
   device, as a narrow SMBus-style bus, without a segment pointer, without a description,
   from several threads (past 16, and none refused) and async; and buses broken one way each
