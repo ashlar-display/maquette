@@ -26,7 +26,7 @@ use crate::config::{
     DuringHpdLow, HpdReset, OwnedWrite, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd,
     SinkConfig, Trigger,
 };
-use crate::line::Line;
+use crate::line::{Line, RATIO_40_ABOVE_KHZ};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
 
@@ -84,7 +84,8 @@ fn role(reg: u8) -> Role {
 /// The SCDC register file, and the sink's scrambling lock.
 ///
 /// The lock: `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
-/// scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, and the trigger has passed since
+/// scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate (1/40
+/// above 340 Mcsc, 1/10 at or below), and the trigger has passed since
 /// the latest of the write that set `Scrambling_Enable` (from 0 to 1), the line becoming
 /// what it is, and the sink's own last reset of the status. It is cleared when any condition
 /// fails. The sink changes the status only when its lock is gained or lost, so a test's
@@ -240,10 +241,14 @@ impl Scdc {
         let config = self.get(TMDS_CONFIG);
         let matching = match line {
             Line::Tmds {
+                character_rate_khz,
                 ratio,
                 scrambled: true,
-                ..
-            } => (ratio == TmdsClockRatio::Div40) == (config & RATIO_40 != 0),
+            } => {
+                let div40 = ratio == TmdsClockRatio::Div40;
+                let fits = div40 == (character_rate_khz > RATIO_40_ABOVE_KHZ);
+                fits && div40 == (config & RATIO_40 != 0)
+            }
             _ => false,
         };
         // Giving up: no scrambled TMDS at the matching ratio within the timeout.

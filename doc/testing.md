@@ -56,7 +56,8 @@ parts are built.
   and off.
 - **`tests/lock.rs`** — the scrambling lock: the status 1 ms after the later of the write
   and scrambled output, either order; the strict sink waiting for output to start again; the
-  ratio match, scrambling at 1/10 and unscrambled output; the lock lost when the output
+  ratio match, the ratio fitting the rate on both sides of 340 000 kHz, scrambling at 1/10
+  and unscrambled output; the lock lost when the output
   stops or `Scrambling_Enable` is cleared; a rewrite not restarting it; the count trigger;
   refusals of both kinds; the enable timeout, with and without output in time; a delay on
   the time handle as the event that sets it; a preset status holding until the lock
@@ -77,7 +78,7 @@ parts are built.
   and a procedure that never sets the scrambler failing at every rate; each scrambler
   setting after `configure`; `configure` with the output running, failing or stopping it;
   power and the configure-since-power-on rule; the capabilities (rate, scrambler, low-rate
-  scrambling); the mode rule between TMDS and FRL, and the FRL calls outside FRL; a test's
+  scrambling), 340 000 kHz counting as a low rate; the mode rule between TMDS and FRL, and the FRL calls outside FRL; a test's
   line holding until the PHY's output changes; the records; PHY faults before and after
   effect, counting and sharing the schedule; the budget; two handles one PHY; generic code
   bounded on the traits; the settings.
@@ -106,9 +107,11 @@ parts are built.
 - **`tests/phy_check.rs`** — the PHY check: the bench's PHY passing every run under both
   `configure`-while-running settings and both rates, a PHY coupled to the bench passing,
   capabilities refusing or skipping `set_scrambling(true)`, a probe that cannot tell
-  skipping its points, the async forms; and PHYs broken one way each caught at their point —
+  skipping its points, a scrambler for high rates only at 340 000 kHz and just above, the
+  async forms; and PHYs broken one way each caught at their point —
   starting unconfigured, `configure` keeping the output running, `stop_output` failing
-  while off, `configure` not leaving FRL, `power_on` remembering the configuration.
+  while off, `configure` not leaving FRL, `power_on` remembering the configuration,
+  `set_scrambling(true)` refused at high rates.
 - **`README.md` and the rustdoc examples** — run as doctests.
 
 ## How the tests are designed
@@ -142,7 +145,8 @@ every action it checks the invariants a simulator must keep:
 - nothing panics and no arithmetic overflows (the budget is off; an input runs at most 256
   actions);
 - `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
-  scrambled TMDS at the matching ratio (no action presets the status);
+  scrambled TMDS at the matching ratio, and that ratio fits the rate (no action presets
+  the status; the input's lines include ratios that do not fit);
 - no `Register` event changes a register the sink owns by `Actor::Source`;
 - the segment pointer never outlives its command sequence: the EDID's segment 0 holds
   0x00–0x7F and segment 1 0x80–0xBF, so every EDID read at 0x50 that succeeds must hold no

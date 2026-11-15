@@ -121,6 +121,8 @@ enum Flaw {
     ConfigureKeepsFrl,
     /// `power_on` restores the configuration it had.
     PowerOnRemembers,
+    /// `set_scrambling(true)` fails above 340 Mcsc, where scrambling is needed.
+    RefusesScrambling,
 }
 
 /// The bench's PHY with one flaw.
@@ -168,6 +170,12 @@ impl TmdsPhy for Broken<'_> {
         result
     }
     fn set_scrambling(&mut self, enabled: bool) -> Result<(), Kind> {
+        let high = self
+            .last
+            .is_some_and(|config| config.character_rate_khz > 340_000);
+        if self.flaw == Flaw::RefusesScrambling && enabled && high {
+            return Err(PhyErrorKind::Unsupported);
+        }
         kind(self.inner.set_scrambling(enabled))
     }
     fn start_output(&mut self) -> Result<(), Kind> {
@@ -301,6 +309,36 @@ fn a_power_on_that_remembers_the_configuration_is_caught() {
             point: PhyPoint::StartAfterPowerOn
         }]
     );
+}
+
+#[test]
+fn a_phy_that_refuses_to_scramble_at_high_rates_is_caught() {
+    let bench = bench_with(PhySettings::DEFAULT);
+    let mut phy = broken(&bench, Flaw::RefusesScrambling);
+    let report = PhyCheck::new(config(true), &bench).run_tmds(&mut phy);
+    let failures: Vec<PhyFailure> = report.failures().copied().collect();
+    for point in [PhyPoint::ScramblerOnStopped, PhyPoint::ScramblerOnRunning] {
+        assert!(
+            failures.contains(&PhyFailure::Failed { point }),
+            "{point:?}: {failures:?}"
+        );
+    }
+}
+
+#[test]
+fn at_340_000_khz_a_scrambler_for_high_rates_only_may_refuse() {
+    let caps = TmdsPhyCapabilities::new(600_000).with_scrambling(true);
+    for (rate, ratio) in [
+        (340_000, TmdsClockRatio::Div10),
+        (340_001, TmdsClockRatio::Div40),
+    ] {
+        let bench = Bench::builder(&[]).phy_capabilities(caps).build().unwrap();
+        let video = TmdsVideo::new(rate, ColorBitDepth::Depth8, ColorFormat::Rgb444);
+        let config = TmdsPhyConfig::new(rate, ratio, video);
+        PhyCheck::new(config, &bench)
+            .run_powered(&mut bench.phy())
+            .assert_ok();
+    }
 }
 
 #[test]

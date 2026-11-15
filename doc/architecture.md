@@ -561,6 +561,7 @@ source settles is marked *chosen*.
 |---|---|---|
 | `TMDS_Config` holds the source's `Scrambling_Enable` and `TMDS_Bit_Clock_Ratio` | settled [1] | fixed |
 | `Scrambling_Status` set when scrambled TMDS runs at the ratio `TMDS_Bit_Clock_Ratio` names, with `Scrambling_Enable` set, once the lock trigger has passed since the later of the write and scrambled output starting | settled that sources read it [2]; the delay and the ratio match have no source | the trigger a setting, `Trigger::After(d)`, *chosen* default 1 ms, or `Trigger::AfterReads(n)`, the *n*-th read of `Scrambling_Status`; ratio match *chosen*; scrambling at 1/10 sets it too |
+| The ratio fits the rate: 1/40 above 340 Mcsc, 1/10 at or below | settled above 340 Mcsc [10]; no source uses 1/40 at or below | fixed: the sink does not lock on a line whose ratio does not fit its rate; at or below 340 Mcsc, 1/40 does not lock (*chosen*) |
 | A sink that does not lock when scrambled TMDS arrived before the write | sources that redo the whole mode set say some sinks would accept the SCDC writes alone; others restore with the output running [3] | a setting, off by default (the lenient sink) |
 | "Some displays refuse to set the scrambling bit right away" | one source, which reads two ways [4] | a setting in both readings: the status withheld, or `Scrambling_Enable` dropped from the write; for the first *n* attempts, an attempt being a write that sets `Scrambling_Enable`; default none (*chosen*) |
 | The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5] | a setting, default off |
@@ -579,8 +580,9 @@ source settles is marked *chosen*.
 not restart it) and the time the line became scrambled TMDS at its current ratio.
 
 - **Locking:** `Scrambling_Status` is set when `Scrambling_Enable` is set, the line is
-  scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, and the lock trigger has passed
-  since the later of the two times.
+  scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate (1/40
+  above 340 Mcsc, 1/10 at or below), and the lock trigger has passed since the later of the
+  two times.
 - **The sink's own reset:** an HPD reset of the `Status` group loses the lock along with
   the status; if the conditions still hold, the lock is gained again once the trigger has
   passed since the reset. Only a test's preset of the status holds against the lock.
@@ -1144,7 +1146,8 @@ the invariants a simulator must keep:
 - nothing panics and no arithmetic overflows (the target builds with overflow checks; the
   budget is off and the input bounds the actions);
 - `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
-  scrambled TMDS at the matching ratio (the input presets any register but the status);
+  scrambled TMDS at the matching ratio, and that ratio fits the rate (the input presets any
+  register but the status; its lines include ratios that do not fit);
 - no `Register` event changes a register the sink owns by `Actor::Source`;
 - the segment pointer never outlives its command sequence: every EDID read at 0x50 that
   succeeds reads segment 0;
@@ -1198,6 +1201,7 @@ Driver source read at these commits; line numbers refer to them.
 | [7] | `Source_Version` and `Sink_Version` | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:592–600` (when `Sink_Version` is 1); Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:322–350`; dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:2112–2115`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–806` |
 | [8] | Update flags cleared by writing them back as 1 | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:178–200` (`FLT_update`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:446–463` (`FLT_update`), `hdmitx21/hdmi_tx_scdc.c:106–107` (`Status_update`, `CED_update`, `RSED_update`) |
 | [9] | The SCDC register map: addresses, bits, and which registers the source writes | Linux `include/drm/display/drm_scdc.h:27–53`; amdgpu `drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h:58–65`, `dc/link/protocols/link_ddc.c:602–609`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:41–49`, `645–669`, `719–743`, `790`, `870`; Amlogic `drivers/media/vout/hdmitx21/hw/hdmi_tx_ddc.h:16–56` (the source's registers marked `RW`) |
+| [10] | 1/40 and scrambling above 340 Mcsc, 1/10 at or below | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:262–267` (comment); i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2437–2440` (`port_clock > 340000`); amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:575`, `604–605` (`pix_clk > 340000` writes `TMDS_Config` 3); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:740–743` (the ratio bit above 3.4 Gbps) |
 
 Standards (VESA, public):
 

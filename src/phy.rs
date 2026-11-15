@@ -12,10 +12,7 @@ use hdmi_hal::phy::{
 
 use crate::bench::Core;
 use crate::fault::Times;
-use crate::line::Line;
-
-/// The character rate at and below which TMDS is not normally scrambled, in kHz.
-const LOW_RATE_KHZ: u32 = 340_000;
+use crate::line::{Line, RATIO_40_ABOVE_KHZ as LOW_RATE_KHZ};
 
 /// How the simulated PHY behaves where hdmi-hal's contract allows several behaviours. Each
 /// defaults to the least forgiving one: a procedure must be correct under any behaviour the

@@ -189,6 +189,40 @@ fn a_phy_can_start_powered_off() {
     phy.configure(high()).unwrap();
 }
 
+/// TMDS at `rate` kHz and `ratio`.
+fn at(rate: u32, ratio: TmdsClockRatio) -> TmdsPhyConfig {
+    let video = TmdsVideo::new(rate, ColorBitDepth::Depth8, ColorFormat::Rgb444);
+    TmdsPhyConfig::new(rate, ratio, video)
+}
+
+#[test]
+fn a_rate_of_340_000_khz_is_low() {
+    let at_340 = at(340_000, TmdsClockRatio::Div10);
+    let above = at(340_001, TmdsClockRatio::Div40);
+    // The scrambler after configure: low rates on with Opposite, off with FromRate.
+    for (behaviour, on_at_340, on_above) in [
+        (ScramblerAfterConfigure::Opposite, true, false),
+        (ScramblerAfterConfigure::FromRate, false, true),
+    ] {
+        let bench = bench_with(PhySettings::DEFAULT.with_scrambler_after_configure(behaviour));
+        let mut phy = bench.phy();
+        for (config, scrambled) in [(at_340, on_at_340), (above, on_above)] {
+            phy.configure(config).unwrap();
+            phy.start_output().unwrap();
+            assert_eq!(bench.line(), line(config, scrambled), "{behaviour:?}");
+            phy.stop_output().unwrap();
+        }
+    }
+    // A scrambler that does not work at low rates refuses at 340 000 kHz, not above.
+    let caps = TmdsPhyCapabilities::new(600_000).with_scrambling(true);
+    let bench = Bench::builder(&[]).phy_capabilities(caps).build().unwrap();
+    let mut phy = bench.phy();
+    phy.configure(at_340).unwrap();
+    assert_eq!(kind(phy.set_scrambling(true)), PhyErrorKind::Unsupported);
+    phy.configure(above).unwrap();
+    phy.set_scrambling(true).unwrap();
+}
+
 #[test]
 fn what_the_phy_cannot_do_fails() {
     let caps = TmdsPhyCapabilities::new(340_000).with_scrambling(true);

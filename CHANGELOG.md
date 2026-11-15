@@ -75,7 +75,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Silent`).
 - **The scrambling lock:** the SCDC target sets `Scrambling_Status` when
   `Scrambling_Enable` is set, the line is scrambled TMDS at the ratio
-  `TMDS_Bit_Clock_Ratio` names, and the lock's `Trigger` has passed since the later of the
+  `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate (1/40 above 340 Mcsc, 1/10 at or
+  below), and the lock's `Trigger` has passed since the later of the
   write that set `Scrambling_Enable` and the line becoming what it is; it clears it when a
   condition fails. Each change is a `Register` event by `Actor::Sink`, made only when the
   lock is gained or lost, so a preset holds until then; the sink's own HPD reset of the

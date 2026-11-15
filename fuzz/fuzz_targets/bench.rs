@@ -6,7 +6,8 @@
 //! - nothing panics and no arithmetic overflows (the budget is off; the input bounds the
 //!   actions);
 //! - `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
-//!   scrambled TMDS at the matching ratio (no action presets the status);
+//!   scrambled TMDS at the matching ratio, and that ratio fits the rate (no action presets
+//!   the status);
 //! - no `Register` event changes a register the sink owns by `Actor::Source`;
 //! - the segment pointer never outlives its command sequence: every EDID read at 0x50 that
 //!   succeeds reads segment 0;
@@ -96,12 +97,15 @@ impl Input<'_> {
     }
 
     fn line(&mut self) -> Line {
-        match self.byte() % 6 {
+        match self.byte() % 8 {
             0 => Line::Off,
             1 => tmds(594_000, TmdsClockRatio::Div40, true),
             2 => tmds(594_000, TmdsClockRatio::Div40, false),
             3 => tmds(297_000, TmdsClockRatio::Div10, true),
             4 => tmds(297_000, TmdsClockRatio::Div10, false),
+            // Ratios that do not fit the rate.
+            5 => tmds(594_000, TmdsClockRatio::Div10, true),
+            6 => tmds(297_000, TmdsClockRatio::Div40, true),
             _ => Line::Frl {
                 rate: HdmiForumFrl::Rate6Gbps4Lanes,
             },
@@ -253,14 +257,18 @@ fn check_state(bench: &Bench<'_>) {
         assert!(config & 1 != 0, "status set without Scrambling_Enable");
         match bench.line() {
             Line::Tmds {
+                character_rate_khz,
                 ratio,
                 scrambled: true,
-                ..
-            } => assert_eq!(
-                ratio == TmdsClockRatio::Div40,
-                config & 2 != 0,
-                "status set at the wrong ratio"
-            ),
+            } => {
+                let div40 = ratio == TmdsClockRatio::Div40;
+                assert_eq!(div40, config & 2 != 0, "status set at the wrong ratio");
+                assert_eq!(
+                    div40,
+                    character_rate_khz > 340_000,
+                    "status set at a ratio that does not fit the rate"
+                );
+            }
             line => panic!("status set without scrambled TMDS: {line:?}"),
         }
     }

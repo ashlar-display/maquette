@@ -66,6 +66,34 @@ fn sink_sets(bench: &Bench<'_>, reg: u8) -> Vec<(u64, u8)> {
 }
 
 #[test]
+fn the_ratio_must_fit_the_rate() {
+    use TmdsClockRatio::{Div10, Div40};
+    // (character rate, ratio on the line and in TMDS_Config, locks)
+    for (rate, ratio, locks) in [
+        (594_000, Div10, false),
+        (340_001, Div10, false),
+        (340_001, Div40, true),
+        (340_000, Div40, false),
+        (340_000, Div10, true),
+        (148_500, Div40, false),
+    ] {
+        let bench = bench(SinkConfig::new());
+        write_config(&bench, if ratio == Div40 { 0b11 } else { 0b01 });
+        bench.set_line(Line::Tmds {
+            character_rate_khz: rate,
+            ratio,
+            scrambled: true,
+        });
+        bench.advance(ms(5));
+        assert_eq!(
+            read_status(&bench),
+            u8::from(locks),
+            "{rate} kHz at {ratio:?}"
+        );
+    }
+}
+
+#[test]
 fn the_status_is_set_1_ms_after_the_write_and_scrambled_output() {
     let bench = bench(SinkConfig::new());
     write_config(&bench, 0b11);

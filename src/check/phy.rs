@@ -8,7 +8,7 @@ use hdmi_hal::phy::TmdsPhyConfig;
 
 use super::Report;
 use crate::bench::Bench;
-use crate::line::Line;
+use crate::line::{Line, RATIO_40_ABOVE_KHZ};
 
 /// Whether a PHY's output is running: what the traits cannot show.
 pub trait OutputProbe {
@@ -211,7 +211,8 @@ impl Points<'_, '_> {
 /// Whether `set_scrambling(true)` is the contract's to accept for `config` on a PHY with these
 /// capabilities: a scrambler, and one that works at the rate.
 fn scrambles(config: TmdsPhyConfig, caps: hdmi_hal::phy::TmdsPhyCapabilities) -> bool {
-    caps.scrambling && (config.character_rate_khz > 340_000 || caps.scrambles_at_low_rate())
+    caps.scrambling
+        && (config.character_rate_khz > RATIO_40_ABOVE_KHZ || caps.scrambles_at_low_rate())
 }
 
 /// The TMDS points, the power points and the FRL points, once for the sync traits and once,
