@@ -26,6 +26,7 @@ use crate::config::{
     DuringHpdLow, HpdReset, OwnedWrite, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd,
     SinkConfig, Trigger,
 };
+use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
 use crate::line::{Line, RATIO_40_ABOVE_KHZ};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
@@ -224,6 +225,17 @@ impl Scdc {
         }
     }
 
+    /// The sink loses its lock by itself: the status clears, and the conditions begin to hold
+    /// again from now.
+    fn lose_lock(&mut self, env: &mut Env<'_>) {
+        let status = self.get(SCRAMBLING_STATUS);
+        if status & STATUS != 0 {
+            self.set(SCRAMBLING_STATUS, status & !STATUS, Actor::Sink, env);
+        }
+        self.locked = false;
+        self.lock_from = None;
+    }
+
     /// The resets around an HPD low: each group once per low, when its rule says.
     ///
     /// The public sinks: Xilinx embeddedsw `97f2baf7f69e`,
@@ -414,6 +426,19 @@ impl Target for Scdc {
         ops: &mut [Operation<'_>],
         env: &mut Env<'_>,
     ) -> Result<(), DdcErrorKind> {
+        self.hooked_transaction(ops, env, None)
+    }
+}
+
+impl Scdc {
+    /// The transaction, with the test's hook, if any, deciding each byte written and each
+    /// byte read.
+    pub(crate) fn hooked_transaction(
+        &mut self,
+        ops: &mut [Operation<'_>],
+        env: &mut Env<'_>,
+        mut hook: Option<&mut (dyn ScdcHook + Send)>,
+    ) -> Result<(), DdcErrorKind> {
         self.evaluate(env, false);
         let mut past_end = false;
         let refuse_past_end = self.past_end == ScdcPastEnd::Nack;
@@ -429,7 +454,31 @@ impl Target for Scdc {
                         if past_end && refuse_past_end {
                             return Err(NACK_DATA);
                         }
-                        self.write_byte(value, env)?;
+                        let reg = self.offset;
+                        let decision = match hook.as_deref_mut() {
+                            Some(hook) => {
+                                hook.write(reg, value, &ScdcRegisters::new(&self.regs), env)
+                            }
+                            None => HookWrite::Store(value),
+                        };
+                        match decision {
+                            HookWrite::Store(value) => self.write_byte(value, env)?,
+                            HookWrite::StoreRelocking(value) => {
+                                self.write_byte(value, env)?;
+                                self.lose_lock(env);
+                            }
+                            HookWrite::Drop | HookWrite::Nack => {
+                                env.record(Event::IgnoredWrite {
+                                    addr: SCDC,
+                                    reg,
+                                    value,
+                                    why: Ignored::Hook,
+                                });
+                                if decision == HookWrite::Nack {
+                                    return Err(NACK_DATA);
+                                }
+                            }
+                        }
                         self.evaluate(env, false);
                         past_end |= self.advance();
                     }
@@ -442,7 +491,13 @@ impl Target for Scdc {
                         if self.offset == SCRAMBLING_STATUS {
                             self.evaluate(env, true);
                         }
-                        *byte = self.get(self.offset);
+                        let value = self.get(self.offset);
+                        *byte = match hook.as_deref_mut() {
+                            Some(hook) => {
+                                hook.read(self.offset, value, &ScdcRegisters::new(&self.regs), env)
+                            }
+                            None => value,
+                        };
                         past_end |= self.advance();
                     }
                 }

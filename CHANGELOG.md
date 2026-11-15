@@ -45,6 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BusError`s, with the kind, the call and the address.
 - **`Target`**, a device on the sink's bus, for a test's own: `answers`, `transaction` over
   `Operation`s, and `update`; `Env` gives it the time, HPD and `note`.
+- **`ScdcHook`**, a test's quirk on top of the built-in SCDC sink, set with
+  `BenchBuilder::scdc_hook`: it decides each byte the source writes (`HookWrite::Store`,
+  `Drop`, `Nack`, `StoreRelocking`) and what each read returns, with a read-only
+  `ScdcRegisters` view; the sink keeps its lock, resets and records, and a dropped or
+  refused byte is an `IgnoredWrite` with `Ignored::Hook`. Presets bypass it; a `plug`
+  keeps it.
 - **The transcript**, `Bench::transcript`: one `Record` per bus call (`BusRecord`, refused
   calls included, a split read per piece) and per target note, in order, with its time;
   what does not fit is counted. `Event` also has the variants the built-in targets will

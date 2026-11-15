@@ -42,6 +42,11 @@ parts are built.
   test's target at 0x54 replacing the built-in one; the settings and the `Sink` view.
 - **`src/eddc.rs`** — the E-DDC transactions the bus never makes: several pointer bytes,
   empty writes, a second address; a missing DisplayID store.
+- **`tests/hook.rs`** — the SCDC hook: a dropped byte ignored with the burst going on, a
+  refused byte ending it, a changed value stored under the register's role, a sink that
+  re-syncs when `TMDS_Config` is rewritten, a read hook changing only the wire (and noting
+  through `Env`), presets bypassing it, the hook kept across a plug, the default changing
+  nothing.
 - **`tests/eddc.rs`** — the built-in EDID and DisplayID target: segment 0 and higher segments
   through the pointer, whole and split into pieces; the word offset persisting for
   current-address reads; the pointer reset between transactions and not readable; a sink

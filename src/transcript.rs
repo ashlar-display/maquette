@@ -222,6 +222,8 @@ pub enum Ignored {
     SinkOwned,
     /// The structure is not writable: the EDID and DisplayID after the offset byte.
     ReadOnly,
+    /// The test's [`ScdcHook`](crate::ScdcHook) dropped or refused it.
+    Hook,
 }
 
 /// The transcript's storage: `LOG` records, then a count of those that did not fit.

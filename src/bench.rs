@@ -15,6 +15,7 @@ use crate::config::SinkConfig;
 use crate::ddc::{BusTiming, Ddc};
 use crate::eddc::Eddc;
 use crate::fault::{Effect, Fault, FaultId, Moment, Schedule, ScheduleFull, Strike};
+use crate::hook::ScdcHook;
 use crate::line::Line;
 use crate::phy::{Phy, PhyCall, PhyErrorKind, PhyFault, PhySettings, PhyState};
 use crate::scdc::Scdc;
@@ -105,6 +106,8 @@ struct State<'a, const LOG: usize, const FAULTS: usize> {
     eddc: Eddc<'a>,
     targets: Targets<'a>,
     scdc: Option<Scdc>,
+    /// The test's SCDC hook: it outlives a plug, which makes a fresh `scdc`.
+    scdc_hook: Option<Hook<'a>>,
     line: Line,
     hpd: bool,
     plugged: bool,
@@ -200,6 +203,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
                 targets,
                 eddc,
                 scdc,
+                scdc_hook,
                 transcript,
                 hpd,
                 line,
@@ -207,9 +211,25 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             } = self;
             let addr = ops.first().map_or(0, Operation::addr);
             let mut env = Env::new(at, *hpd, *line, transcript);
-            match routed(targets, eddc, scdc).find(|t| t.answers(addr, &env)) {
-                Some(target) => (target.transaction(ops, &mut env), Reach::Answered),
-                None => unanswered,
+            let first = targets
+                .iter_mut()
+                .map(|target| &mut **target as &mut dyn Target)
+                .chain(core::iter::once(eddc as &mut dyn Target))
+                .find(|t| t.answers(addr, &env));
+            match (first, scdc) {
+                (Some(target), _) => (target.transaction(ops, &mut env), Reach::Answered),
+                // The built-in SCDC target, last in routing order, with the test's hook.
+                (None, Some(scdc)) if scdc.answers(addr, &env) => (
+                    scdc.hooked_transaction(
+                        ops,
+                        &mut env,
+                        scdc_hook
+                            .as_deref_mut()
+                            .map(|hook| hook as &mut (dyn ScdcHook + Send)),
+                    ),
+                    Reach::Answered,
+                ),
+                _ => unanswered,
             }
         } else {
             unanswered
@@ -407,6 +427,7 @@ impl<'a> Bench<'a> {
             clock: SimClock::new(),
             budget: Some(DEFAULT_BUDGET),
             targets: Default::default(),
+            scdc_hook: None,
             phy_capabilities: DEFAULT_PHY_CAPABILITIES,
             phy_settings: PhySettings::DEFAULT,
         }
@@ -820,9 +841,13 @@ pub struct BenchBuilder<'a, const LOG: usize = 256, const FAULTS: usize = 16> {
     clock: SimClock,
     budget: Option<u64>,
     targets: Targets<'a>,
+    scdc_hook: Option<Hook<'a>>,
     phy_capabilities: TmdsPhyCapabilities,
     phy_settings: PhySettings,
 }
+
+/// The test's SCDC hook, as given to the bench.
+type Hook<'a> = &'a mut (dyn ScdcHook + Send);
 
 impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
     /// The sink's settings.
@@ -886,6 +911,15 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
         Self { targets, ..self }
     }
 
+    /// The test's quirk on top of the built-in SCDC sink: it decides each byte the source
+    /// writes and what each read returns. Kept across a [`Bench::plug`].
+    pub fn scdc_hook(self, hook: &'a mut (dyn ScdcHook + Send)) -> Self {
+        Self {
+            scdc_hook: Some(hook),
+            ..self
+        }
+    }
+
     /// The builder for a bench with a transcript of `L` records and a fault schedule of `F`.
     pub fn capacities<const L: usize, const F: usize>(self) -> BenchBuilder<'a, L, F> {
         BenchBuilder {
@@ -897,6 +931,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
             clock: self.clock,
             budget: self.budget,
             targets: self.targets,
+            scdc_hook: self.scdc_hook,
             phy_capabilities: self.phy_capabilities,
             phy_settings: self.phy_settings,
         }
@@ -916,6 +951,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
                 eddc: Eddc::new(&self.config, self.edid, self.displayid),
                 scdc: Scdc::new(&self.config),
                 targets: self.targets,
+                scdc_hook: self.scdc_hook,
                 line: Line::Off,
                 hpd: true,
                 plugged: true,
@@ -942,6 +978,7 @@ impl<const LOG: usize, const FAULTS: usize> fmt::Debug for BenchBuilder<'_, LOG,
             .field("clock", &self.clock)
             .field("budget", &self.budget)
             .field("targets", &self.targets.len())
+            .field("scdc_hook", &self.scdc_hook.is_some())
             .field("phy_capabilities", &self.phy_capabilities)
             .field("phy_settings", &self.phy_settings)
             .finish()

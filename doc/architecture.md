@@ -412,8 +412,45 @@ The built-in targets:
     not have and the 128-byte boundary: `with_past_store`, `with_missing_segment`,
     `with_block_boundary`, and `without_segment_pointer`.
 
-A test adds targets: DDC/CI at 0x37, an HDCP port, a vendor's register quirk. Register
-presets set any register, the sink-owned ones too.
+A test adds targets: DDC/CI at 0x37, an HDCP port, a device at an address the sink does not
+use. Register presets set any register, the sink-owned ones too.
+
+**A quirk on the built-in SCDC sink** is an `ScdcHook`, not a target: a target at 0x54
+would replace the whole sink (the lock, the refusals, the HPD resets, the records). The
+hook decides each byte the source writes and what each read returns; the built-in keeps
+its offset, bursts, lock, resets and records.
+
+```rust
+pub trait ScdcHook {
+    /// A byte the source writes to `reg`, before the register's role applies.
+    fn write(&mut self, reg: u8, value: u8, regs: &ScdcRegisters<'_>, env: &mut Env<'_>)
+        -> HookWrite { HookWrite::Store(value) }
+    /// What a read of `reg`, holding `value`, returns on the wire.
+    fn read(&mut self, reg: u8, value: u8, regs: &ScdcRegisters<'_>, env: &mut Env<'_>)
+        -> u8 { value }
+}
+
+#[non_exhaustive]
+pub enum HookWrite {
+    Store(u8),          // on with this value, under the register's role
+    Drop,               // ignored: Event::IgnoredWrite with Ignored::Hook
+    Nack,               // NoAcknowledge(Data), the burst ends; recorded as Drop is
+    StoreRelocking(u8), // stored, and the lock lost as at the sink's own reset
+}
+// BenchBuilder::scdc_hook(&'a mut (dyn ScdcHook + Send)); ScdcRegisters: a read-only view.
+```
+
+- **Before the role.** A `Store` to a sink-owned register still follows `OwnedWrite`; a
+  `Drop` stops a source register from storing.
+- **Reads change the wire only.** The register keeps its value, so the lock, the `Sink`
+  view and later reads see the real one.
+- **Presets bypass it:** they are the test's own, and stay exact.
+- **One per bench,** kept across a `plug`: the quirk is the test's, not the sink's.
+- **`Env`** gives it the time, HPD, the line and `note`, as a target has.
+
+The quirks a source's lookup exists for (amdgpu's `skip_scdc_overwrite`, a sink that
+re-syncs when `TMDS_Config` is rewritten) are hooks a test writes; maquette ships none, as
+the stack ships no quirk table.
 
 ### The line
 

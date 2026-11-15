@@ -43,6 +43,7 @@ mod coupled;
 mod ddc;
 mod eddc;
 mod fault;
+mod hook;
 mod line;
 mod phy;
 mod scdc;
@@ -66,6 +67,7 @@ pub use config::{
 pub use coupled::Coupled;
 pub use ddc::{BusError, BusTiming, Ddc};
 pub use fault::{Effect, Fault, FaultId, Filter, OpKind, Point, ScheduleFull, Times};
+pub use hook::{HookWrite, ScdcHook, ScdcRegisters};
 pub use line::Line;
 pub use phy::{
     ConfigureWhileRunning, Phy, PhyCall, PhyCallKind, PhyError, PhyErrorKind, PhyFault,
