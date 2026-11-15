@@ -165,13 +165,24 @@ enum Call {
         offset: u8,
         len: usize,
     },
+    /// `write(addr, [offset])`: sets a word offset.
+    SetOffset {
+        addr: u8,
+        offset: u8,
+    },
+    /// `write_read(addr, [offset], len)`: a read at a word offset.
+    ReadAt {
+        addr: u8,
+        offset: u8,
+        len: usize,
+    },
 }
 
 impl Call {
     fn op(self) -> OpKind {
         match self {
-            Self::Write { .. } => OpKind::Write,
-            Self::WriteRead { .. } => OpKind::WriteRead,
+            Self::Write { .. } | Self::SetOffset { .. } => OpKind::Write,
+            Self::WriteRead { .. } | Self::ReadAt { .. } => OpKind::WriteRead,
             Self::Read { .. } => OpKind::Read,
             Self::Segmented { .. } => OpKind::ReadSegmented,
         }
@@ -179,9 +190,11 @@ impl Call {
 
     fn addr(self) -> u8 {
         match self {
-            Self::Write { addr, .. } | Self::WriteRead { addr, .. } | Self::Read { addr, .. } => {
-                addr
-            }
+            Self::Write { addr, .. }
+            | Self::WriteRead { addr, .. }
+            | Self::Read { addr, .. }
+            | Self::SetOffset { addr, .. }
+            | Self::ReadAt { addr, .. } => addr,
             Self::Segmented { target, .. } => target.address(),
         }
     }
@@ -193,27 +206,50 @@ enum Expect<'d> {
     Ok,
     Refused,
     Silent,
-    Data { segment: u8, bytes: &'d [u8] },
+    /// The device's `bytes` from `offset` of `segment`.
+    Data {
+        segment: u8,
+        offset: u8,
+        bytes: &'d [u8],
+    },
 }
 
 /// The calls the check makes for a device and the bus's capabilities: at most `PLAN` points.
-const PLAN: usize = 24;
+const PLAN: usize = 32;
+
+/// A point: its call, what it should do, and whether it depends on the call before it, so
+/// it runs only with no other thread on the bus.
+type Point<'d> = (Call, Expect<'d>, bool);
 
 struct Plan<'d> {
-    points: [Option<(Call, Expect<'d>)>; PLAN],
+    points: [Option<Point<'d>>; PLAN],
     len: usize,
 }
 
 impl<'d> Plan<'d> {
     fn push(&mut self, call: Call, expect: Expect<'d>) {
+        self.push_point((call, expect, false));
+    }
+
+    /// A point that depends on the one pushed before it.
+    fn push_sequenced(&mut self, call: Call, expect: Expect<'d>) {
+        self.push_point((call, expect, true));
+    }
+
+    fn push_point(&mut self, point: Point<'d>) {
         if let Some(slot) = self.points.get_mut(self.len) {
-            *slot = Some((call, expect));
+            *slot = Some(point);
             self.len += 1;
         }
     }
 
-    fn iter(&self) -> impl Iterator<Item = (Call, Expect<'d>)> + '_ {
-        self.points[..self.len].iter().flatten().copied()
+    /// The points; with `concurrent`, those that do not depend on the call before them.
+    fn iter(&self, concurrent: bool) -> impl Iterator<Item = (Call, Expect<'d>)> + '_ {
+        self.points[..self.len]
+            .iter()
+            .flatten()
+            .filter(move |&&(_, _, sequenced)| !(concurrent && sequenced))
+            .map(|&(call, expect, _)| (call, expect))
     }
 
     fn new(device: &DdcDevice<'d>, caps: DdcCapabilities) -> Self {
@@ -317,6 +353,15 @@ impl<'d> Plan<'d> {
         }
         // The device.
         if let Some(edid) = device.edid {
+            let data = |segment, offset: u8, len: usize| {
+                let start = usize::from(segment) * 256 + usize::from(offset);
+                let bytes = edid.get(start..start + len)?;
+                Some(Expect::Data {
+                    segment,
+                    offset,
+                    bytes,
+                })
+            };
             if caps.reads_target(EddcTarget::Edid) && caps.max_segment().is_some() {
                 let first = &edid[..edid.len().min(128)];
                 if !first.is_empty() {
@@ -324,9 +369,16 @@ impl<'d> Plan<'d> {
                         segmented(0, 0, first.len()),
                         Expect::Data {
                             segment: 0,
+                            offset: 0,
                             bytes: first,
                         },
                     );
+                }
+                // The second block, and an odd offset: the offset reaches the device.
+                for (offset, len) in [(128, 128), (0x11, 16)] {
+                    if let Some(expect) = data(0, offset, len) {
+                        plan.push(segmented(0, offset, len), expect);
+                    }
                 }
                 let reaches_1 = caps.max_segment().is_some_and(|max| max >= 1);
                 if device.segment_pointer && reaches_1 && edid.len() > 256 {
@@ -335,8 +387,43 @@ impl<'d> Plan<'d> {
                         segmented(1, 0, block.len()),
                         Expect::Data {
                             segment: 1,
+                            offset: 0,
                             bytes: block,
                         },
+                    );
+                }
+            }
+            // A plain write_read at 0x50 reads segment 0 from the offset it writes.
+            let (write_part, read_part) = caps.write_read_max();
+            if caps.reaches(EDID) && write_part >= 1 && read_part >= 16 {
+                if let Some(expect) = data(0, 0x20, 16) {
+                    plan.push(
+                        Call::ReadAt {
+                            addr: EDID,
+                            offset: 0x20,
+                            len: 16,
+                        },
+                        expect,
+                    );
+                }
+            }
+            // A write of the offset, then a read at the current address (E-DDC 1.3, 6.1):
+            // the write reaches the device. Not with other threads on the bus.
+            if caps.reaches(EDID) && caps.write_max() >= 1 && caps.read_max() >= 16 {
+                if let Some(expect) = data(0, 0x40, 16) {
+                    plan.push(
+                        Call::SetOffset {
+                            addr: EDID,
+                            offset: 0x40,
+                        },
+                        Expect::Ok,
+                    );
+                    plan.push_sequenced(
+                        Call::Read {
+                            addr: EDID,
+                            len: 16,
+                        },
+                        expect,
                     );
                 }
             }
@@ -391,17 +478,21 @@ fn judge(
                 found: result,
             },
         ),
-        Expect::Data { segment, bytes } => match result {
+        Expect::Data {
+            segment,
+            offset,
+            bytes,
+        } => match result {
             Err(kind) => Some(DdcBusFailure::Failed { op, addr, kind }),
             Ok(()) => bytes
                 .iter()
                 .zip(read)
                 .position(|(expected, found)| expected != found)
-                .map(|offset| DdcBusFailure::Data {
+                .map(|i| DdcBusFailure::Data {
                     segment,
-                    offset: offset as u8,
-                    expected: bytes[offset],
-                    found: read[offset],
+                    offset: offset.wrapping_add(i as u8),
+                    expected: bytes[i],
+                    found: read[i],
                 }),
         },
     }
@@ -430,6 +521,10 @@ fn call<B: DdcBus + ?Sized>(
             kind(bus.read_segmented(target, segment, offset, &mut buf[..len])),
             len,
         ),
+        Call::SetOffset { addr, offset } => (kind(bus.write(addr, &[offset])), 0),
+        Call::ReadAt { addr, offset, len } => {
+            (kind(bus.write_read(addr, &[offset], &mut buf[..len])), len)
+        }
     }
 }
 
@@ -443,8 +538,10 @@ fn call<B: DdcBus + ?Sized>(
 ///   silent address only), a target they do not read, a segment past `max_segment`: each
 ///   refused with `Unsupported`.
 /// - **The device:** the EDID's first block read from segment 0, without a segment pointer
-///   too (E-DDC 1.3, 8.1.2), and its third block from segment 1 where the device has a
-///   pointer; the silent address failing `NoAcknowledge`.
+///   too (E-DDC 1.3, 8.1.2), its second block and 16 bytes at an odd offset, and its third
+///   block from segment 1 where the device has a pointer; 16 bytes by `write_read` at the
+///   offset it writes; a `write` of the offset and a plain `read` at the current address
+///   (6.1); the silent address failing `NoAcknowledge`.
 ///
 /// Every call is safe on a real device: the refusals are reads, or writes to the silent
 /// address. Points whose description is missing are skipped.
@@ -461,10 +558,16 @@ impl<'d> DdcBusCheck<'d> {
 
     /// Runs the check against `bus`.
     pub fn run<B: DdcBus + ?Sized>(&self, bus: &B) -> Report<DdcBusFailure> {
+        self.run_points(bus, false)
+    }
+
+    /// Runs the points against `bus`; with `concurrent`, those that do not depend on the
+    /// call before them.
+    fn run_points<B: DdcBus + ?Sized>(&self, bus: &B, concurrent: bool) -> Report<DdcBusFailure> {
         let mut report = Report::new();
         let plan = Plan::new(&self.device, bus.capabilities());
         let mut buf = [0u8; MAX_LEN];
-        for (point, expect) in plan.iter() {
+        for (point, expect) in plan.iter(concurrent) {
             let (result, read) = call(bus, point, &mut buf);
             report.record(judge(point, expect, result, &buf[..read]));
         }
@@ -473,7 +576,8 @@ impl<'d> DdcBusCheck<'d> {
 
     /// Runs the check from `threads` threads at once against `bus`, which must take
     /// concurrent calls without a panic: every thread's points, and a panicked thread as a
-    /// failure.
+    /// failure. The read at the current address is left out: another thread's call may move
+    /// the offset between the write and the read.
     ///
     /// # Panics
     ///
@@ -488,7 +592,7 @@ impl<'d> DdcBusCheck<'d> {
         let mut report = Report::new();
         std::thread::scope(|scope| {
             let handles: std::vec::Vec<_> = (0..threads)
-                .map(|_| scope.spawn(|| self.run(bus)))
+                .map(|_| scope.spawn(|| self.run_points(bus, true)))
                 .collect();
             for handle in handles {
                 match handle.join() {
@@ -509,7 +613,7 @@ impl<'d> DdcBusCheck<'d> {
         let mut report = Report::new();
         let plan = Plan::new(&self.device, bus.capabilities());
         let mut buf = [0u8; MAX_LEN];
-        for (point, expect) in plan.iter() {
+        for (point, expect) in plan.iter(false) {
             let kind = |result: Result<(), B::Error>| result.map_err(|error| error.kind());
             let (result, read) = match point {
                 Call::Write { addr, len } => (kind(bus.write(addr, &ZEROS[..len]).await), 0),
@@ -531,6 +635,11 @@ impl<'d> DdcBusCheck<'d> {
                         bus.read_segmented(target, segment, offset, &mut buf[..len])
                             .await,
                     ),
+                    len,
+                ),
+                Call::SetOffset { addr, offset } => (kind(bus.write(addr, &[offset]).await), 0),
+                Call::ReadAt { addr, offset, len } => (
+                    kind(bus.write_read(addr, &[offset], &mut buf[..len]).await),
                     len,
                 ),
             };

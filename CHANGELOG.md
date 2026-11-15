@@ -151,10 +151,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The `DdcBus` check** (`check::DdcBusCheck`): hdmi-hal's `DdcBus` contract as a caller
   sees it, against a device the test describes (`check::DdcDevice`: its EDID, whether it has
   a segment pointer, an address where nothing answers). Argument and capability refusals,
-  empty buffers, the EDID read from segment 0 (without a pointer too) and segment 1, and
-  `NoAcknowledge` where nothing answers; every call safe on a real device, points without a
-  description skipped. `run_threads` (with `std`) runs it from as many threads at once as
-  asked for, at least one;
+  empty buffers, the EDID read from segment 0 (without a pointer too), at its second block
+  and an odd offset, and from segment 1; 16 bytes by `write_read` at the offset it writes;
+  a `write` of the offset and a plain `read` at the current address; and `NoAcknowledge`
+  where nothing answers; every call safe on a real device, points without a description
+  skipped. `run_threads` (with `std`) runs it from as many threads at once as asked for, at
+  least one, without the read at the current address;
   `run_async` (with `async`) over hdmi-hal-async's `DdcBus`. Failures are
   `check::DdcBusFailure`s.
 - **The `ScdcTransport` check** (`check::ScdcTransportCheck`): over a register image the

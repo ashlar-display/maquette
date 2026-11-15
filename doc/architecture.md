@@ -1124,7 +1124,11 @@ impl<'p> PhyCheck<'p> {
   description is missing (no EDID given, no silent address) is skipped, not failed.
 - **The `DdcBus` check drives only what is safe on a real device:** the refusals it checks
   are reads, or writes to the silent address or past `write_max` there, so a backend that
-  wrongly lets one through writes nothing that matters.
+  wrongly lets one through writes nothing that matters; the only other write is an offset
+  byte to 0x50, which a display takes as its word offset (E-DDC 1.3 §6.1). The data points
+  read the EDID at offsets 0, 0x11, 0x20, 0x40 and 128, so a bus that drops an offset or a
+  write reads the wrong bytes. The read at the current address follows the write of its
+  offset, so `run_threads` leaves it out.
 - **The PHY's errors are `Debug` only**, so its failures say which point failed and how
   (`Failed` where the contract says it succeeds, `Succeeded` where it says it fails,
   `Running { expected, found }` from the probe), not why. The configuration is the

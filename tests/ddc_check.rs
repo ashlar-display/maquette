@@ -75,7 +75,8 @@ fn concurrent_calls_pass_from_several_threads() {
     let store = edid();
     let bench = Bench::new(SinkConfig::new(), &store).unwrap();
     let check = DdcBusCheck::new(DdcDevice::new().with_edid(&store).with_silent(SILENT));
-    let single = check.run(&bench.ddc()).points();
+    // Each thread runs every point but the read at the current address.
+    let single = check.run(&bench.ddc()).points() - 1;
     let report = check.run_threads(&bench.ddc(), 4);
     report.assert_ok();
     assert_eq!(report.points(), 4 * single);
@@ -120,6 +121,12 @@ enum Flaw {
     /// Panics on every read.
     #[cfg_attr(not(feature = "std"), allow(dead_code))]
     Panics,
+    /// `read_segmented` reads from offset 0, but where it must refuse.
+    IgnoresOffset,
+    /// `write_read` drops its write: a plain read.
+    DropsWriteOfWriteRead,
+    /// `write` sends nothing and returns `Ok`.
+    DropsWrite,
 }
 
 /// The bench's bus with one flaw.
@@ -147,12 +154,16 @@ impl DdcBus for Broken<'_> {
         match self.flaw {
             Flaw::EmptyWrite if bytes.is_empty() => Ok(()),
             Flaw::AnswersSilent if addr == SILENT && !bytes.is_empty() => Ok(()),
+            Flaw::DropsWrite if !bytes.is_empty() => Ok(()),
             _ => kind(self.inner.write(addr, bytes)),
         }
     }
 
     fn write_read(&self, addr: u8, bytes: &[u8], buf: &mut [u8]) -> Result<(), DdcErrorKind> {
-        kind(self.inner.write_read(addr, bytes, buf))
+        match self.flaw {
+            Flaw::DropsWriteOfWriteRead if !bytes.is_empty() => kind(self.inner.read(addr, buf)),
+            _ => kind(self.inner.write_read(addr, bytes, buf)),
+        }
     }
 
     fn read(&self, addr: u8, buf: &mut [u8]) -> Result<(), DdcErrorKind> {
@@ -177,6 +188,12 @@ impl DdcBus for Broken<'_> {
         if self.flaw == Flaw::PointerAlways && segment == 0 && !buf.is_empty() {
             kind(self.inner.write(SEGMENT_POINTER, &[0]))?;
         }
+        let fits = usize::from(offset) + buf.len() <= 256;
+        let offset = if self.flaw == Flaw::IgnoresOffset && fits {
+            0
+        } else {
+            offset
+        };
         kind(self.inner.read_segmented(target, segment, offset, buf))?;
         if self.flaw == Flaw::Corrupts {
             if let Some(byte) = buf.get_mut(5) {
@@ -287,6 +304,74 @@ fn a_panicking_thread_is_a_failure() {
         report
             .failures()
             .all(|failure| *failure == DdcBusFailure::Panicked)
+    );
+}
+
+/// The failures of a bus with `flaw`, before a device described without a silent address:
+/// only the data points can catch what it does wrong.
+fn data_failures(flaw: Flaw) -> Vec<DdcBusFailure> {
+    let store = edid();
+    let bench = Bench::new(SinkConfig::new(), &store).unwrap();
+    let bus = Broken {
+        inner: bench.ddc(),
+        flaw,
+    };
+    DdcBusCheck::new(DdcDevice::new().with_edid(&store))
+        .run(&bus)
+        .failures()
+        .copied()
+        .collect()
+}
+
+#[test]
+fn a_bus_that_ignores_the_offset_is_caught() {
+    // The store's byte at n is n % 251: offset 0 reads 0 where 128 and 0x11 are expected.
+    assert_eq!(
+        data_failures(Flaw::IgnoresOffset),
+        [
+            DdcBusFailure::Data {
+                segment: 0,
+                offset: 128,
+                expected: 128,
+                found: 0
+            },
+            DdcBusFailure::Data {
+                segment: 0,
+                offset: 0x11,
+                expected: 0x11,
+                found: 0
+            },
+        ]
+    );
+}
+
+#[test]
+fn a_write_read_that_drops_its_write_is_caught() {
+    let failures = data_failures(Flaw::DropsWriteOfWriteRead);
+    assert!(
+        failures.iter().any(|failure| matches!(
+            failure,
+            DdcBusFailure::Data {
+                segment: 0,
+                offset: 0x20,
+                ..
+            }
+        )),
+        "{failures:?}"
+    );
+}
+
+#[test]
+fn a_write_that_sends_nothing_is_caught() {
+    // The read at the current address reads where the write_read before it stopped, 0x30.
+    assert_eq!(
+        data_failures(Flaw::DropsWrite),
+        [DdcBusFailure::Data {
+            segment: 0,
+            offset: 0x40,
+            expected: 0x40,
+            found: 0x30
+        }]
     );
 }
 

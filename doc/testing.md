@@ -102,9 +102,10 @@ parts are built.
   future is polled.
 - **`tests/ddc_check.rs`** — the `DdcBus` check: the bench's bus passing with a described
   device, as a narrow SMBus-style bus, without a segment pointer, without a description,
-  from several threads (past 16, and none refused) and async; and buses broken one way each caught — doing more than
-  they claim, accepting an empty write, writing the pointer for segment 0, corrupting what
-  they read, answering where nothing does, panicking; unreachable addresses and no
+  from several threads (past 16, and none refused) and async; and buses broken one way each
+  caught — doing more than they claim, accepting an empty write, writing the pointer for
+  segment 0, corrupting what they read, answering where nothing does, panicking, ignoring
+  the offset, dropping the write of a `write_read`, a `write` that sends nothing; unreachable addresses and no
   segmented reads refused; failures from several threads counted; every failure printed.
 - **`tests/scdc_check.rs`** — the `ScdcTransport` check: hdmi-hal's `ScdcOverDdc` over the
   bench passing, block and bytewise, behind a 16-byte bus, without faults and async; and
