@@ -25,10 +25,11 @@ use libfuzzer_sys::fuzz_target;
 use maquette::{
     Action, Actor, Bench, BlockBoundary, CedRead, CedUpdate, Clock, ColorBitDepth, ColorFormat,
     DdcBus, DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, DuringRead, EddcTarget, Effect,
-    ErrorRates, Event, Fault, Filter, FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment,
-    NoAcknowledgeSource, OpKind, OwnedWrite, PastStore, PhyCallKind, PhyFault, PhyPower, Point,
-    Record, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Times,
-    Timestamp, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger, When,
+    ErrorRates, Event, Fault, Filter, FrlOutput, FrlPhy, HdmiForumFrl, HpdReset, LanePatterns,
+    Line, LtpPattern, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite, PastStore,
+    PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, RegisterGroup,
+    ScdcPastEnd, SinkConfig, StatusUpdate, Times, Timestamp, TmdsClockRatio, TmdsPhy,
+    TmdsPhyConfig, TmdsVideo, Trigger, When,
 };
 
 /// The most actions one input runs.
@@ -110,7 +111,7 @@ impl Input<'_> {
     }
 
     fn line(&mut self) -> Line {
-        match self.byte() % 8 {
+        match self.byte() % 9 {
             0 => Line::Off,
             1 => tmds(594_000, TmdsClockRatio::Div40, true),
             2 => tmds(594_000, TmdsClockRatio::Div40, false),
@@ -119,7 +120,17 @@ impl Input<'_> {
             // Ratios that do not fit the rate.
             5 => tmds(594_000, TmdsClockRatio::Div10, true),
             6 => tmds(297_000, TmdsClockRatio::Div40, true),
-            _ => Line::frl(HdmiForumFrl::Rate6Gbps4Lanes),
+            7 => Line::frl(HdmiForumFrl::Rate6Gbps4Lanes),
+            _ => Line::frl_with(
+                HdmiForumFrl::Rate6Gbps4Lanes,
+                LanePatterns {
+                    lane0: Some(LtpPattern::Lfsr0),
+                    lane1: Some(LtpPattern::Lfsr1),
+                    lane2: Some(LtpPattern::Lfsr2),
+                    lane3: None,
+                },
+                FrlOutput::GapOnly,
+            ),
         }
     }
 

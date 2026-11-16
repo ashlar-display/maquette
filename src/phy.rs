@@ -332,7 +332,38 @@ impl Default for PhyFault {
 pub(crate) enum Mode {
     None,
     Tmds(TmdsPhyConfig),
-    Frl(HdmiForumFrl),
+    Frl(FrlMode),
+}
+
+/// What a PHY in FRL sends: its rate, the training patterns and the output without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrlMode {
+    rate: HdmiForumFrl,
+    patterns: LanePatterns,
+    output: FrlOutput,
+}
+
+impl FrlMode {
+    /// A PHY that has just entered `rate`: no patterns, gap characters only.
+    pub(crate) fn new(rate: HdmiForumFrl) -> Self {
+        Self {
+            rate,
+            patterns: LanePatterns::default(),
+            output: FrlOutput::GapOnly,
+        }
+    }
+}
+
+/// What a successful `send_ltp` or `set_frl_output` leaves in FRL; other calls, and a PHY
+/// not in FRL, are left as they are.
+pub(crate) fn apply_frl(mode: &mut Mode, call: PhyCall) {
+    if let Mode::Frl(frl) = mode {
+        match call {
+            PhyCall::SendLtp(patterns) => frl.patterns = patterns,
+            PhyCall::SetFrlOutput(output) => frl.output = output,
+            _ => {}
+        }
+    }
 }
 
 /// What a PHY in `mode`, with its TMDS output `running` or not and its scrambler as given,
@@ -345,7 +376,7 @@ pub(crate) fn line_of(mode: Mode, running: bool, scrambler: bool) -> Line {
             ratio: config.clock_ratio,
             scrambled: scrambler,
         },
-        Mode::Frl(rate) => Line::Frl { rate },
+        Mode::Frl(frl) => Line::frl_with(frl.rate, frl.patterns, frl.output),
         _ => Line::Off,
     }
 }
@@ -480,7 +511,7 @@ impl PhyState {
                     }
                 } else {
                     self.running = false;
-                    self.mode = Mode::Frl(rate);
+                    self.mode = Mode::Frl(FrlMode::new(rate));
                 }
                 Ok(())
             }
@@ -490,6 +521,7 @@ impl PhyState {
                 } else if !matches!(self.mode, Mode::Frl(_)) {
                     Err(PhyErrorKind::NotInFrl)
                 } else {
+                    apply_frl(&mut self.mode, call);
                     Ok(())
                 }
             }

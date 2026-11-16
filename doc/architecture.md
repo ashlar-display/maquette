@@ -475,9 +475,11 @@ pub enum Line {
     Off,
     /// TMDS at `character_rate_khz`, the clock at `ratio`, scrambled or not.
     Tmds { character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool },
-    /// FRL at `rate`; what it carries comes with the sink's FRL responses, so the variant
-    /// is `#[non_exhaustive]`: built with `Line::frl(rate)`, matched with `..`.
-    Frl { rate: HdmiForumFrl },
+    /// FRL at `rate`, the training pattern on each lane (`FrlPhy::send_ltp`) and what
+    /// the lanes carry without one (`FrlPhy::set_frl_output`). `#[non_exhaustive]`: built
+    /// with `Line::frl(rate)` (no patterns, gap characters only, as a PHY entering the
+    /// rate) or `Line::frl_with(rate, patterns, output)`, matched with `..`.
+    Frl { rate: HdmiForumFrl, patterns: LanePatterns, output: FrlOutput },
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
@@ -487,7 +489,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 }
 ```
 
-`TmdsClockRatio` and `HdmiForumFrl` are hdmi-hal's. A target sees the line through
+`TmdsClockRatio`, `HdmiForumFrl`, `LanePatterns` and `FrlOutput` are hdmi-hal's. A target sees the line through
 `Env::line()`. Setting the line it already has is not a change: nothing is recorded and the
 time it started stays. An unplugged sink receives no line: its targets see `Line::Off`.
 

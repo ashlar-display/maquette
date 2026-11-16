@@ -5,8 +5,8 @@ use core::time::Duration;
 use maquette::hdmi_hal::ddc::SCDC;
 use maquette::{
     Bench, ColorBitDepth, ColorFormat, Coupled, DdcBus, EqParams, Event, FrlOutput, FrlPhy,
-    HdmiForumFrl, LanePatterns, Line, PhyCall, PhyCallKind, PhyErrorKind, PhyFault, PhyPower,
-    SinkConfig, TmdsClockRatio, TmdsPhy, TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo,
+    HdmiForumFrl, LanePatterns, Line, LtpPattern, PhyCall, PhyCallKind, PhyErrorKind, PhyFault,
+    PhyPower, SinkConfig, TmdsClockRatio, TmdsPhy, TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo,
 };
 
 /// The double's own error.
@@ -169,9 +169,20 @@ fn frl_and_power_pass_through_and_follow_the_contract() {
     phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
     let frl = Line::frl(HdmiForumFrl::Rate6Gbps4Lanes);
     assert_eq!(bench.line(), frl);
-    phy.send_ltp(LanePatterns::default()).unwrap();
+    // The patterns and the output go on the line; equalization does not change it.
+    let patterns = LanePatterns {
+        lane0: Some(LtpPattern::Lfsr0),
+        ..LanePatterns::default()
+    };
+    phy.send_ltp(patterns).unwrap();
     phy.set_frl_output(FrlOutput::Active).unwrap();
     phy.adjust_equalization(EqParams::new()).unwrap();
+    assert_eq!(
+        bench.line(),
+        Line::frl_with(HdmiForumFrl::Rate6Gbps4Lanes, patterns, FrlOutput::Active)
+    );
+    // Entering a rate again starts from no patterns and gap characters.
+    phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
     assert_eq!(bench.line(), frl);
     phy.set_frl_rate(HdmiForumFrl::NotSupported).unwrap();
     assert_eq!(bench.line(), Line::Off);

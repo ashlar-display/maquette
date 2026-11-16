@@ -283,7 +283,7 @@ impl Points<'_> {
                 expected: true,
                 found: false,
             }),
-            Line::Frl { rate: found } if found == rate => None,
+            Line::Frl { rate: found, .. } if found == rate => None,
             found => Some(PhyFailure::Line { point, found }),
         });
     }

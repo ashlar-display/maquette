@@ -6,9 +6,9 @@ use maquette::hdmi_hal::ddc::SCDC;
 use maquette::{
     Bench, ColorBitDepth, ColorFormat, ConfigureWhileRunning, DEFAULT_PHY_CAPABILITIES, DdcBus,
     DdcErrorKind, EqParams, Event, Fault, FrlOutput, FrlPhy, HdmiForumFrl, LanePatterns, Line,
-    PhyCall, PhyCallKind, PhyError, PhyErrorKind, PhyFault, PhyPower, PhySettings, ScheduleFull,
-    ScramblerAfterConfigure, SinkConfig, Times, TmdsClockRatio, TmdsPhy, TmdsPhyCapabilities,
-    TmdsPhyConfig, TmdsVideo,
+    LtpPattern, PhyCall, PhyCallKind, PhyError, PhyErrorKind, PhyFault, PhyPower, PhySettings,
+    ScheduleFull, ScramblerAfterConfigure, SinkConfig, Times, TmdsClockRatio, TmdsPhy,
+    TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo,
 };
 
 /// 4K60 RGB 8-bit: 594 000 kHz at 1/40.
@@ -624,4 +624,54 @@ fn a_phy_fault_for_a_time_strikes_until_its_window_passes() {
     assert_eq!(kind(phy.configure(high())), PhyErrorKind::Fault);
     bench.advance(Duration::from_millis(5));
     phy.configure(high()).unwrap();
+}
+
+#[test]
+fn the_frl_line_carries_the_patterns_and_the_output() {
+    let bench = bench();
+    let mut phy = bench.phy();
+    let rate = HdmiForumFrl::Rate12Gbps4Lanes;
+    phy.set_frl_rate(rate).unwrap();
+    let patterns = LanePatterns {
+        lane0: Some(LtpPattern::Lfsr0),
+        lane1: Some(LtpPattern::Lfsr1),
+        lane2: Some(LtpPattern::Lfsr2),
+        lane3: Some(LtpPattern::Lfsr3),
+    };
+    phy.send_ltp(patterns).unwrap();
+    assert_eq!(
+        bench.line(),
+        Line::frl_with(rate, patterns, FrlOutput::GapOnly)
+    );
+    // A call failed before it takes effect changes nothing.
+    bench
+        .schedule_phy(PhyFault::new().on(PhyCallKind::SetFrlOutput))
+        .unwrap();
+    assert!(phy.set_frl_output(FrlOutput::Active).is_err());
+    assert_eq!(
+        bench.line(),
+        Line::frl_with(rate, patterns, FrlOutput::GapOnly)
+    );
+    phy.send_ltp(LanePatterns::default()).unwrap();
+    phy.set_frl_output(FrlOutput::Active).unwrap();
+    let active = Line::frl_with(rate, LanePatterns::default(), FrlOutput::Active);
+    assert_eq!(bench.line(), active);
+    // Each change is a line event; the same output again is none.
+    phy.set_frl_output(FrlOutput::Active).unwrap();
+    let lines: Vec<Line> = bench
+        .transcript()
+        .filter_map(|record| match record.event {
+            Event::Line(line) => Some(line),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        lines,
+        [
+            Line::frl(rate),
+            Line::frl_with(rate, patterns, FrlOutput::GapOnly),
+            Line::frl(rate),
+            active,
+        ]
+    );
 }

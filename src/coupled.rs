@@ -10,7 +10,7 @@ use hdmi_hal::phy::{
 
 use crate::bench::{Bench, Core};
 use crate::line::Line;
-use crate::phy::{Mode, PhyCall, PhyErrorKind, line_of};
+use crate::phy::{FrlMode, Mode, PhyCall, PhyErrorKind, apply_frl, line_of};
 
 /// Any PHY driving the bench's line: a third party's, a forwarding stub, a firmware PHY under
 /// hardware-in-the-loop.
@@ -151,10 +151,12 @@ impl<'b, P> Coupled<'b, P> {
                 }
             }
             PhyCall::SetFrlRate(rate) => {
-                self.mode = Mode::Frl(rate);
+                self.mode = Mode::Frl(FrlMode::new(rate));
                 self.running = false;
             }
-            PhyCall::SendLtp(_) | PhyCall::SetFrlOutput(_) | PhyCall::AdjustEqualization(_) => {}
+            PhyCall::SendLtp(_) | PhyCall::SetFrlOutput(_) | PhyCall::AdjustEqualization(_) => {
+                apply_frl(&mut self.mode, call);
+            }
         }
     }
 }

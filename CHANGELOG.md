@@ -61,8 +61,8 @@ implementations of hdmi-hal's traits.
   (VESA E-DDC 1.3): the pointer is 0 at the start of every transaction; each structure's
   word offset persists, for current-address reads; a read goes on with data past a store,
   0xFF or wrapped, since the host acknowledges what it reads.
-- **The line** (`Line`: `Off`, `Tmds` with rate, ratio and scrambling, `Frl`, built with
-  `Line::frl`), which the PHY drives when its output changes and a test sets with
+- **The line** (`Line`: `Off`, `Tmds` with rate, ratio and scrambling, `Frl` with rate,
+  each lane's training pattern and the output, built with `Line::frl` or `Line::frl_with`), which the PHY drives when its output changes and a test sets with
   `set_line`; the last change wins. An unplugged sink receives no line.
 - **Character errors** (`ErrorRates`, errors a second on each lane), set with
   `set_character_errors`.

@@ -1,7 +1,7 @@
 //! The line: what the source transmits, as the sink sees it.
 
 use hdmi_hal::HdmiForumFrl;
-use hdmi_hal::phy::TmdsClockRatio;
+use hdmi_hal::phy::{FrlOutput, LanePatterns, TmdsClockRatio};
 
 /// The TMDS character rate above which the bit clock ratio is 1/40, and at or below which
 /// it is 1/10, in kHz. Above it the characters are scrambled; at or below it scrambling is
@@ -35,19 +35,43 @@ pub enum Line {
         /// Whether the characters are scrambled.
         scrambled: bool,
     },
-    /// FRL at `rate`; what it carries comes with the sink's FRL responses, so it is built
-    /// with [`Line::frl`] and matched with `..`.
+    /// FRL at `rate`: the link training pattern on each lane, and what the lanes carry
+    /// once the patterns stop. Built with [`Line::frl`] or [`Line::frl_with`] and matched
+    /// with `..`, so what FRL carries can grow.
     #[non_exhaustive]
     Frl {
         /// The FRL rate.
         rate: HdmiForumFrl,
+        /// The link training pattern on each lane, as `FrlPhy::send_ltp` set it.
+        patterns: LanePatterns,
+        /// What the lanes carry without a pattern, as `FrlPhy::set_frl_output` set it.
+        output: FrlOutput,
     },
 }
 
 impl Line {
-    /// FRL at `rate`.
+    /// FRL at `rate`, as a PHY leaves it when it enters the rate: no patterns, gap
+    /// characters only.
     pub const fn frl(rate: HdmiForumFrl) -> Self {
-        Self::Frl { rate }
+        Self::frl_with(
+            rate,
+            LanePatterns {
+                lane0: None,
+                lane1: None,
+                lane2: None,
+                lane3: None,
+            },
+            FrlOutput::GapOnly,
+        )
+    }
+
+    /// FRL at `rate`, with `patterns` on the lanes and `output` without one.
+    pub const fn frl_with(rate: HdmiForumFrl, patterns: LanePatterns, output: FrlOutput) -> Self {
+        Self::Frl {
+            rate,
+            patterns,
+            output,
+        }
     }
 }
 
