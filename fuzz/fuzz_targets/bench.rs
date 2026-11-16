@@ -216,14 +216,19 @@ impl Input<'_> {
     }
 
     /// A scheduled action and its moment. No plug: it would change the sink's settings at a
-    /// moment `check_lock_comes` does not know. No preset of the status, as for presets.
+    /// moment `check_lock_comes` does not know. No preset of the status or the status flags,
+    /// as for presets.
     fn action(&mut self, now: Timestamp) -> (Action<'static>, When) {
         let a = self.byte();
         let action = match a % 6 {
             0 => {
                 let reg = self.byte();
                 Action::Preset {
-                    reg: if reg == 0x21 { 0x20 } else { reg },
+                    reg: if matches!(reg, 0x21 | 0x40) {
+                        0x20
+                    } else {
+                        reg
+                    },
                     value: self.byte(),
                 }
             }
@@ -317,6 +322,7 @@ fn tmds(character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool) -> Line
 /// Checks the invariants that hold after every action.
 fn check_state(bench: &Bench<'_, LOG>) {
     let sink = bench.sink();
+    check_flags(bench);
     let (Some(status), Some(config)) = (sink.scrambling_status(), sink.tmds_config()) else {
         return;
     };
@@ -338,6 +344,53 @@ fn check_state(bench: &Bench<'_, LOG>) {
             }
             line => panic!("status set without scrambled TMDS: {line:?}"),
         }
+    }
+}
+
+/// Checks the status flags against what the sink receives: `Clock_Detected` only on TMDS,
+/// the lane locks only on a line it can decode.
+fn check_flags(bench: &Bench<'_, LOG>) {
+    let sink = bench.sink();
+    let (Some(flags), Some(config)) = (sink.status_flags_0(), sink.tmds_config()) else {
+        return;
+    };
+    let line = if sink.is_plugged() {
+        bench.line()
+    } else {
+        Line::Off
+    };
+    let tmds = matches!(line, Line::Tmds { .. });
+    assert!(
+        flags & 1 == 0 || tmds,
+        "clock detected without TMDS: {line:?}"
+    );
+    if flags & 0x0E != 0 {
+        assert_eq!(flags & 0x0E, 0x0E, "lanes 0-2 lock together");
+        let Line::Tmds {
+            character_rate_khz,
+            ratio,
+            scrambled,
+        } = line
+        else {
+            panic!("lanes locked without TMDS: {line:?}");
+        };
+        let div40 = ratio == TmdsClockRatio::Div40;
+        let high = character_rate_khz > 340_000;
+        assert!(flags & 1 != 0, "lanes locked without the clock");
+        assert_eq!(
+            div40, high,
+            "lanes locked at a ratio that does not fit the rate"
+        );
+        assert_eq!(div40, config & 2 != 0, "lanes locked at the wrong ratio");
+        assert_eq!(
+            scrambled,
+            config & 1 != 0,
+            "lanes locked against Scrambling_Enable"
+        );
+        assert!(
+            scrambled || !high,
+            "lanes locked on unscrambled TMDS above 340 Mcsc"
+        );
     }
 }
 
@@ -531,8 +584,8 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
             13 => {
                 let reg = input.byte();
                 let value = input.byte();
-                // Presets of the status would set it outside the lock's conditions.
-                if reg != 0x21 && bench.sink().scdc(0x01).is_some() {
+                // Presets of the status or the flags would set them outside their conditions.
+                if !matches!(reg, 0x21 | 0x40) && bench.sink().scdc(0x01).is_some() {
                     bench.preset_scdc(reg, value);
                 }
             }

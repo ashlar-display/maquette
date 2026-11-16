@@ -36,6 +36,7 @@ pub struct SinkConfig {
     pub(crate) refusal: Refusal,
     pub(crate) enable_timeout: Option<Duration>,
     pub(crate) hpd_resets: [HpdReset; 4],
+    pub(crate) status_update: StatusUpdate,
 }
 
 impl SinkConfig {
@@ -57,6 +58,7 @@ impl SinkConfig {
             refusal: Refusal::NONE,
             enable_timeout: Some(Duration::from_millis(100)),
             hpd_resets: [HpdReset::OnHpdLow; 4],
+            status_update: StatusUpdate::OnChange,
         }
     }
 
@@ -160,8 +162,9 @@ impl SinkConfig {
         }
     }
 
-    /// When the sink sets `Scrambling_Status` once its conditions hold; by default
-    /// `Trigger::After` 1 ms (*chosen*: no source gives the delay).
+    /// When the sink sets `Scrambling_Status`, and the lane locks in `Status_Flags_0`, once
+    /// their conditions hold; by default `Trigger::After` 1 ms (*chosen*: no source gives the
+    /// delay). `Trigger::AfterReads` counts the reads of the register that shows each.
     #[must_use]
     pub const fn with_scrambling_lock(self, scrambling_lock: Trigger) -> Self {
         Self {
@@ -215,6 +218,16 @@ impl SinkConfig {
     pub const fn with_hpd_reset(mut self, group: RegisterGroup, reset: HpdReset) -> Self {
         self.hpd_resets[group.index()] = reset;
         self
+    }
+
+    /// Whether the sink sets `Status_Update` when it changes the status flags; by default
+    /// [`StatusUpdate::OnChange`] (*chosen*).
+    #[must_use]
+    pub const fn with_status_update(self, status_update: StatusUpdate) -> Self {
+        Self {
+            status_update,
+            ..self
+        }
     }
 
     /// Whether the sink has SCDC.
@@ -290,6 +303,11 @@ impl SinkConfig {
     /// Whether the EDID, the DisplayID and the segment pointer answer while HPD is low.
     pub const fn edid_during_hpd_low(&self) -> DuringHpdLow {
         self.edid_during_hpd_low
+    }
+
+    /// Whether the sink sets `Status_Update` when it changes the status flags.
+    pub const fn status_update(&self) -> StatusUpdate {
+        self.status_update
     }
 }
 
@@ -423,6 +441,21 @@ pub enum RefusalKind {
     WithholdStatus,
     /// The write is stored without `Scrambling_Enable`.
     DropEnable,
+}
+
+/// Whether the sink sets `Status_Update` (`Update_0` bit 0) when it changes `Clock_Detected`
+/// or a lane lock in `Status_Flags_0`. The public receivers set it in their SCDC hardware,
+/// and none shows when; one source family reads the flags only when it is set and clears it
+/// by writing it back (Amlogic, github.com/CoreELEC/common_drivers `8ca9b6c3b715`:
+/// `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:88–112`), others read them regardless (Linux,
+/// github.com/torvalds/linux `e9954f3fbddd`: `drivers/gpu/drm/display/drm_scdc_helper.c:440–478`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum StatusUpdate {
+    /// Set at every such change, kept until the source clears it (*chosen* default).
+    OnChange,
+    /// Never set: a source that reads the flags only when it is set sees no change.
+    Never,
 }
 
 /// A group of SCDC registers that an HPD low resets together.

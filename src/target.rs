@@ -136,7 +136,8 @@ impl<'e> Env<'e> {
         self.hpd
     }
 
-    /// What the source transmits.
+    /// What the source transmits, as the sink receives it: [`Line::Off`] while the sink is
+    /// unplugged.
     pub fn line(&self) -> Line {
         self.line
     }

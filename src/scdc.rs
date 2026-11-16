@@ -24,7 +24,7 @@ use hdmi_hal::time::Timestamp;
 
 use crate::config::{
     DuringHpdLow, HpdReset, OwnedWrite, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd,
-    SinkConfig, Trigger,
+    SinkConfig, StatusUpdate, Trigger,
 };
 use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
 use crate::line::{Line, RATIO_40_ABOVE_KHZ};
@@ -37,6 +37,12 @@ const SCRAMBLING_ENABLE: u8 = 1 << 0;
 const RATIO_40: u8 = 1 << 1;
 /// `Scrambling_Status` bit 0.
 const STATUS: u8 = 1 << 0;
+/// `Update_0` bit 0: `Status_Update`.
+const STATUS_UPDATE: u8 = 1 << 0;
+/// `Status_Flags_0` bit 0: `Clock_Detected`.
+const CLOCK_DETECTED: u8 = 1 << 0;
+/// `Status_Flags_0` bits 1–3: lanes 0–2 locked.
+const LANES_LOCKED: u8 = 0b1110;
 
 /// The least time from a write that changes `TMDS_Bit_Clock_Ratio` to the TMDS clock and
 /// data resuming: the source suspends them, writes the bit, and resumes 1 to 100 ms after.
@@ -69,6 +75,13 @@ pub(crate) const CONFIG_0: u8 = 0x30;
 pub(crate) const CONFIG_1: u8 = 0x31;
 /// `Source_Test_Configuration`: the sink's test requests to the source, read by the source.
 const SOURCE_TEST_CONFIGURATION: u8 = 0x35;
+/// `Status_Flags_0`: the sink's; bit 0 `Clock_Detected`, bits 1–4 lanes 0–3 locked, bit 6
+/// `FLT_ready`. The bits: Linux, github.com/torvalds/linux `e9954f3fbddd`:
+/// `include/drm/display/drm_scdc.h:55–64`; Amlogic's receiver,
+/// github.com/CoreELEC/common_drivers `8ca9b6c3b715`:
+/// `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4647`, which takes bits 0–3 all set as
+/// TMDS locked (`4736–4744`).
+pub(crate) const STATUS_FLAGS_0: u8 = 0x40;
 
 /// What a write to a register does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,8 +129,18 @@ fn role(reg: u8) -> Role {
 /// preset holds until then; the sink's own reset of the status loses the lock, and the
 /// conditions begin to hold again at the reset.
 ///
-/// Evaluated at every event: each transaction, each byte written, each read of the status,
-/// and every update. The line and the registers change only at events, so what an
+/// The status flags: `Clock_Detected` is set while the line is TMDS, at any rate (*chosen*:
+/// no source gives the delay). The lane locks (lanes 0–2) are set once the sink can decode
+/// the line and the trigger has passed since it could: TMDS at a ratio that fits the rate
+/// and matches `TMDS_Bit_Clock_Ratio`, scrambled exactly when `Scrambling_Enable` is set,
+/// and scrambled above 340 Mcsc; cleared when it cannot. The receivers set them in hardware
+/// as the lanes lock, and no source shows when (*chosen*: the scrambling lock's trigger,
+/// `AfterReads` counting reads of `Status_Flags_0`). Lane 3 and `FLT_ready` are FRL's. Each
+/// change sets `Status_Update`, unless [`StatusUpdate::Never`]. As with the status, the sink
+/// changes the flags only when what it sees changes, so a preset holds until then.
+///
+/// Evaluated at every event: each transaction, each byte written, each read of the status
+/// or the status flags, and every update. The line and the registers change only at events, so what an
 /// evaluation sees has held since the one before: a condition that begins to hold is seen
 /// when it does, and one seen late, past a deadline, was late.
 #[derive(Debug)]
@@ -151,6 +174,12 @@ pub(crate) struct Scdc {
     reads: u32,
     locked: bool,
     hpd_resets: [HpdReset; 4],
+    status_update: StatusUpdate,
+    /// Since when the sink can decode the line, `None` while it cannot; reads of
+    /// `Status_Flags_0` since; and the flags as the sink last set them.
+    lanes_from: Option<Timestamp>,
+    flag_reads: u32,
+    flags: u8,
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
     reset_done: [bool; 4],
@@ -185,6 +214,10 @@ impl Scdc {
             reads: 0,
             locked: false,
             hpd_resets: config.hpd_resets,
+            status_update: config.status_update,
+            lanes_from: None,
+            flag_reads: 0,
+            flags: 0,
             hpd_low_since: None,
             reset_done: [false; 4],
         })
@@ -276,6 +309,10 @@ impl Scdc {
                         self.locked = false;
                         self.lock_from = None;
                     }
+                    if reg == STATUS_FLAGS_0 {
+                        self.flags = 0;
+                        self.lanes_from = None;
+                    }
                 }
             }
         }
@@ -284,9 +321,10 @@ impl Scdc {
         }
     }
 
-    /// The sink evaluates its behaviour at `env`'s time; `reading_status` when the source is
-    /// about to read `Scrambling_Status`, which counts toward `Trigger::AfterReads`.
-    fn evaluate(&mut self, env: &mut Env<'_>, reading_status: bool) {
+    /// The sink evaluates its behaviour at `env`'s time; `reading` the register the source
+    /// is about to read, which for `Scrambling_Status` and `Status_Flags_0` counts toward
+    /// `Trigger::AfterReads`.
+    fn evaluate(&mut self, env: &mut Env<'_>, reading: Option<u8>) {
         self.hpd_resets(env);
         let now = env.now();
         let line = env.line();
@@ -294,6 +332,7 @@ impl Scdc {
             self.line = line;
             self.line_since = now;
             self.lock_from = None;
+            self.lanes_from = None;
         }
         let config = self.get(TMDS_CONFIG);
         let matching = match line {
@@ -328,13 +367,10 @@ impl Scdc {
             self.lock_from = lock_from;
             self.reads = 0;
         }
-        if reading_status && lock_from.is_some() {
+        if reading == Some(SCRAMBLING_STATUS) && lock_from.is_some() {
             self.reads = self.reads.saturating_add(1);
         }
-        let locked = lock_from.is_some_and(|from| match self.trigger {
-            Trigger::After(delay) => from.checked_add(delay).is_some_and(|due| now >= due),
-            Trigger::AfterReads(n) => self.reads >= n.max(1),
-        });
+        let locked = lock_from.is_some_and(|from| self.passed(from, now, self.reads));
         if locked != self.locked {
             self.locked = locked;
             let status = self.get(SCRAMBLING_STATUS);
@@ -346,6 +382,63 @@ impl Scdc {
             if to != status {
                 self.set(SCRAMBLING_STATUS, to, Actor::Sink, env);
             }
+        }
+        self.evaluate_flags(env, reading == Some(STATUS_FLAGS_0));
+    }
+
+    /// Whether the trigger has passed for conditions that hold since `from`, with `reads`
+    /// reads of the register that shows them since.
+    fn passed(&self, from: Timestamp, now: Timestamp, reads: u32) -> bool {
+        match self.trigger {
+            Trigger::After(delay) => from.checked_add(delay).is_some_and(|due| now >= due),
+            Trigger::AfterReads(n) => reads >= n.max(1),
+        }
+    }
+
+    /// The status flags, after the scrambling lock: `Scrambling_Enable` may just have been
+    /// cleared by the sink.
+    fn evaluate_flags(&mut self, env: &mut Env<'_>, reading_flags: bool) {
+        let now = env.now();
+        let config = self.get(TMDS_CONFIG);
+        let (clock, decodable) = match self.line {
+            Line::Tmds {
+                character_rate_khz,
+                ratio,
+                scrambled,
+            } => {
+                let div40 = ratio == TmdsClockRatio::Div40;
+                let high = character_rate_khz > RATIO_40_ABOVE_KHZ;
+                let decodable = div40 == high
+                    && div40 == (config & RATIO_40 != 0)
+                    && scrambled == (config & SCRAMBLING_ENABLE != 0)
+                    && (scrambled || !high);
+                (true, decodable)
+            }
+            _ => (false, false),
+        };
+        let lanes_from = decodable.then(|| self.lanes_from.unwrap_or(now));
+        if lanes_from != self.lanes_from {
+            self.lanes_from = lanes_from;
+            self.flag_reads = 0;
+        }
+        if reading_flags && lanes_from.is_some() {
+            self.flag_reads = self.flag_reads.saturating_add(1);
+        }
+        let locked = lanes_from.is_some_and(|from| self.passed(from, now, self.flag_reads));
+        let flags = if clock { CLOCK_DETECTED } else { 0 } | if locked { LANES_LOCKED } else { 0 };
+        if flags == self.flags {
+            return;
+        }
+        self.flags = flags;
+        let held = self.get(STATUS_FLAGS_0);
+        let to = (held & !(CLOCK_DETECTED | LANES_LOCKED)) | flags;
+        if to == held {
+            return;
+        }
+        self.set(STATUS_FLAGS_0, to, Actor::Sink, env);
+        let update = self.get(UPDATE_0);
+        if self.status_update == StatusUpdate::OnChange && update & STATUS_UPDATE == 0 {
+            self.set(UPDATE_0, update | STATUS_UPDATE, Actor::Sink, env);
         }
     }
 
@@ -413,7 +506,7 @@ impl Target for Scdc {
     }
 
     fn update(&mut self, env: &mut Env<'_>) {
-        self.evaluate(env, false);
+        self.evaluate(env, None);
     }
 
     /// A write sets the offset with its first byte, then writes from there; a read reads from
@@ -440,7 +533,7 @@ impl Scdc {
         env: &mut Env<'_>,
         mut hook: Option<&mut (dyn ScdcHook + Send)>,
     ) -> Result<(), DdcErrorKind> {
-        self.evaluate(env, false);
+        self.evaluate(env, None);
         let refuse_past_end = self.past_end == ScdcPastEnd::Nack;
         for op in ops.iter_mut() {
             match op {
@@ -479,14 +572,14 @@ impl Scdc {
                                 }
                             }
                         }
-                        self.evaluate(env, false);
+                        self.evaluate(env, None);
                         past_end |= self.advance();
                     }
                 }
                 Operation::Read { addr: SCDC, buf } => {
                     for byte in buf.iter_mut() {
-                        if self.offset == SCRAMBLING_STATUS {
-                            self.evaluate(env, true);
+                        if matches!(self.offset, SCRAMBLING_STATUS | STATUS_FLAGS_0) {
+                            self.evaluate(env, Some(self.offset));
                         }
                         let value = self.get(self.offset);
                         *byte = match hook.as_deref_mut() {

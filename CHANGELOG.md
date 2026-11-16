@@ -69,6 +69,11 @@ implementations of hdmi-hal's traits.
   rate (1/40 above 340 Mcsc), no refusal withholds it, and the lock's `Trigger` has passed
   since these conditions last began to hold. The sink changes the status only when its lock
   is gained or lost, so a preset holds; its own reset of the status re-arms the lock.
+- **The status flags:** `Status_Flags_0`'s `Clock_Detected` follows a TMDS line, and the
+  locks of lanes 0–2 are set once the sink can decode the line (the ratio fits the rate and
+  matches `TMDS_Config`, the line is scrambled exactly when `Scrambling_Enable` is set, and
+  always above 340 Mcsc) and the lock's `Trigger` has passed. Each change sets
+  `Status_Update`, unless `StatusUpdate::Never`. An unplugged sink receives no line.
 - **HPD resets:** each `RegisterGroup` resets as its `HpdReset` says: as HPD falls (the
   default, after the public sink drivers), after a time, as HPD rises, or never.
 - **`SinkConfig`**, the sink's settings with `const` builders and getters: SCDC or none, the
@@ -76,7 +81,7 @@ implementations of hdmi-hal's traits.
   128-byte boundary, the segment pointer, what answers while HPD is low, the lock's trigger,
   the strict sink (output started after the write, and 1 ms after a ratio change),
   refusals, the enable timeout (100 ms by default, from the write that set
-  `Scrambling_Enable` or changed the ratio) and the HPD resets. Each default is sourced or
+  `Scrambling_Enable` or changed the ratio), the HPD resets and `Status_Update`. Each default is sourced or
   marked *chosen*, the least forgiving where sources differ.
 
 **The PHY**

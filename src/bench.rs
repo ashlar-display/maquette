@@ -52,6 +52,11 @@ pub const DEFAULT_PHY_CAPABILITIES: TmdsPhyCapabilities = TmdsPhyCapabilities::n
     .with_low_rate_scrambling(true);
 
 /// Checks the stores' lengths: whole 128-byte blocks, up to 256.
+/// The line as the sink receives it: nothing while it is unplugged.
+const fn sink_line(plugged: bool, line: Line) -> Line {
+    if plugged { line } else { Line::Off }
+}
+
 fn check_stores(edid: &[u8], displayid: Option<&[u8]>) -> Result<(), BenchError> {
     let whole_blocks = |len: usize| len % 128 == 0 && len <= MAX_STORE;
     if !whole_blocks(edid.len()) {
@@ -137,9 +142,10 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             transcript,
             hpd,
             line,
+            plugged,
             ..
         } = self;
-        let mut env = Env::new(at, *hpd, *line, transcript);
+        let mut env = Env::new(at, *hpd, sink_line(*plugged, *line), transcript);
         for target in routed(targets, eddc, scdc) {
             target.update(&mut env);
         }
@@ -353,12 +359,14 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             transcript,
             hpd,
             line,
+            plugged,
             ..
         } = self;
         let Some(scdc) = scdc else {
             return false;
         };
-        scdc.preset(reg, value, &mut Env::new(at, *hpd, *line, transcript));
+        let line = sink_line(*plugged, *line);
+        scdc.preset(reg, value, &mut Env::new(at, *hpd, line, transcript));
         self.update(at);
         true
     }
@@ -1130,6 +1138,12 @@ impl Sink<'_> {
     /// `Update_0` (0x10): the update flags.
     pub fn update_0(&self) -> Option<u8> {
         self.scdc(crate::scdc::UPDATE_0)
+    }
+
+    /// `Status_Flags_0` (0x40): bit 0 `Clock_Detected`, bits 1–4 lanes 0–3 locked, bit 6
+    /// `FLT_ready`.
+    pub fn status_flags_0(&self) -> Option<u8> {
+        self.scdc(crate::scdc::STATUS_FLAGS_0)
     }
 
     /// `Config_0` (0x30): bit 0 `RR_Enable`, bit 1 `FLT_no_retrain`.

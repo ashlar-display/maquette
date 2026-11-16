@@ -323,8 +323,24 @@ fn every_call_is_recorded_with_its_result_and_line_change() {
     phy.configure(low()).unwrap();
     phy.start_output().unwrap();
     let events: Vec<Event> = bench.transcript().map(|record| record.event).collect();
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 6);
     assert_eq!(events[3], Event::Line(line(low(), true)));
+    // The sink detects the clock: Clock_Detected, then Status_Update.
+    assert!(matches!(
+        events[4..],
+        [
+            Event::Register {
+                reg: 0x40,
+                to: 0x01,
+                ..
+            },
+            Event::Register {
+                reg: 0x10,
+                to: 0x01,
+                ..
+            },
+        ]
+    ));
     assert_eq!(
         phy_events(&bench),
         [

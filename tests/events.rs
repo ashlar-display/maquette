@@ -90,7 +90,12 @@ fn note(hpd: bool, line: u32) -> Seen {
 fn the_line_starts_off_and_changes_are_events() {
     let mut watcher = Watcher;
     let mut targets: [&mut (dyn Target + Send); 1] = [&mut watcher];
-    let bench = Bench::builder(&[]).targets(&mut targets).build().unwrap();
+    // Without SCDC: the sink's status flags would follow the line too.
+    let bench = Bench::builder(&[])
+        .sink(SinkConfig::new().without_scdc())
+        .targets(&mut targets)
+        .build()
+        .unwrap();
     assert_eq!(bench.line(), Line::Off);
     bench.advance(us(10));
     bench.set_line(TMDS_594);

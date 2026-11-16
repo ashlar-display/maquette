@@ -145,9 +145,15 @@ fn an_action_after_a_phy_call_comes_as_it_returns() {
         [
             Seen::Phy(PhyCallKind::StartOutput),
             Seen::Line,
+            // The sink detects the clock, and says so.
+            Seen::Register(0x40, 0x01),
+            Seen::Register(0x10, 0x01),
             Seen::Action,
             Seen::Plug(false),
             Seen::Hpd(false),
+            // The status resets as HPD falls; the unplugged sink receives nothing.
+            Seen::Register(0x10, 0),
+            Seen::Register(0x40, 0),
         ]
     );
 
@@ -223,10 +229,17 @@ fn every_action_does_what_its_control_does() {
         changes,
         [
             Seen::Line,
+            Seen::Register(0x40, 0x01),
+            Seen::Register(0x10, 0x01),
             Seen::Plug(false),
             Seen::Hpd(false),
+            Seen::Register(0x10, 0),
+            Seen::Register(0x40, 0),
             Seen::Plug(true),
             Seen::Hpd(true),
+            // The new sink detects the clock.
+            Seen::Register(0x40, 0x01),
+            Seen::Register(0x10, 0x01),
             Seen::Adapter(false),
             Seen::Adapter(true),
         ]

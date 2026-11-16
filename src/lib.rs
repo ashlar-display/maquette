@@ -62,7 +62,7 @@ pub use bench::{
 pub use clock::SimClock;
 pub use config::{
     BlockBoundary, DuringHpdLow, HpdReset, MissingSegment, OwnedWrite, PastStore, Refusal,
-    RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, Trigger,
+    RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Trigger,
 };
 pub use coupled::Coupled;
 pub use ddc::{BusError, BusTiming, Ddc};
