@@ -341,6 +341,7 @@ pub(crate) struct FrlMode {
     rate: HdmiForumFrl,
     patterns: LanePatterns,
     output: FrlOutput,
+    equalization: Option<EqParams>,
 }
 
 impl FrlMode {
@@ -350,17 +351,19 @@ impl FrlMode {
             rate,
             patterns: LanePatterns::default(),
             output: FrlOutput::GapOnly,
+            equalization: None,
         }
     }
 }
 
-/// What a successful `send_ltp` or `set_frl_output` leaves in FRL; other calls, and a PHY
-/// not in FRL, are left as they are.
+/// What a successful `send_ltp`, `set_frl_output` or `adjust_equalization` leaves in FRL;
+/// other calls, and a PHY not in FRL, are left as they are.
 pub(crate) fn apply_frl(mode: &mut Mode, call: PhyCall) {
     if let Mode::Frl(frl) = mode {
         match call {
             PhyCall::SendLtp(patterns) => frl.patterns = patterns,
             PhyCall::SetFrlOutput(output) => frl.output = output,
+            PhyCall::AdjustEqualization(equalization) => frl.equalization = Some(equalization),
             _ => {}
         }
     }
@@ -376,7 +379,13 @@ pub(crate) fn line_of(mode: Mode, running: bool, scrambler: bool) -> Line {
             ratio: config.clock_ratio,
             scrambled: scrambler,
         },
-        Mode::Frl(frl) => Line::frl_with(frl.rate, frl.patterns, frl.output),
+        Mode::Frl(frl) => {
+            let line = Line::frl_with(frl.rate, frl.patterns, frl.output);
+            match frl.equalization {
+                Some(equalization) => line.with_equalization(equalization),
+                None => line,
+            }
+        }
         _ => Line::Off,
     }
 }

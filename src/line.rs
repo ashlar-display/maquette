@@ -1,7 +1,7 @@
 //! The line: what the source transmits, as the sink sees it.
 
 use hdmi_hal::HdmiForumFrl;
-use hdmi_hal::phy::{FrlOutput, LanePatterns, TmdsClockRatio};
+use hdmi_hal::phy::{EqParams, FrlOutput, LanePatterns, TmdsClockRatio, TxFfeLevel};
 
 /// The TMDS character rate above which the bit clock ratio is 1/40, and at or below which
 /// it is 1/10, in kHz. Above it the characters are scrambled; at or below it scrambling is
@@ -46,6 +46,9 @@ pub enum Line {
         patterns: LanePatterns,
         /// What the lanes carry without a pattern, as `FrlPhy::set_frl_output` set it.
         output: FrlOutput,
+        /// The equalization `FrlPhy::adjust_equalization` last set at this rate; `None`
+        /// since the PHY entered it: every lane at TxFFE level 0.
+        equalization: Option<EqParams>,
     },
 }
 
@@ -71,6 +74,26 @@ impl Line {
             rate,
             patterns,
             output,
+            equalization: None,
+        }
+    }
+
+    /// The line with `equalization` on its FRL lanes; a line not in FRL is left as it is.
+    #[must_use]
+    pub const fn with_equalization(self, equalization: EqParams) -> Self {
+        match self {
+            Self::Frl {
+                rate,
+                patterns,
+                output,
+                ..
+            } => Self::Frl {
+                rate,
+                patterns,
+                output,
+                equalization: Some(equalization),
+            },
+            other => other,
         }
     }
 }
@@ -121,6 +144,72 @@ impl ErrorRates {
 
     /// The rates in lane order.
     pub(crate) const fn lanes(self) -> [u32; 4] {
+        [self.lane0, self.lane1, self.lane2, self.lane3]
+    }
+}
+
+/// What one lane of the link can carry in FRL link training: the highest rate it trains at,
+/// and the least TxFFE level the source must apply on it. A lane outside its limits does
+/// not carry the training patterns the sink asks for, so training does not pass.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LaneLimits {
+    /// The highest FRL rate the lane trains at; `None` for any.
+    pub max_rate: Option<HdmiForumFrl>,
+    /// The least TxFFE level it needs, at every rate it trains at.
+    pub min_tx_ffe: TxFfeLevel,
+}
+
+impl LaneLimits {
+    /// No limits: any rate, at TxFFE level 0.
+    pub const NONE: Self = Self {
+        max_rate: None,
+        min_tx_ffe: match TxFfeLevel::new(0) {
+            Some(level) => level,
+            None => unreachable!(),
+        },
+    };
+}
+
+impl Default for LaneLimits {
+    /// [`LaneLimits::NONE`].
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+/// Each lane's [`LaneLimits`]: what the link can carry in FRL link training.
+///
+/// The test sets them with [`Bench::set_lane_limits`](crate::Bench::set_lane_limits); a
+/// target sees them with [`Env::lane_limits`](crate::Env::lane_limits). At creation there
+/// are none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct LinkLanes {
+    /// Lane 0's limits.
+    pub lane0: LaneLimits,
+    /// Lane 1's limits.
+    pub lane1: LaneLimits,
+    /// Lane 2's limits.
+    pub lane2: LaneLimits,
+    /// Lane 3's limits.
+    pub lane3: LaneLimits,
+}
+
+impl LinkLanes {
+    /// No limits on any lane.
+    pub const NONE: Self = Self::all(LaneLimits::NONE);
+
+    /// `limits` on every lane.
+    pub const fn all(limits: LaneLimits) -> Self {
+        Self {
+            lane0: limits,
+            lane1: limits,
+            lane2: limits,
+            lane3: limits,
+        }
+    }
+
+    /// The limits in lane order.
+    pub(crate) const fn lanes(self) -> [LaneLimits; 4] {
         [self.lane0, self.lane1, self.lane2, self.lane3]
     }
 }

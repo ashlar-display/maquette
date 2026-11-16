@@ -169,7 +169,7 @@ fn frl_and_power_pass_through_and_follow_the_contract() {
     phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
     let frl = Line::frl(HdmiForumFrl::Rate6Gbps4Lanes);
     assert_eq!(bench.line(), frl);
-    // The patterns and the output go on the line; equalization does not change it.
+    // The patterns, the output and the equalization go on the line.
     let patterns = LanePatterns {
         lane0: Some(LtpPattern::Lfsr0),
         ..LanePatterns::default()
@@ -180,6 +180,7 @@ fn frl_and_power_pass_through_and_follow_the_contract() {
     assert_eq!(
         bench.line(),
         Line::frl_with(HdmiForumFrl::Rate6Gbps4Lanes, patterns, FrlOutput::Active)
+            .with_equalization(EqParams::new())
     );
     // Entering a rate again starts from no patterns and gap characters.
     phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();

@@ -8,7 +8,7 @@ use maquette::{
     DdcErrorKind, EqParams, Event, Fault, FrlOutput, FrlPhy, HdmiForumFrl, LanePatterns, Line,
     LtpPattern, PhyCall, PhyCallKind, PhyError, PhyErrorKind, PhyFault, PhyPower, PhySettings,
     ScheduleFull, ScramblerAfterConfigure, SinkConfig, Times, TmdsClockRatio, TmdsPhy,
-    TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo,
+    TmdsPhyCapabilities, TmdsPhyConfig, TmdsVideo, TxFfeLevel,
 };
 
 /// 4K60 RGB 8-bit: 594 000 kHz at 1/40.
@@ -674,4 +674,20 @@ fn the_frl_line_carries_the_patterns_and_the_output() {
             active,
         ]
     );
+}
+
+#[test]
+fn the_frl_line_carries_the_equalization_until_the_rate_is_entered_again() {
+    let bench = bench();
+    let mut phy = bench.phy();
+    let rate = HdmiForumFrl::Rate6Gbps4Lanes;
+    phy.set_frl_rate(rate).unwrap();
+    let mut eq = EqParams::new();
+    eq.lane2.tx_ffe_level = TxFfeLevel::new(3).unwrap();
+    phy.adjust_equalization(eq).unwrap();
+    assert_eq!(bench.line(), Line::frl(rate).with_equalization(eq));
+    phy.set_frl_rate(rate).unwrap();
+    assert_eq!(bench.line(), Line::frl(rate));
+    // Only an FRL line has equalization.
+    assert_eq!(Line::Off.with_equalization(eq), Line::Off);
 }

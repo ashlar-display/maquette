@@ -5,7 +5,7 @@ use hdmi_hal::time::Timestamp;
 
 use crate::config::SinkConfig;
 use crate::fault::Filter;
-use crate::line::{ErrorRates, Line};
+use crate::line::{ErrorRates, Line, LinkLanes};
 use crate::phy::PhyCallKind;
 
 /// Something the bench does by itself during a procedure, as the test scheduled it with
@@ -65,6 +65,9 @@ pub enum Action<'a> {
     /// Sets the character errors on the link, as
     /// [`Bench::set_character_errors`](crate::Bench::set_character_errors).
     CharacterErrors(ErrorRates),
+    /// Sets what each lane can carry in FRL link training, as
+    /// [`Bench::set_lane_limits`](crate::Bench::set_lane_limits).
+    LaneLimits(LinkLanes),
     /// Detaches the adapter, as [`Bench::detach`](crate::Bench::detach).
     Detach,
     /// Reattaches the adapter, as [`Bench::reattach`](crate::Bench::reattach).

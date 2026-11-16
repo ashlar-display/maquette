@@ -26,11 +26,11 @@ use libfuzzer_sys::fuzz_target;
 use maquette::{
     Action, Actor, Bench, BlockBoundary, CedRead, CedUpdate, Clock, ColorBitDepth, ColorFormat,
     DdcBus, DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, DuringRead, EddcTarget, Effect,
-    ErrorRates, Event, Fault, Filter, FrlOutput, FrlPhy, HdmiForumFrl, HpdReset, LanePatterns,
-    Line, LtpPattern, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite, PastStore,
-    PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, RegisterGroup,
-    ScdcPastEnd, SinkConfig, StatusUpdate, Times, Timestamp, TmdsClockRatio, TmdsPhy,
-    TmdsPhyConfig, TmdsVideo, Trigger, When,
+    EqParams, ErrorRates, Event, Fault, Filter, FrlOutput, FrlPhy, HdmiForumFrl, HpdReset,
+    LaneEqParams, LaneLimits, LanePatterns, Line, LinkLanes, LtpPattern, MissingSegment,
+    NoAcknowledgeSource, OpKind, OwnedWrite, PastStore, PhyCallKind, PhyFault, PhyPower, Point,
+    Record, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Times,
+    Timestamp, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger, TxFfeLevel, When,
 };
 
 /// The most actions one input runs.
@@ -132,6 +132,27 @@ impl Input<'_> {
                 },
                 FrlOutput::GapOnly,
             ),
+        }
+    }
+
+    /// Lane limits: none, lane 0 needing TxFFE level 2, or lane 3 at 6 Gbps at most.
+    fn lane_limits(&mut self) -> LinkLanes {
+        match self.byte() % 3 {
+            0 => LinkLanes::NONE,
+            1 => LinkLanes {
+                lane0: LaneLimits {
+                    min_tx_ffe: TxFfeLevel::new(2).unwrap_or_default(),
+                    ..LaneLimits::NONE
+                },
+                ..LinkLanes::NONE
+            },
+            _ => LinkLanes {
+                lane3: LaneLimits {
+                    max_rate: Some(HdmiForumFrl::Rate6Gbps4Lanes),
+                    ..LaneLimits::NONE
+                },
+                ..LinkLanes::NONE
+            },
         }
     }
 
@@ -273,7 +294,7 @@ impl Input<'_> {
     /// as for presets.
     fn action(&mut self, now: Timestamp) -> (Action<'static>, When) {
         let a = self.byte();
-        let action = match a % 7 {
+        let action = match a % 8 {
             0 => {
                 let reg = self.byte();
                 Action::Preset {
@@ -290,6 +311,7 @@ impl Input<'_> {
             3 => Action::Line(self.line()),
             4 => Action::Detach,
             5 => Action::CharacterErrors(self.errors()),
+            6 => Action::LaneLimits(self.lane_limits()),
             _ => Action::Reattach,
         };
         let nth = u32::from(self.byte() % 4);
@@ -612,7 +634,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
         }
         let mut bytes = [0u8; 8];
         let mut buf = [0u8; 64];
-        match input.byte() % 25 {
+        match input.byte() % 26 {
             0 => {
                 let addr = input.addr();
                 let _ = bus.write(addr, input.bytes(&mut bytes));
@@ -693,7 +715,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let _ = phy.set_scrambling(input.bit());
             }
             18 => {
-                let _ = match input.byte() % 10 {
+                let _ = match input.byte() % 11 {
                     0 => phy.start_output(),
                     1 => phy.stop_output(),
                     2 => phy.power_on(),
@@ -713,6 +735,13 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                     } else {
                         FrlOutput::GapOnly
                     }),
+                    9 => {
+                        let mut eq = EqParams::new();
+                        let level = TxFfeLevel::new(input.byte() % 8).unwrap_or_default();
+                        eq.lane0.tx_ffe_level = level;
+                        eq.lane3 = Some(LaneEqParams::default());
+                        phy.adjust_equalization(eq)
+                    }
                     _ => phy.set_frl_rate(HdmiForumFrl::NotSupported),
                 };
             }
@@ -748,6 +777,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let flags = if input.bit() { 0x20 } else { input.byte() };
                 let _ = bus.write(0x54, &[0x10, flags]);
             }
+            24 => bench.set_lane_limits(input.lane_limits()),
             _ => {
                 let _ = clock.now();
             }

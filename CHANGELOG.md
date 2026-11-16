@@ -34,9 +34,10 @@ implementations of hdmi-hal's traits.
   simulated PHY; `sink()`, a read-only view of the sink's registers, HPD and plug state.
   Calls from several threads are serialized: each bus call, and each delay with the event
   after it, is one step.
-- **The test's controls:** `advance`; `set_line`; `set_character_errors`; `set_hpd` and `hpd_pulse`; `unplug` and
-  `plug` (a fresh sink with new stores and settings); `detach` and `reattach`;
-  `preset_scdc`. Each is a bench event: every target sees the bench after it.
+- **The test's controls:** `advance`; `set_line`; `set_character_errors`; `set_lane_limits`;
+  `set_hpd` and `hpd_pulse`; `unplug` and `plug` (a fresh sink with new stores and
+  settings); `detach` and `reattach`; `preset_scdc`. Each is a bench event: every target sees
+  the bench after it.
 - **The operation budget:** every bus call, clock read, delay and PHY call through the
   handles counts; past `BenchBuilder::budget` (`DEFAULT_BUDGET`, 1 000 000, by default;
   `None` for none) the bench panics, naming the budget, so a procedure that loops forever
@@ -62,10 +63,12 @@ implementations of hdmi-hal's traits.
   word offset persists, for current-address reads; a read goes on with data past a store,
   0xFF or wrapped, since the host acknowledges what it reads.
 - **The line** (`Line`: `Off`, `Tmds` with rate, ratio and scrambling, `Frl` with rate,
-  each lane's training pattern and the output, built with `Line::frl` or `Line::frl_with`), which the PHY drives when its output changes and a test sets with
+  each lane's training pattern, the output and the equalization, built with `Line::frl` or
+  `Line::frl_with` and `with_equalization`), which the PHY drives when its output changes and a test sets with
   `set_line`; the last change wins. An unplugged sink receives no line.
 - **Character errors** (`ErrorRates`, errors a second on each lane), set with
-  `set_character_errors`.
+  `set_character_errors`, and **lane limits** for FRL link training (`LinkLanes`, each
+  lane's highest rate and least TxFFE level), set with `set_lane_limits`.
 - **The scrambling lock:** `Scrambling_Status` is set once `Scrambling_Enable` is set, the
   line is scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names and that ratio fits the
   rate (1/40 above 340 Mcsc), no refusal withholds it, and the lock's `Trigger` has passed
@@ -120,10 +123,10 @@ implementations of hdmi-hal's traits.
   on its address byte). `Bench::schedule_phy` schedules a `PhyFault` in the same schedule.
   Each strike is an `Event::Fault`.
 - **Scheduled actions:** `Bench::schedule_action` takes an `Action` (a preset, HPD, unplug,
-  plug, the line, the character errors, detach, reattach) and a `When` (before or after the
-  `nth` matching bus operation, after the `nth` PHY call, or at a time), so the sink changes
-  during a procedure. An action comes once, in the faults' schedule, recorded as an
-  `Event::Action` before the events its change makes.
+  plug, the line, the character errors, the lane limits, detach, reattach) and a `When`
+  (before or after the `nth` matching bus operation, after the `nth` PHY call, or at a
+  time), so the sink changes during a procedure. An action comes once, in the faults'
+  schedule, recorded as an `Event::Action` before the events its change makes.
 
 **Extending the sink**
 

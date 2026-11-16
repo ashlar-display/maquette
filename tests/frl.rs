@@ -5,8 +5,8 @@ use core::time::Duration;
 
 use maquette::hdmi_hal::ddc::SCDC;
 use maquette::{
-    Bench, DdcBus, FrlOutput, FrlPhy, HdmiForumFrl, HpdReset, LanePatterns, LtpPattern,
-    RegisterGroup, SinkConfig, Trigger,
+    Action, Bench, DdcBus, EqParams, Event, FrlOutput, FrlPhy, HdmiForumFrl, HpdReset, LaneLimits,
+    LanePatterns, LinkLanes, LtpPattern, RegisterGroup, SinkConfig, Trigger, TxFfeLevel, When,
 };
 
 const MS: Duration = Duration::from_millis(1);
@@ -239,4 +239,107 @@ fn the_maximum_rate_is_taken_and_the_next_is_not() {
     clear_flt_update(&bench);
     bench.ddc().write(SCDC, &[0x31, 0x06]).unwrap();
     assert_eq!(training(&bench), (0x20, 0xFF, 0xFF));
+}
+
+/// Starts LTS:3 at `rate` and has the source send the requested patterns, `FLT_update`
+/// cleared.
+fn train_to_patterns(bench: &Bench<'_>, rate: HdmiForumFrl, value: u8) {
+    let mut phy = bench.phy();
+    bench.ddc().write(SCDC, &[0x31, value]).unwrap();
+    clear_flt_update(bench);
+    phy.set_frl_rate(rate).unwrap();
+    phy.send_ltp(REQUESTED).unwrap();
+}
+
+fn tx_ffe(level: u8) -> TxFfeLevel {
+    TxFfeLevel::new(level).unwrap()
+}
+
+#[test]
+fn a_lane_that_needs_a_txffe_level_passes_once_the_source_applies_it() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    let limits = LinkLanes {
+        lane1: LaneLimits {
+            min_tx_ffe: tx_ffe(2),
+            ..LaneLimits::NONE
+        },
+        ..LinkLanes::NONE
+    };
+    bench.set_lane_limits(limits);
+    assert_eq!(bench.lane_limits(), limits);
+    train_to_patterns(&bench, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    bench.advance(Duration::from_millis(10));
+    assert_eq!(
+        training(&bench),
+        (0, 0x65, 0x87),
+        "lane 1 below its TxFFE level"
+    );
+    // Level 1 is not enough; level 2 is.
+    let mut eq = EqParams::new();
+    eq.lane1.tx_ffe_level = tx_ffe(1);
+    bench.phy().adjust_equalization(eq).unwrap();
+    bench.advance(Duration::from_millis(10));
+    assert_eq!(training(&bench).0, 0);
+    eq.lane1.tx_ffe_level = tx_ffe(2);
+    bench.phy().adjust_equalization(eq).unwrap();
+    bench.advance(MS);
+    assert_eq!(training(&bench), (0x20, 0, 0));
+}
+
+#[test]
+fn a_lane_does_not_train_above_its_maximum_rate() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    bench.set_lane_limits(LinkLanes {
+        lane3: LaneLimits {
+            max_rate: Some(HdmiForumFrl::Rate6Gbps4Lanes),
+            ..LaneLimits::NONE
+        },
+        ..LinkLanes::NONE
+    });
+    train_to_patterns(&bench, HdmiForumFrl::Rate8Gbps4Lanes, 0x04);
+    bench.advance(Duration::from_millis(10));
+    assert_eq!(training(&bench), (0, 0x65, 0x87));
+    // At its maximum it trains.
+    train_to_patterns(&bench, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    bench.advance(MS);
+    assert_eq!(training(&bench), (0x20, 0, 0));
+}
+
+#[test]
+fn a_lane_not_used_at_3_lanes_does_not_hold_training_back() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    bench.set_lane_limits(LinkLanes {
+        lane3: LaneLimits {
+            max_rate: Some(HdmiForumFrl::Rate3Gbps3Lanes),
+            min_tx_ffe: tx_ffe(7),
+        },
+        ..LinkLanes::NONE
+    });
+    train_to_patterns(&bench, HdmiForumFrl::Rate6Gbps3Lanes, 0x02);
+    bench.advance(MS);
+    assert_eq!(training(&bench), (0x20, 0, 0));
+}
+
+#[test]
+fn the_lane_limits_are_a_bench_event_and_an_action() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    let limits = LinkLanes::all(LaneLimits {
+        min_tx_ffe: tx_ffe(3),
+        ..LaneLimits::default()
+    });
+    bench
+        .schedule_action(Action::LaneLimits(limits), When::At(bench.now()))
+        .unwrap();
+    bench.advance(MS);
+    assert_eq!(bench.lane_limits(), limits);
+    bench.set_lane_limits(limits);
+    let changes: Vec<_> = bench
+        .transcript()
+        .filter_map(|record| match record.event {
+            Event::LaneLimits(lanes) => Some(lanes),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changes, [limits]);
+    assert_eq!(LinkLanes::default(), LinkLanes::NONE);
 }

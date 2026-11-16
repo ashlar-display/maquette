@@ -5,7 +5,7 @@ use hdmi_hal::ddc::DdcErrorKind;
 
 use hdmi_hal::time::Timestamp;
 
-use crate::line::{ErrorRates, Line};
+use crate::line::{ErrorRates, Line, LinkLanes};
 use crate::transcript::{Event, Record, Transcript};
 
 /// A device on the sink's DDC bus, as the bench routes transactions to it.
@@ -116,6 +116,7 @@ pub struct Env<'e> {
     hpd: bool,
     line: Line,
     errors: ErrorRates,
+    lanes: LinkLanes,
     byte_time: Duration,
     log: &'e mut dyn NoteSink,
 }
@@ -127,6 +128,7 @@ impl<'e> Env<'e> {
             hpd,
             line,
             errors: ErrorRates::NONE,
+            lanes: LinkLanes::NONE,
             byte_time: Duration::ZERO,
             log,
         }
@@ -153,6 +155,11 @@ impl<'e> Env<'e> {
         self.line
     }
 
+    /// The bench as before, with the link's lane limits.
+    pub(crate) fn with_lanes(self, lanes: LinkLanes) -> Self {
+        Self { lanes, ..self }
+    }
+
     /// The bench as before, each byte of a transaction taking `byte_time` on the wire.
     pub(crate) fn with_byte_time(self, byte_time: Duration) -> Self {
         Self { byte_time, ..self }
@@ -161,6 +168,11 @@ impl<'e> Env<'e> {
     /// How long each byte of the transaction takes on the wire: zero outside one.
     pub(crate) fn byte_time(&self) -> Duration {
         self.byte_time
+    }
+
+    /// What each lane of the link can carry in FRL link training.
+    pub fn lane_limits(&self) -> LinkLanes {
+        self.lanes
     }
 
     /// The character errors on the link, as the sink receives them: none while it is

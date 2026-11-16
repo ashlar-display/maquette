@@ -7,7 +7,7 @@ use hdmi_hal::time::Timestamp;
 
 use crate::config::RefusalKind;
 use crate::fault::{Effect, FaultId, Point};
-use crate::line::{ErrorRates, Line};
+use crate::line::{ErrorRates, Line, LinkLanes};
 use crate::phy::{PhyCall, PhyErrorKind};
 
 /// One entry of the transcript: what happened, and when.
@@ -65,6 +65,9 @@ pub enum Event {
     /// The character errors on the link changed
     /// ([`Bench::set_character_errors`](crate::Bench::set_character_errors)).
     CharacterErrors(ErrorRates),
+    /// The lanes' limits in FRL link training changed
+    /// ([`Bench::set_lane_limits`](crate::Bench::set_lane_limits)).
+    LaneLimits(LinkLanes),
     /// HPD changed.
     #[non_exhaustive]
     Hpd {

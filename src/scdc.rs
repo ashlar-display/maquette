@@ -31,7 +31,7 @@ use crate::line::{ErrorRates, Line, RATIO_40_ABOVE_KHZ};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
 use hdmi_hal::HdmiForumFrl;
-use hdmi_hal::phy::{LanePatterns, LtpPattern};
+use hdmi_hal::phy::{EqParams, LanePatterns, LtpPattern, TxFfeLevel};
 
 /// `TMDS_Config` bit 0.
 const SCRAMBLING_ENABLE: u8 = 1 << 0;
@@ -211,9 +211,10 @@ fn role(reg: u8) -> Role {
 ///   (*chosen*, after Xilinx).
 /// - Once the source has cleared `FLT_update` (the sink posts nothing before: Xilinx
 ///   `588–596`; Amlogic `4778`), and each active lane has carried its requested pattern on
-///   the line at the rate for the lock trigger (*chosen*: no source gives the time), the
-///   sink posts 0 on every lane, the pass, with `FLT_update` (Xilinx `398–412`; Amlogic
-///   `4591–4601`, `4792–4794`). A lane requested 0 needs nothing.
+///   the line at the rate, within the link's [`LaneLimits`](crate::LaneLimits), for the lock
+///   trigger (*chosen*: no source gives the time), the sink posts 0 on every lane, the
+///   pass, with `FLT_update` (Xilinx `398–412`; Amlogic `4591–4601`, `4792–4794`). A lane
+///   requested 0 needs nothing.
 /// - After the pass, the lanes lock once the line is FRL at the rate without patterns and
 ///   the lock trigger has passed: `Status_Flags_0` bits 1–3, and bit 4 at 4 lanes. Once
 ///   they are locked and the source has cleared `FLT_update`, the sink sets `FRL_start`
@@ -449,6 +450,7 @@ impl Scdc {
                 Line::Frl {
                     rate: line_rate,
                     patterns,
+                    equalization,
                     ..
                 } if frl_value(line_rate) == rate => {
                     let carried = [
@@ -458,12 +460,15 @@ impl Scdc {
                         patterns.lane3,
                     ]
                     .map(|pattern| pattern.map_or(0, LtpPattern::value));
-                    let lanes = frl_lanes(rate);
-                    posted
-                        .iter()
-                        .zip(carried)
-                        .take(lanes)
-                        .all(|(&request, carried)| request == 0 || request == carried)
+                    let tx_ffe = tx_ffe_levels(equalization);
+                    let limits = env.lane_limits().lanes();
+                    (0..frl_lanes(rate)).all(|lane| {
+                        let within = limits[lane]
+                            .max_rate
+                            .is_none_or(|max| rate <= frl_value(max))
+                            && tx_ffe[lane] >= limits[lane].min_tx_ffe;
+                        posted[lane] == 0 || (posted[lane] == carried[lane] && within)
+                    })
                 }
                 _ => false,
             };
@@ -939,6 +944,19 @@ fn same_lanes(a: Line, b: Line) -> bool {
         ) => rate == other_rate && patterns == other_patterns,
         _ => a == b,
     }
+}
+
+/// Each lane's TxFFE level on the line: 0 where the PHY has set none.
+fn tx_ffe_levels(equalization: Option<EqParams>) -> [TxFfeLevel; 4] {
+    equalization.map_or([TxFfeLevel::default(); 4], |eq| {
+        [
+            eq.lane0.tx_ffe_level,
+            eq.lane1.tx_ffe_level,
+            eq.lane2.tx_ffe_level,
+            eq.lane3
+                .map_or(TxFfeLevel::default(), |lane| lane.tx_ffe_level),
+        ]
+    })
 }
 
 /// How many lanes the `FRL_Rate` value `rate` uses.

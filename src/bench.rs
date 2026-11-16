@@ -16,7 +16,7 @@ use crate::ddc::{BusTiming, Ddc};
 use crate::eddc::Eddc;
 use crate::fault::{Effect, Fault, FaultId, Moment, Schedule, ScheduleFull, Strike};
 use crate::hook::ScdcHook;
-use crate::line::{ErrorRates, Line};
+use crate::line::{ErrorRates, Line, LinkLanes};
 use crate::phy::{Phy, PhyCall, PhyErrorKind, PhyFault, PhySettings, PhyState};
 use crate::scdc::Scdc;
 use crate::target::{Env, Operation, Target};
@@ -119,8 +119,9 @@ struct State<'a, const LOG: usize, const FAULTS: usize> {
     /// The test's SCDC hook: it outlives a plug, which makes a fresh `scdc`.
     scdc_hook: Option<Hook<'a>>,
     line: Line,
-    /// The character errors on the link.
+    /// The character errors on the link, and its lanes' limits.
     errors: ErrorRates,
+    lanes: LinkLanes,
     hpd: bool,
     plugged: bool,
     attached: bool,
@@ -150,11 +151,13 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             hpd,
             line,
             errors,
+            lanes,
             plugged,
             ..
         } = self;
         let mut env = Env::new(at, *hpd, sink_line(*plugged, *line), transcript)
-            .with_errors(sink_errors(*plugged, *errors));
+            .with_errors(sink_errors(*plugged, *errors))
+            .with_lanes(*lanes);
         for target in routed(targets, eddc, scdc) {
             target.update(&mut env);
         }
@@ -224,11 +227,13 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
                 hpd,
                 line,
                 errors,
+                lanes,
                 ..
             } = self;
             let addr = ops.first().map_or(0, Operation::addr);
             let mut env = Env::new(at, *hpd, *line, transcript)
                 .with_errors(*errors)
+                .with_lanes(*lanes)
                 .with_byte_time(per_byte);
             let first = targets
                 .iter_mut()
@@ -352,6 +357,15 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
         }
     }
 
+    /// Sets the lane limits at `at`; the same limits change nothing.
+    fn set_lane_limits(&mut self, at: Timestamp, lanes: LinkLanes) {
+        if self.lanes != lanes {
+            self.lanes = lanes;
+            self.record(at, Event::LaneLimits(lanes));
+            self.update(at);
+        }
+    }
+
     /// Sets HPD at `at`; false when raising it on an unplugged sink, which changes nothing.
     fn set_hpd(&mut self, at: Timestamp, high: bool) -> bool {
         if high && !self.plugged {
@@ -382,6 +396,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             hpd,
             line,
             errors,
+            lanes,
             plugged,
             ..
         } = self;
@@ -389,8 +404,9 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             return false;
         };
         let line = sink_line(*plugged, *line);
-        let mut env =
-            Env::new(at, *hpd, line, transcript).with_errors(sink_errors(*plugged, *errors));
+        let mut env = Env::new(at, *hpd, line, transcript)
+            .with_errors(sink_errors(*plugged, *errors))
+            .with_lanes(*lanes);
         scdc.preset(reg, value, &mut env);
         self.update(at);
         true
@@ -416,6 +432,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
                 } => self.plug(at, edid, displayid, config),
                 Action::Line(line) => self.set_line(at, line),
                 Action::CharacterErrors(errors) => self.set_character_errors(at, errors),
+                Action::LaneLimits(lanes) => self.set_lane_limits(at, lanes),
                 Action::Detach => self.set_attached(at, false),
                 Action::Reattach => self.set_attached(at, true),
             }
@@ -541,6 +558,18 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// The character errors on the link.
     pub fn character_errors(&self) -> ErrorRates {
         self.locked(|state, _| state.errors)
+    }
+
+    /// Sets what each lane of the link can carry in FRL link training: a bench event,
+    /// recorded as `Event::LaneLimits`. Setting the limits the link already has changes
+    /// nothing and records nothing.
+    pub fn set_lane_limits(&self, lanes: LinkLanes) {
+        self.locked(|state, at| state.set_lane_limits(at, lanes));
+    }
+
+    /// What each lane of the link can carry in FRL link training.
+    pub fn lane_limits(&self) -> LinkLanes {
+        self.locked(|state, _| state.lanes)
     }
 
     /// Sets HPD: a bench event, recorded as `Event::Hpd`; setting the level it already has
@@ -1034,6 +1063,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
                 scdc_hook: self.scdc_hook,
                 line: Line::Off,
                 errors: ErrorRates::NONE,
+                lanes: LinkLanes::NONE,
                 hpd: true,
                 plugged: true,
                 attached: true,

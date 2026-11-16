@@ -476,11 +476,18 @@ pub enum Line {
     Off,
     /// TMDS at `character_rate_khz`, the clock at `ratio`, scrambled or not.
     Tmds { character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool },
-    /// FRL at `rate`, the training pattern on each lane (`FrlPhy::send_ltp`) and what
-    /// the lanes carry without one (`FrlPhy::set_frl_output`). `#[non_exhaustive]`: built
-    /// with `Line::frl(rate)` (no patterns, gap characters only, as a PHY entering the
-    /// rate) or `Line::frl_with(rate, patterns, output)`, matched with `..`.
-    Frl { rate: HdmiForumFrl, patterns: LanePatterns, output: FrlOutput },
+    /// FRL at `rate`, the training pattern on each lane (`FrlPhy::send_ltp`), what the
+    /// lanes carry without one (`FrlPhy::set_frl_output`) and the equalization
+    /// (`FrlPhy::adjust_equalization`; `None` since the rate was entered: TxFFE level 0).
+    /// `#[non_exhaustive]`: built with `Line::frl(rate)` (no patterns, gap characters only,
+    /// as a PHY entering the rate) or `Line::frl_with(rate, patterns, output)`, with
+    /// `.with_equalization(eq)`, matched with `..`.
+    Frl {
+        rate: HdmiForumFrl,
+        patterns: LanePatterns,
+        output: FrlOutput,
+        equalization: Option<EqParams>,
+    },
 }
 
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
@@ -490,7 +497,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 }
 ```
 
-`TmdsClockRatio`, `HdmiForumFrl`, `LanePatterns` and `FrlOutput` are hdmi-hal's. A target sees the line through
+`TmdsClockRatio`, `HdmiForumFrl`, `LanePatterns`, `FrlOutput` and `EqParams` are hdmi-hal's. A target sees the line through
 `Env::line()`. Setting the line it already has is not a change: nothing is recorded and the
 time it started stays. An unplugged sink receives no line: its targets see `Line::Off`.
 
@@ -499,6 +506,12 @@ lanes 0–3 (public fields, as hdmi-hal's `LanePatterns`), none by default. The 
 them with `Bench::set_character_errors`, recorded as `Event::CharacterErrors`; a target sees
 them through `Env::character_errors()`, none while the sink is unplugged. The sink's
 counters count them while each lane is locked ("Sink behaviour").
+
+So do the lanes' limits in FRL link training: `LinkLanes`, a `LaneLimits` for each lane (the
+highest rate it trains at, and the least TxFFE level it needs), none by default; set with
+`Bench::set_lane_limits`, recorded as `Event::LaneLimits`, seen through `Env::lane_limits()`.
+A lane outside its limits does not carry the patterns the sink asks for, so training does
+not pass: a procedure's TxFFE and rate fallbacks are tested against it.
 
 ### HPD, unplug and detach
 
@@ -576,6 +589,8 @@ pub enum Event {
     Line(Line),
     /// The character errors on the link changed (`Bench::set_character_errors`).
     CharacterErrors(ErrorRates),
+    /// The lanes' limits in FRL link training changed (`Bench::set_lane_limits`).
+    LaneLimits(LinkLanes),
     /// HPD changed.
     Hpd { high: bool },
     /// The sink was unplugged or plugged.
@@ -649,7 +664,7 @@ source settles is marked *chosen*.
 | An FRL sink: `FLT_ready` set before training | settled [17] | set from the start when `with_max_frl_rate` names a rate (`None` by default: a TMDS-only sink), and again after a reset clears it |
 | LTS:3 starts on a write of a non-zero `FRL_Rate`; `FRL_start` cleared; one request per lane in 0x41–0x42, LFSR patterns first, with `FLT_update` | settled [17]; which LFSR on which lane, one sink fixed, one configurable | every write of `Config_1` restarts it (*chosen*); the requests a setting, `with_ltp_requests`, by default LFSR 0–3 on lanes 0–3 |
 | A rate the sink cannot take | one receiver: 0xF on every lane [17] | 0xF on every lane for a rate above the maximum or a value naming none (*chosen*) |
-| New requests only after the source clears `FLT_update`; 0 on every lane once each lane carries its pattern | settled [17]; how long matching takes, no source | matching counted from the clear, at the rate, for the lock trigger (*chosen*); a lane requested 0 needs nothing |
+| New requests only after the source clears `FLT_update`; 0 on every lane once each lane carries its pattern | settled [17]; how long matching takes, no source | matching counted from the clear, at the rate, within the link's `LaneLimits`, for the lock trigger (*chosen*); a lane requested 0 needs nothing |
 | `FRL_start` once the lanes lock after the pass and `FLT_update` is cleared | settled [17] | lanes 0–2 (and 3 at 4 lanes) lock once the line is FRL at the rate without patterns, for the lock trigger; a change of output keeps them; `Clock_Detected` stays clear in FRL (*chosen*) |
 | `FRL_Rate` 0 returns to legacy | settled [17] | the requests cleared; a reset of the status group also returns to legacy (*chosen*) |
 | `Status_Update` set when the status flags change | no receiver source shows it (the receivers set it in hardware); one source family reads the flags only when it is set, others regardless [15] | a setting: `StatusUpdate::OnChange` (*chosen* default) or `Never` |
@@ -993,6 +1008,7 @@ pub enum Action<'a> {
     Plug { edid: &'a [u8], displayid: Option<&'a [u8]>, config: SinkConfig },
     Line(Line),                            // as Bench::set_line
     CharacterErrors(ErrorRates),           // as Bench::set_character_errors
+    LaneLimits(LinkLanes),                 // as Bench::set_lane_limits
     Detach,
     Reattach,
 }

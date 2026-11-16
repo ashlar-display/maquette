@@ -69,7 +69,7 @@ pub use coupled::Coupled;
 pub use ddc::{BusError, BusTiming, Ddc};
 pub use fault::{Effect, Fault, FaultId, Filter, OpKind, Point, ScheduleFull, Times};
 pub use hook::{HookWrite, ScdcHook, ScdcRegisters};
-pub use line::{ErrorRates, Line};
+pub use line::{ErrorRates, LaneLimits, Line, LinkLanes};
 pub use phy::{
     ConfigureWhileRunning, Phy, PhyCall, PhyCallKind, PhyError, PhyErrorKind, PhyFault,
     PhySettings, ScramblerAfterConfigure,
