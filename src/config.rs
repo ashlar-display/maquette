@@ -38,6 +38,8 @@ pub struct SinkConfig {
     pub(crate) hpd_resets: [HpdReset; RegisterGroup::COUNT],
     pub(crate) status_update: StatusUpdate,
     pub(crate) ced_update: CedUpdate,
+    pub(crate) ced_read: CedRead,
+    pub(crate) during_read: DuringRead,
 }
 
 impl SinkConfig {
@@ -61,6 +63,8 @@ impl SinkConfig {
             hpd_resets: [HpdReset::OnHpdLow; RegisterGroup::COUNT],
             status_update: StatusUpdate::OnChange,
             ced_update: CedUpdate::EverySecond { rise: 4 },
+            ced_read: CedRead::Keep,
+            during_read: DuringRead::Held,
         }
     }
 
@@ -239,6 +243,23 @@ impl SinkConfig {
         Self { ced_update, ..self }
     }
 
+    /// Whether a read of a character error counter clears it; by default [`CedRead::Keep`]
+    /// (*chosen*).
+    #[must_use]
+    pub const fn with_ced_read(self, ced_read: CedRead) -> Self {
+        Self { ced_read, ..self }
+    }
+
+    /// Whether the registers that change by themselves hold still during a read; by default
+    /// [`DuringRead::Held`] (*chosen*).
+    #[must_use]
+    pub const fn with_during_read(self, during_read: DuringRead) -> Self {
+        Self {
+            during_read,
+            ..self
+        }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -322,6 +343,16 @@ impl SinkConfig {
     /// When the sink sets `CED_Update`.
     pub const fn ced_update(&self) -> CedUpdate {
         self.ced_update
+    }
+
+    /// Whether a read of a character error counter clears it.
+    pub const fn ced_read(&self) -> CedRead {
+        self.ced_read
+    }
+
+    /// Whether the registers that change by themselves hold still during a read.
+    pub const fn during_read(&self) -> DuringRead {
+        self.during_read
     }
 }
 
@@ -489,6 +520,38 @@ pub enum CedUpdate {
     },
     /// Never set: a source that reads the counters only when it is set sees no errors.
     Never,
+}
+
+/// Whether reading a character error counter clears it. Unresolved in public sources: one
+/// source's comments say reading clears the counts at the sink (Xilinx embeddedsw
+/// `97f2baf7f69e`, `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:2979`), while
+/// the same vendor's receiver keeps them, and Linux reads the whole map for debugging with
+/// no word of losing them (github.com/torvalds/linux `e9954f3fbddd`,
+/// `drivers/gpu/drm/display/drm_scdc_helper.c:440–478`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CedRead {
+    /// The counts are kept (*chosen* default).
+    Keep,
+    /// A read of a lane's high byte, the second of its two, clears the lane's count, after
+    /// the byte is sent (*chosen*: the byte a source reads last); the next `CED_Update`
+    /// check measures its rise from 0.
+    ClearOnRead,
+}
+
+/// Whether the registers that change by themselves (the character error counters) hold
+/// still while a read is under way. Public sources show both kinds of sink, and none
+/// settles which is common.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DuringRead {
+    /// A read returns them as they were when the transaction started; what the read
+    /// changes (a clear on read) shows from the next bench event (*chosen* default).
+    Held,
+    /// Each byte is taken at its own moment, the transaction's start plus the bench's time
+    /// per byte for the bytes before it on the wire: a burst can see a count rise, or a
+    /// clear, between a lane's bytes or before the checksum, and read a torn value.
+    Moving,
 }
 
 /// A group of SCDC registers that an HPD low resets together.

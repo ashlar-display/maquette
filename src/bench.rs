@@ -196,6 +196,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
     fn transaction(
         &mut self,
         at: Timestamp,
+        per_byte: Duration,
         record: BusRecord,
         ops: &mut [Operation<'_>],
         fault: Option<Strike>,
@@ -226,7 +227,9 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
                 ..
             } = self;
             let addr = ops.first().map_or(0, Operation::addr);
-            let mut env = Env::new(at, *hpd, *line, transcript).with_errors(*errors);
+            let mut env = Env::new(at, *hpd, *line, transcript)
+                .with_errors(*errors)
+                .with_byte_time(per_byte);
             let first = targets
                 .iter_mut()
                 .map(|target| &mut **target as &mut dyn Target)
@@ -840,7 +843,8 @@ impl<const LOG: usize, const FAULTS: usize> Core for Bench<'_, LOG, FAULTS> {
         ops: &mut [Operation<'_>],
         fault: Option<Strike>,
     ) -> (Result<(), DdcErrorKind>, Reach) {
-        self.locked(|state, at| state.transaction(at, record, ops, fault))
+        let per_byte = self.timing.per_byte;
+        self.locked(|state, at| state.transaction(at, per_byte, record, ops, fault))
     }
 
     fn record(&self, record: BusRecord) {

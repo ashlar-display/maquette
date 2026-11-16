@@ -23,8 +23,8 @@ use hdmi_hal::phy::TmdsClockRatio;
 use hdmi_hal::time::Timestamp;
 
 use crate::config::{
-    CedUpdate, DuringHpdLow, HpdReset, OwnedWrite, Refusal, RefusalKind, RegisterGroup,
-    ScdcPastEnd, SinkConfig, StatusUpdate, Trigger,
+    CedRead, CedUpdate, DuringHpdLow, DuringRead, HpdReset, OwnedWrite, Refusal, RefusalKind,
+    RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Trigger,
 };
 use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
 use crate::line::{ErrorRates, Line, RATIO_40_ABOVE_KHZ};
@@ -82,6 +82,8 @@ const SOURCE_TEST_CONFIGURATION: u8 = 0x35;
 /// The first character error counter, lane 0's low byte; each lane's is two bytes, low
 /// then high, lanes 0–2 at 0x50–0x55, and the checksum at 0x56.
 const CED: u8 = 0x50;
+/// The checksum of the counters of lanes 0–2.
+const CED_CHECKSUM: u8 = 0x56;
 /// A counter's high byte, bit 7: the count is valid.
 const CED_VALID: u8 = 1 << 7;
 /// A counter's largest count, where it stays.
@@ -168,7 +170,9 @@ fn role(reg: u8) -> Role {
 /// not recorded: they move with time; a test reads them through the bench's `Sink` view.
 /// `CED_Update` is set by [`CedUpdate`]'s rule, its checks at whole seconds on the bench's
 /// clock, each seeing the counts as they were at that second; the flag set is recorded at
-/// the bench event at or after that second, as a scheduled action's time is.
+/// the bench event at or after that second, as a scheduled action's time is. A read of the
+/// counters sees them at the transaction's start, or with [`DuringRead::Moving`] each byte
+/// at its own moment; with [`CedRead::ClearOnRead`] reading a lane's high byte clears it.
 ///
 /// Evaluated at every event: each transaction, each byte written, each read of the status
 /// or the status flags, and every update. The line and the registers change only at events, so what an
@@ -218,6 +222,8 @@ pub(crate) struct Scdc {
     errors: ErrorRates,
     ced_shown: [u8; 7],
     ced_update: CedUpdate,
+    ced_read: CedRead,
+    during_read: DuringRead,
     /// The last `CED_Update` check, and the counts it saw.
     checked_at: Timestamp,
     ced_checked: [u64; 3],
@@ -264,6 +270,8 @@ impl Scdc {
             errors: ErrorRates::NONE,
             ced_shown: [0; 7],
             ced_update: config.ced_update,
+            ced_read: config.ced_read,
+            during_read: config.during_read,
             checked_at: Timestamp::from_micros(0),
             ced_checked: [0; 3],
             hpd_low_since: None,
@@ -448,7 +456,12 @@ impl Scdc {
     /// locked lane whose count can rise, later checks change nothing but the counts they
     /// keep: they are skipped to the last.
     fn count_and_check(&mut self, env: &mut Env<'_>) {
-        let now = env.now();
+        self.count_and_check_to(env.now(), env);
+    }
+
+    /// As [`count_and_check`](Self::count_and_check), to `now`: the event's time, or a byte's
+    /// within a transaction.
+    fn count_and_check_to(&mut self, now: Timestamp, env: &mut Env<'_>) {
         let CedUpdate::EverySecond { rise } = self.ced_update else {
             self.count_errors(now);
             return;
@@ -506,7 +519,12 @@ impl Scdc {
 
     /// Counts the errors up to `now`, at the rates and on the lanes locked since the last
     /// count: neither changes between events.
+    /// A time before the last count (a byte's time runs ahead of the transaction's start)
+    /// counts nothing.
     fn count_errors(&mut self, now: Timestamp) {
+        if now <= self.counted_to {
+            return;
+        }
         let micros = now.saturating_duration_since(self.counted_to).as_micros();
         let micros = u64::try_from(micros).unwrap_or(u64::MAX);
         self.counted_to = now;
@@ -517,6 +535,17 @@ impl Scdc {
         for (count, rate) in self.ced.iter_mut().zip(rates).take(3) {
             let more = u64::from(rate).saturating_mul(micros);
             *count = count.saturating_add(more).min(CED_MAX * CED_UNIT);
+        }
+    }
+
+    /// A read of `reg` with [`CedRead::ClearOnRead`]: a lane's high byte clears its count.
+    fn clear_on_read(&mut self, reg: u8) {
+        if let Some(lane) = [CED + 1, CED + 3, CED + 5]
+            .iter()
+            .position(|&high| high == reg)
+        {
+            self.ced[lane] = 0;
+            self.ced_checked[lane] = 0;
         }
     }
 
@@ -696,7 +725,13 @@ impl Scdc {
     ) -> Result<(), DdcErrorKind> {
         self.evaluate(env, None);
         let refuse_past_end = self.past_end == ScdcPastEnd::Nack;
+        // Bytes on the wire before the next: each operation's address byte, then its data.
+        let mut wire: u32 = 0;
         for op in ops.iter_mut() {
+            wire = wire.saturating_add(1).saturating_add(match op {
+                Operation::Write { bytes, .. } => u32::try_from(bytes.len()).unwrap_or(u32::MAX),
+                Operation::Read { .. } => 0,
+            });
             match op {
                 Operation::Write { addr: SCDC, bytes } => {
                     let Some((&offset, data)) = bytes.split_first() else {
@@ -742,6 +777,13 @@ impl Scdc {
                         if matches!(self.offset, SCRAMBLING_STATUS | STATUS_FLAGS_0) {
                             self.evaluate(env, Some(self.offset));
                         }
+                        let counter = (CED..=CED_CHECKSUM).contains(&self.offset);
+                        if counter && self.during_read == DuringRead::Moving {
+                            let ahead = env.byte_time().saturating_mul(wire);
+                            let at = env.now().checked_add(ahead).unwrap_or(env.now());
+                            self.count_and_check_to(at, env);
+                            self.show_errors();
+                        }
                         let value = self.get(self.offset);
                         *byte = match hook.as_deref_mut() {
                             Some(hook) => {
@@ -749,6 +791,10 @@ impl Scdc {
                             }
                             None => value,
                         };
+                        if self.ced_read == CedRead::ClearOnRead {
+                            self.clear_on_read(self.offset);
+                        }
+                        wire = wire.saturating_add(1);
                         // A read wraps past 0xFF: the sink cannot refuse a byte it sends.
                         self.advance();
                     }

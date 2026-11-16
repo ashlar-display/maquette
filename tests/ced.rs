@@ -1,12 +1,12 @@
 //! The character error counters: counted while the lane is locked, valid bits, saturation,
-//! the checksum, resets and `CED_Update`.
+//! the checksum, resets, `CED_Update`, clear on read and torn reads.
 
 use core::time::Duration;
 
 use maquette::hdmi_hal::ddc::SCDC;
 use maquette::{
-    Action, Actor, Bench, CedUpdate, DdcBus, ErrorRates, Event, HpdReset, Line, RegisterGroup,
-    SinkConfig, TmdsClockRatio, When,
+    Action, Actor, Bench, CedRead, CedUpdate, DdcBus, DuringRead, ErrorRates, Event, HpdReset,
+    Line, RegisterGroup, SinkConfig, TmdsClockRatio, When,
 };
 
 const MS: Duration = Duration::from_millis(1);
@@ -291,6 +291,100 @@ fn a_rise_of_0_is_taken_as_1() {
     assert!(!ced_update(&bench), "no rise, no flag");
     bench.set_character_errors(ErrorRates {
         lane0: 1,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_secs(2));
+    assert!(ced_update(&bench));
+}
+
+/// Reads the counters 0x50–0x56 in one burst: the offset written, then seven bytes, the
+/// first of them the fourth byte on the wire (two for the write, the read's address).
+fn read_counters(bench: &Bench<'_>) -> [u8; 7] {
+    let mut read = [0u8; 7];
+    bench.ddc().write_read(SCDC, &[0x50], &mut read).unwrap();
+    read
+}
+
+/// One error a microsecond on lane 0: at the default 90 µs a byte, 90 more each byte.
+const FAST: ErrorRates = ErrorRates {
+    lane0: 1_000_000,
+    lane1: 0,
+    lane2: 0,
+    lane3: 0,
+};
+
+#[test]
+fn a_held_burst_reads_the_counters_as_they_were_at_its_start() {
+    let bench = locked(SinkConfig::new());
+    bench.set_character_errors(FAST);
+    let read = read_counters(&bench);
+    // The burst started as the errors did: every count 0, consistent with its checksum.
+    assert_eq!(read, [0, 0x80, 0, 0x80, 0, 0x80, 0x80]);
+    assert!(sums_to_zero(read));
+}
+
+#[test]
+fn a_moving_burst_reads_each_byte_at_its_moment_and_can_tear() {
+    let config = SinkConfig::new().with_during_read(DuringRead::Moving);
+    assert_eq!(config.during_read(), DuringRead::Moving);
+    let bench = locked(config);
+    bench.set_character_errors(FAST);
+    let read = read_counters(&bench);
+    // Lane 0's low byte at 270 µs (count 270), its high byte at 360 µs (count 360).
+    assert_eq!(read[0], (270u16 & 0xFF) as u8);
+    assert_eq!(read[1], 0x80 | (360u16 >> 8) as u8);
+    // The checksum, at 810 µs, is for counts the burst did not read.
+    assert!(!sums_to_zero(read));
+    // Still: the sink's own bytes are consistent.
+    assert!(sums_to_zero(counters(&bench)));
+}
+
+#[test]
+fn a_counter_read_clears_it_with_clear_on_read() {
+    let config = SinkConfig::new().with_ced_read(CedRead::ClearOnRead);
+    assert_eq!(config.ced_read(), CedRead::ClearOnRead);
+    let bench = locked(config);
+    bench.set_character_errors(ErrorRates::all(1_000));
+    bench.advance(Duration::from_millis(10));
+    bench.set_character_errors(ErrorRates::NONE);
+    // A low byte alone clears nothing.
+    let mut low = [0];
+    bench.ddc().write_read(SCDC, &[0x50], &mut low).unwrap();
+    assert_eq!(low, [10]);
+    // A held burst reads the counts and its checksum together, then they clear.
+    let read = read_counters(&bench);
+    assert_eq!(read, [10, 0x80, 10, 0x80, 10, 0x80, 0x62]);
+    assert!(sums_to_zero(read));
+    assert_eq!(read_counters(&bench), [0, 0x80, 0, 0x80, 0, 0x80, 0x80]);
+}
+
+#[test]
+fn a_moving_burst_with_clear_on_read_sees_its_own_clears_in_the_checksum() {
+    let config = SinkConfig::new()
+        .with_ced_read(CedRead::ClearOnRead)
+        .with_during_read(DuringRead::Moving);
+    let bench = locked(config);
+    bench.set_character_errors(ErrorRates::all(1_000));
+    bench.advance(Duration::from_millis(10));
+    bench.set_character_errors(ErrorRates::NONE);
+    let read = read_counters(&bench);
+    // The counts as read, and the checksum after all three cleared.
+    assert_eq!(read, [10, 0x80, 10, 0x80, 10, 0x80, 0x80]);
+    assert!(!sums_to_zero(read));
+}
+
+#[test]
+fn after_a_clear_ced_update_measures_the_rise_from_zero() {
+    let config = SinkConfig::new().with_ced_read(CedRead::ClearOnRead);
+    let bench = locked(config);
+    bench.set_character_errors(ErrorRates::all(1_000));
+    bench.advance(SECOND);
+    bench.set_character_errors(ErrorRates::NONE);
+    read_counters(&bench);
+    bench.ddc().write(SCDC, &[0x10, 0x02]).unwrap();
+    // Four errors after the clear: a rise of 4 from 0, though below the count before it.
+    bench.set_character_errors(ErrorRates {
+        lane0: 4,
         ..ErrorRates::NONE
     });
     bench.advance(Duration::from_secs(2));

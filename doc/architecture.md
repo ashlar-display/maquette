@@ -49,7 +49,7 @@ sink must do internally.
 
 Planned before the first release: a harness that cancels async procedures at every await
 point; the sink's FRL training responses; a message-level sink over embedded-hal 1.0's `I2c`,
-for checking a `DdcBus` at the wire; the CED counters, with torn reads.
+for checking a `DdcBus` at the wire.
 
 Later: an HDCP port, with the stack's HDCP support (until then a test adds one as a target);
 checks for the video pipeline and packet transmission traits, when those traits exist.
@@ -282,9 +282,11 @@ between pieces, which an EDID read has to catch.
 
 **Torn reads.** By default the sink holds its registers still during a transfer (*chosen*:
 sinks of both kinds exist, and no source settles which is common). A sink that does not is a
-setting, as is a bus that `splits_reads`: each byte is then evaluated at its own moment, the
-transfer's start plus the per-byte charge so far. Only registers that change by themselves
-can tear — the CED counters and FRL's LTP requests — so the setting arrives with them.
+setting, `DuringRead::Moving`: each byte read is then taken at its own moment, the
+transfer's start plus the bench's time per byte for the bytes before it on the wire. Only
+registers that change by themselves can tear: the CED counters, and FRL's LTP requests when
+they come. A backend that reads byte by byte makes a transaction of each, and time passes
+between them, so it can read torn values from a holding sink too.
 
 **The operation budget.** A bench counts every operation through its handles — bus calls,
 refused ones included, PHY calls, clock reads and delays — against a budget,
@@ -304,6 +306,7 @@ builders for each setting (`without_scdc()`, `without_segment_pointer()`,
 `with_scrambling_lock(trigger)`, `with_strict_lock(..)`, `with_scrambling_refusals(..)`,
 `with_enable_timeout(..)`, `with_hpd_reset(group, rule)`, `with_scdc_during_hpd_low(..)`,
 `with_edid_during_hpd_low(..)`, `with_status_update(..)`, `with_ced_update(..)`,
+`with_ced_read(..)`, `with_during_read(..)`,
 …), with a getter for each, as the stack's other
 capability and option types are built (`DdcCapabilities`, `TmdsPhyCapabilities`). There are
 no named sink models: a name would suggest a real product whose behaviour no source backs.
@@ -638,6 +641,8 @@ source settles is marked *chosen*.
 | `Status_Flags_0`: bit 0 `Clock_Detected`, bits 1–4 lanes 0–3 locked, set by the sink's hardware as the lanes lock | the bits settled [15]; no source shows the timing | `Clock_Detected` set while the line is TMDS (*chosen*: at once); lanes 0–2 locked once the sink can decode the line (TMDS at a ratio that fits the rate and matches `TMDS_Bit_Clock_Ratio`, scrambled exactly when `Scrambling_Enable` is set, and scrambled above 340 Mcsc) and the lock trigger has passed (*chosen*: the scrambling lock's, `AfterReads` counting reads of 0x40); cleared when it cannot. Lane 3 and `FLT_ready` are FRL's. Changed only when what the sink sees changes, so a preset holds until then; an unplugged sink receives no line |
 | Character error counters (0x50–0x56): 15 bits a lane, bit 7 of the high byte valid, saturating at 0x7FFF; 0x56 a checksum, 0x50–0x56 summing to zero over 3 lanes | the checksum and the valid bit settled [16]; saturation from one receiver [16]; no source says what makes a count valid | lanes 0–2 count the link's `ErrorRates` while locked, exactly (fractions carry over), and stop at 0x7FFF; valid while the lane is locked (*chosen*: an error-free locked link then reads 0x80 at 0x56, as a real sink did); not recorded, as they move with time; a preset holds until the counts change. Lane 3, the 4-lane checksum and the Reed-Solomon corrections are FRL's |
 | `CED_Update` set from the counters | one receiver: checked once a second, set when a valid count rose by at least 4 since the last check or just reached 0x7FFF [16]; one receiver that did not set it on errors [16] | a setting: `CedUpdate::EverySecond { rise }` (*chosen* default, a rise of 4, checked at whole seconds on the bench's clock, each seeing the counts at its second and recorded at the bench event at or after it), or `Never` |
+| Reading a counter clears it | unresolved: one source's comments say reading clears the counts, its vendor's receiver keeps them, and Linux reads the whole map for debugging with no word of losing them [16] | a setting: `CedRead::Keep` (*chosen* default) or `ClearOnRead`, which clears a lane when its high byte, the second of its two, is read (*chosen*); the next `CED_Update` check measures its rise from 0 |
+| The counters during a read | both kinds of sink exist; no source settles which is common | a setting: `DuringRead::Held` (*chosen* default), a read sees them as at the transaction's start, and a clear shows from the next event; or `Moving`, each byte at its own moment (Torn reads, above) |
 | `Status_Update` set when the status flags change | no receiver source shows it (the receivers set it in hardware); one source family reads the flags only when it is set, others regardless [15] | a setting: `StatusUpdate::OnChange` (*chosen* default) or `Never` |
 | A sink without SCDC | one source: a failed `Source_Version` write means no SCDC [7] | NACKs 0x54 (*chosen*) |
 | A write to an SCDC register the sink owns | no source | a setting: acknowledged and ignored, recorded (*chosen*), or `NoAcknowledge(Data)` at that byte |
@@ -689,8 +694,8 @@ written, before each read of the status (which `Trigger::AfterReads` counts) and
 other bench event.
 
 Planned before the first release: FRL training responses (`FLT_ready`, LTP requests,
-`FLT_update`, `FRL_start`) and the rest of the CED counters (both clear-on-read
-behaviours, held or moving during a burst).
+`FLT_update`, `FRL_start`), and with them lane 3's counter, the 4-lane checksum and the
+Reed-Solomon corrections.
 
 ---
 
@@ -1400,7 +1405,7 @@ Driver source read at these commits; line numbers refer to them.
 | [13] | What the sink resets around HPD | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:740–765` (lowering HPD resets FRL, raising it clears `FRL_Rate`), `xv_hdmirx1_frl.c:76`, `1480–1502` (the reset clears `TMDS_Config` bits 1:0, in FRL builds), `xv_hdmirx1_intr.c:1168–1182` (the cable's 5 V lost clears all of SCDC); Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw.c:2045–2069`, `2854–2870` (SCDC cleared on T7 and later chips, or the HPD state handed to the IP's SCDC block), called with HPD low from `hdmi_rx_wrapper.c:3663`, `4794–4797` |
 | [14] | DDC at 100 kHz | i915 `drivers/gpu/drm/i915/display/intel_gmbus.c:960–961` ("a conservative clock rate"); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:1580` (the DDC clock divider) |
 | [15] | The status flags and `Status_Update` | the bits: Linux `include/drm/display/drm_scdc.h:55–64`, `drivers/gpu/drm/display/drm_scdc_helper.c:354–357`; Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4647` (comment), `4736–4744` (bits 0–3 all set: TMDS locked); set by the receiver's hardware, waited on in FRL training: Amlogic's receiver `hdmi_rx_hw_t3x.c:4645–4662`, Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:82`, `xv_hdmirx1_intr.c:2152–2162`; read only on `Status_Update`, which is then cleared: Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:88–112`; read regardless: Linux `drm_scdc_helper.c:440–478`, Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:886–903` |
-| [16] | The character error counters | the checksum over 0x50–0x56 at 3 lanes and the valid bit: Linux `drivers/gpu/drm/display/drm_scdc_helper.c:383–412`, Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:35–68`; saturation at 0x7FFF and `CED_Update`'s check: Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`; a receiver that did not set `CED_Update` on errors: Intel knowledge base 000087546; reset on HPD low to high or power-off: LG, EP 3 160 152 A1, [0064] |
+| [16] | The character error counters | the checksum over 0x50–0x56 at 3 lanes and the valid bit: Linux `drivers/gpu/drm/display/drm_scdc_helper.c:383–412`, Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:35–68`; saturation at 0x7FFF and `CED_Update`'s check: Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`; a receiver that did not set `CED_Update` on errors: Intel knowledge base 000087546; reading clears the counts, in a source's comments: Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:2979`; the whole map read for debugging: Linux `drm_scdc_helper.c:440–478`; reset on HPD low to high or power-off: LG, EP 3 160 152 A1, [0064] |
 
 Standards (VESA, public):
 

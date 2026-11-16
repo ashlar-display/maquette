@@ -1,6 +1,8 @@
 //! Targets: the devices of the sink at their DDC addresses.
 
+use core::time::Duration;
 use hdmi_hal::ddc::DdcErrorKind;
+
 use hdmi_hal::time::Timestamp;
 
 use crate::line::{ErrorRates, Line};
@@ -114,6 +116,7 @@ pub struct Env<'e> {
     hpd: bool,
     line: Line,
     errors: ErrorRates,
+    byte_time: Duration,
     log: &'e mut dyn NoteSink,
 }
 
@@ -124,6 +127,7 @@ impl<'e> Env<'e> {
             hpd,
             line,
             errors: ErrorRates::NONE,
+            byte_time: Duration::ZERO,
             log,
         }
     }
@@ -147,6 +151,16 @@ impl<'e> Env<'e> {
     /// unplugged.
     pub fn line(&self) -> Line {
         self.line
+    }
+
+    /// The bench as before, each byte of a transaction taking `byte_time` on the wire.
+    pub(crate) fn with_byte_time(self, byte_time: Duration) -> Self {
+        Self { byte_time, ..self }
+    }
+
+    /// How long each byte of the transaction takes on the wire: zero outside one.
+    pub(crate) fn byte_time(&self) -> Duration {
+        self.byte_time
     }
 
     /// The character errors on the link, as the sink receives them: none while it is

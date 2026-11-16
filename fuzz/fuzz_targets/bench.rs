@@ -23,12 +23,12 @@ use core::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
 use maquette::{
-    Action, Actor, Bench, BlockBoundary, CedUpdate, Clock, ColorBitDepth, ColorFormat, DdcBus,
-    DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, ErrorRates, Event,
-    Fault, Filter, FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource,
-    OpKind, OwnedWrite, PastStore, PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal,
-    RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Times, Timestamp,
-    TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger, When,
+    Action, Actor, Bench, BlockBoundary, CedRead, CedUpdate, Clock, ColorBitDepth, ColorFormat,
+    DdcBus, DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, DuringRead, EddcTarget, Effect,
+    ErrorRates, Event, Fault, Filter, FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment,
+    NoAcknowledgeSource, OpKind, OwnedWrite, PastStore, PhyCallKind, PhyFault, PhyPower, Point,
+    Record, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Times,
+    Timestamp, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger, When,
 };
 
 /// The most actions one input runs.
@@ -190,6 +190,12 @@ impl Input<'_> {
         });
         if c & (1 << 12) != 0 {
             config = config.with_status_update(StatusUpdate::Never);
+        }
+        if c & (1 << 13) != 0 {
+            config = config.with_ced_read(CedRead::ClearOnRead);
+        }
+        if c & (1 << 14) != 0 {
+            config = config.with_during_read(DuringRead::Moving);
         }
         config = config.with_past_store(if b % 2 == 0 {
             PastStore::Fill
