@@ -2,6 +2,9 @@
 
 use core::time::Duration;
 
+use hdmi_hal::HdmiForumFrl;
+use hdmi_hal::phy::{LanePatterns, LtpPattern};
+
 /// The sink's settings.
 ///
 /// [`new`](Self::new) is the default sink: an SCDC sink reporting `Sink_Version` 1, with an
@@ -40,6 +43,8 @@ pub struct SinkConfig {
     pub(crate) ced_update: CedUpdate,
     pub(crate) ced_read: CedRead,
     pub(crate) during_read: DuringRead,
+    pub(crate) max_frl_rate: Option<HdmiForumFrl>,
+    pub(crate) ltp_requests: LanePatterns,
 }
 
 impl SinkConfig {
@@ -65,6 +70,13 @@ impl SinkConfig {
             ced_update: CedUpdate::EverySecond { rise: 4 },
             ced_read: CedRead::Keep,
             during_read: DuringRead::Held,
+            max_frl_rate: None,
+            ltp_requests: LanePatterns {
+                lane0: Some(LtpPattern::Lfsr0),
+                lane1: Some(LtpPattern::Lfsr1),
+                lane2: Some(LtpPattern::Lfsr2),
+                lane3: Some(LtpPattern::Lfsr3),
+            },
         }
     }
 
@@ -260,6 +272,33 @@ impl SinkConfig {
         }
     }
 
+    /// A sink that takes FRL, up to `max_frl_rate`; `None` (the default), or
+    /// `HdmiForumFrl::NotSupported`, for a TMDS-only sink. An FRL sink sets `FLT_ready` and
+    /// answers link training on a write of `FRL_Rate`, as the public receivers do; a rate
+    /// above its maximum it answers with a request for a lower rate on every lane (*chosen*,
+    /// after one receiver: Xilinx embeddedsw `97f2baf7f69e`,
+    /// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:1122–1126`, `775–782`).
+    #[must_use]
+    pub const fn with_max_frl_rate(self, max_frl_rate: Option<HdmiForumFrl>) -> Self {
+        Self {
+            max_frl_rate,
+            ..self
+        }
+    }
+
+    /// The link training patterns an FRL sink first requests on each lane; `None` posts 0,
+    /// no pattern. By default LFSR 0–3 on lanes 0–3, as Amlogic's receiver
+    /// (github.com/CoreELEC/common_drivers `8ca9b6c3b715`,
+    /// `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4775–4776`); Xilinx's takes any LFSR
+    /// per lane (`xv_hdmirx1_frl.c:147–160`).
+    #[must_use]
+    pub const fn with_ltp_requests(self, ltp_requests: LanePatterns) -> Self {
+        Self {
+            ltp_requests,
+            ..self
+        }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -353,6 +392,16 @@ impl SinkConfig {
     /// Whether the registers that change by themselves hold still during a read.
     pub const fn during_read(&self) -> DuringRead {
         self.during_read
+    }
+
+    /// The highest FRL rate the sink takes; `None` for a TMDS-only sink.
+    pub const fn max_frl_rate(&self) -> Option<HdmiForumFrl> {
+        self.max_frl_rate
+    }
+
+    /// The link training patterns an FRL sink first requests.
+    pub const fn ltp_requests(&self) -> LanePatterns {
+        self.ltp_requests
     }
 }
 

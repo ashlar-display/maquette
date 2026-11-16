@@ -30,6 +30,8 @@ use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
 use crate::line::{ErrorRates, Line, RATIO_40_ABOVE_KHZ};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
+use hdmi_hal::HdmiForumFrl;
+use hdmi_hal::phy::{LanePatterns, LtpPattern};
 
 /// `TMDS_Config` bit 0.
 const SCRAMBLING_ENABLE: u8 = 1 << 0;
@@ -47,6 +49,24 @@ const CED_CHECK: Duration = Duration::from_secs(1);
 const CLOCK_DETECTED: u8 = 1 << 0;
 /// `Status_Flags_0` bits 1–3: lanes 0–2 locked.
 const LANES_LOCKED: u8 = 0b1110;
+/// `Status_Flags_0` bits 1–4: lanes 0–3 locked, in 4-lane FRL.
+const FOUR_LANES_LOCKED: u8 = 0b1_1110;
+/// `Status_Flags_0` bit 6: `FLT_ready`.
+const FLT_READY: u8 = 1 << 6;
+/// `Update_0` bit 4: `FRL_start`.
+const FRL_START: u8 = 1 << 4;
+/// `Update_0` bit 5: `FLT_update`.
+const FLT_UPDATE: u8 = 1 << 5;
+/// The LTP requests: lanes 0 and 1 in `Status_Flags_1`, lanes 2 and 3 in `Status_Flags_2`,
+/// the lower lane in bits 3:0.
+const LTP_REQ_01: u8 = 0x41;
+const LTP_REQ_23: u8 = 0x42;
+/// The request for a lower FRL rate.
+const LTP_RATE_CHANGE: u8 = 0xF;
+/// The highest `FRL_Rate` value that names a rate (12 Gbps, 4 lanes).
+const FRL_RATE_MAX: u8 = 6;
+/// The highest `FRL_Rate` value at 3 lanes (6 Gbps, 3 lanes).
+const FRL_3_LANES_MAX: u8 = 2;
 
 /// The least time from a write that changes `TMDS_Bit_Clock_Ratio` to the TMDS clock and
 /// data resuming: the source suspends them, writes the bit, and resumes 1 to 100 ms after.
@@ -174,8 +194,38 @@ fn role(reg: u8) -> Role {
 /// counters sees them at the transaction's start, or with [`DuringRead::Moving`] each byte
 /// at its own moment; with [`CedRead::ClearOnRead`] reading a lane's high byte clears it.
 ///
-/// Evaluated at every event: each transaction, each byte written, each read of the status
-/// or the status flags, and every update. The line and the registers change only at events, so what an
+/// FRL link training, for a sink with a maximum FRL rate. Settled by both public receivers
+/// (Xilinx embeddedsw `97f2baf7f69e`, `XilinxProcessorIPLib/drivers/v_hdmirx1/src/`
+/// `xv_hdmirx1_frl.c` and `xv_hdmirx1_intr.c`; Amlogic, github.com/CoreELEC/common_drivers
+/// `8ca9b6c3b715`, `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c` and
+/// `hdmi_rx_wrapper.c`):
+///
+/// - `FLT_ready` is set from the start, and again after a reset clears it (Xilinx
+///   `xv_hdmirx1_frl.c:183–254`; Amlogic `hdmi_rx_hw_t3x.c:4302–4303`).
+/// - A write of a non-zero `FRL_Rate` starts LTS:3 (Xilinx `xv_hdmirx1_intr.c:2088–2100`;
+///   Amlogic `hdmi_rx_wrapper.c:6692–6703`); every write of `Config_1` restarts it
+///   (*chosen*). The sink clears `FRL_start` (Xilinx `xv_hdmirx1_frl.c:557–559`; Amlogic
+///   `hdmi_rx_hw_t3x.c:4774`), posts its requests, one per lane in 0x41–0x42, and sets
+///   `FLT_update` (Xilinx `1112–1175`; Amlogic `4775–4777`). A rate above its maximum, or a
+///   value naming no rate, it answers with 0xF on every lane, a request for a lower rate
+///   (*chosen*, after Xilinx).
+/// - Once the source has cleared `FLT_update` (the sink posts nothing before: Xilinx
+///   `588–596`; Amlogic `4778`), and each active lane has carried its requested pattern on
+///   the line at the rate for the lock trigger (*chosen*: no source gives the time), the
+///   sink posts 0 on every lane, the pass, with `FLT_update` (Xilinx `398–412`; Amlogic
+///   `4591–4601`, `4792–4794`). A lane requested 0 needs nothing.
+/// - After the pass, the lanes lock once the line is FRL at the rate without patterns and
+///   the lock trigger has passed: `Status_Flags_0` bits 1–3, and bit 4 at 4 lanes. Once
+///   they are locked and the source has cleared `FLT_update`, the sink sets `FRL_start`
+///   (Xilinx `616–640`, `xv_hdmirx1_intr.c:2153–2165`; Amlogic `hdmi_rx_wrapper.c:6710–6719`).
+/// - `FRL_Rate` 0 returns to legacy: the requests are cleared (Xilinx `183–224`). So does a
+///   reset of the status group, which loses the requests (*chosen*).
+///
+/// `Clock_Detected` stays clear in FRL (*chosen*: the bit is TMDS's); a change of the lane
+/// locks sets `Status_Update` as in TMDS.
+///
+/// Evaluated at every event: each transaction, each byte written, each read of the status,
+/// the status flags or `Update_0`, and every update. The line and the registers change only at events, so what an
 /// evaluation sees has held since the one before: a condition that begins to hold is seen
 /// when it does, and one seen late, past a deadline, was late.
 #[derive(Debug)]
@@ -227,6 +277,15 @@ pub(crate) struct Scdc {
     /// The last `CED_Update` check, and the counts it saw.
     checked_at: Timestamp,
     ced_checked: [u64; 3],
+    /// The highest `FRL_Rate` value the sink takes, 0 for none; the requests it posts first.
+    max_frl: u8,
+    ltp_requests: [u8; 4],
+    /// Where training is, whether `FLT_ready` is shown, and since when the line has matched
+    /// the requests (with reads of `Update_0` since).
+    training: Training,
+    flt_ready_shown: bool,
+    match_from: Option<Timestamp>,
+    match_reads: u32,
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
     reset_done: [bool; RegisterGroup::COUNT],
@@ -240,6 +299,10 @@ impl Scdc {
         }
         let mut regs = [0; 256];
         regs[usize::from(SINK_VERSION)] = config.sink_version;
+        let max_frl = config.max_frl_rate.map_or(0, frl_value);
+        if max_frl != 0 {
+            regs[usize::from(STATUS_FLAGS_0)] = FLT_READY;
+        }
         Some(Self {
             regs,
             offset: 0,
@@ -274,6 +337,16 @@ impl Scdc {
             during_read: config.during_read,
             checked_at: Timestamp::from_micros(0),
             ced_checked: [0; 3],
+            max_frl,
+            ltp_requests: {
+                let lanes = config.ltp_requests;
+                [lanes.lane0, lanes.lane1, lanes.lane2, lanes.lane3]
+                    .map(|pattern| pattern.map_or(0, LtpPattern::value))
+            },
+            training: Training::Legacy,
+            flt_ready_shown: max_frl != 0,
+            match_from: None,
+            match_reads: 0,
             hpd_low_since: None,
             reset_done: [false; RegisterGroup::COUNT],
         })
@@ -311,6 +384,124 @@ impl Scdc {
             } else if !is {
                 self.armed_at = None;
             }
+        }
+        if reg == CONFIG_1 && self.max_frl != 0 {
+            self.start_training(to & 0x0F, env);
+        }
+    }
+
+    /// A write of `Config_1` with `FRL_Rate` `rate`: LTS:3 at it, or legacy for 0.
+    fn start_training(&mut self, rate: u8, env: &mut Env<'_>) {
+        self.match_from = None;
+        if rate == 0 {
+            self.training = Training::Legacy;
+            self.post_requests([0; 4], false, env);
+            return;
+        }
+        let update = self.get(UPDATE_0);
+        if update & FRL_START != 0 {
+            self.set(UPDATE_0, update & !FRL_START, Actor::Sink, env);
+        }
+        self.training = Training::Requesting { rate };
+        let requests = if rate > self.max_frl {
+            [LTP_RATE_CHANGE; 4]
+        } else {
+            self.ltp_requests
+        };
+        self.post_requests(requests, true, env);
+    }
+
+    /// Writes `requests` to 0x41–0x42 where they change, then sets `FLT_update` if `update`.
+    fn post_requests(&mut self, requests: [u8; 4], update: bool, env: &mut Env<'_>) {
+        for (reg, [low, high]) in [
+            (LTP_REQ_01, [requests[0], requests[1]]),
+            (LTP_REQ_23, [requests[2], requests[3]]),
+        ] {
+            let value = (low & 0x0F) | (high << 4);
+            if self.get(reg) != value {
+                self.set(reg, value, Actor::Sink, env);
+            }
+        }
+        let flags = self.get(UPDATE_0);
+        if update && flags & FLT_UPDATE == 0 {
+            self.set(UPDATE_0, flags | FLT_UPDATE, Actor::Sink, env);
+        }
+    }
+
+    /// The requests posted on each lane, from 0x41–0x42.
+    fn posted(&self) -> [u8; 4] {
+        let (a, b) = (self.get(LTP_REQ_01), self.get(LTP_REQ_23));
+        [a & 0x0F, a >> 4, b & 0x0F, b >> 4]
+    }
+
+    /// LTS:3: once the source has cleared `FLT_update` and the line has carried the
+    /// requested patterns for the lock trigger, the sink posts the pass.
+    fn evaluate_training(&mut self, env: &mut Env<'_>, reading_update: bool) {
+        let Training::Requesting { rate } = self.training else {
+            return;
+        };
+        let now = env.now();
+        let posted = self.posted();
+        let cleared = self.get(UPDATE_0) & FLT_UPDATE == 0;
+        let matches = cleared
+            && !posted.contains(&LTP_RATE_CHANGE)
+            && match self.line {
+                Line::Frl {
+                    rate: line_rate,
+                    patterns,
+                    ..
+                } if frl_value(line_rate) == rate => {
+                    let carried = [
+                        patterns.lane0,
+                        patterns.lane1,
+                        patterns.lane2,
+                        patterns.lane3,
+                    ]
+                    .map(|pattern| pattern.map_or(0, LtpPattern::value));
+                    let lanes = frl_lanes(rate);
+                    posted
+                        .iter()
+                        .zip(carried)
+                        .take(lanes)
+                        .all(|(&request, carried)| request == 0 || request == carried)
+                }
+                _ => false,
+            };
+        let match_from = matches.then(|| self.match_from.unwrap_or(now));
+        if match_from != self.match_from {
+            self.match_from = match_from;
+            self.match_reads = 0;
+        }
+        if reading_update && match_from.is_some() {
+            self.match_reads = self.match_reads.saturating_add(1);
+        }
+        if match_from.is_some_and(|from| self.passed(from, now, self.match_reads)) {
+            self.match_from = None;
+            self.training = Training::Passed { rate };
+            self.post_requests([0; 4], true, env);
+        }
+    }
+
+    /// LTS:P: once the lanes are locked and the source has cleared `FLT_update`, the sink
+    /// sets `FRL_start`; and `FLT_ready` whenever a reset has cleared it.
+    fn evaluate_start(&mut self, env: &mut Env<'_>) {
+        if self.max_frl == 0 {
+            return;
+        }
+        if !self.flt_ready_shown {
+            self.flt_ready_shown = true;
+            let flags = self.get(STATUS_FLAGS_0);
+            if flags & FLT_READY == 0 {
+                self.set(STATUS_FLAGS_0, flags | FLT_READY, Actor::Sink, env);
+            }
+        }
+        let Training::Passed { rate } = self.training else {
+            return;
+        };
+        let update = self.get(UPDATE_0);
+        if update & FLT_UPDATE == 0 && self.flags & LANES_LOCKED != 0 {
+            self.training = Training::Started { rate };
+            self.set(UPDATE_0, update | FRL_START, Actor::Sink, env);
         }
     }
 
@@ -368,6 +559,9 @@ impl Scdc {
                     if reg == STATUS_FLAGS_0 {
                         self.flags = 0;
                         self.lanes_from = None;
+                        self.flt_ready_shown = false;
+                        self.training = Training::Legacy;
+                        self.match_from = None;
                     }
                     if reg == CED {
                         self.ced = [0; 4];
@@ -391,10 +585,12 @@ impl Scdc {
         let now = env.now();
         let line = env.line();
         if line != self.line {
+            if !same_lanes(self.line, line) {
+                self.lanes_from = None;
+            }
             self.line = line;
             self.line_since = now;
             self.lock_from = None;
-            self.lanes_from = None;
         }
         let config = self.get(TMDS_CONFIG);
         let matching = match line {
@@ -445,7 +641,9 @@ impl Scdc {
                 self.set(SCRAMBLING_STATUS, to, Actor::Sink, env);
             }
         }
+        self.evaluate_training(env, reading == Some(UPDATE_0));
         self.evaluate_flags(env, reading == Some(STATUS_FLAGS_0));
+        self.evaluate_start(env);
         self.errors = env.character_errors();
         self.show_errors();
     }
@@ -604,7 +802,20 @@ impl Scdc {
                     && (scrambled || !high);
                 (true, decodable)
             }
-            _ => (false, false),
+            Line::Frl { rate, patterns, .. } => {
+                let trained = match self.training {
+                    Training::Passed { rate: at } | Training::Started { rate: at } => {
+                        frl_value(rate) == at
+                    }
+                    _ => false,
+                };
+                (false, trained && patterns == LanePatterns::default())
+            }
+            Line::Off => (false, false),
+        };
+        let lanes = match self.line {
+            Line::Frl { rate, .. } if frl_lanes(frl_value(rate)) == 4 => FOUR_LANES_LOCKED,
+            _ => LANES_LOCKED,
         };
         let lanes_from = decodable.then(|| self.lanes_from.unwrap_or(now));
         if lanes_from != self.lanes_from {
@@ -615,13 +826,13 @@ impl Scdc {
             self.flag_reads = self.flag_reads.saturating_add(1);
         }
         let locked = lanes_from.is_some_and(|from| self.passed(from, now, self.flag_reads));
-        let flags = if clock { CLOCK_DETECTED } else { 0 } | if locked { LANES_LOCKED } else { 0 };
+        let flags = if clock { CLOCK_DETECTED } else { 0 } | if locked { lanes } else { 0 };
         if flags == self.flags {
             return;
         }
         self.flags = flags;
         let held = self.get(STATUS_FLAGS_0);
-        let to = (held & !(CLOCK_DETECTED | LANES_LOCKED)) | flags;
+        let to = (held & !(CLOCK_DETECTED | FOUR_LANES_LOCKED)) | flags;
         if to == held {
             return;
         }
@@ -686,6 +897,53 @@ impl Scdc {
         }
         Ok(())
     }
+}
+
+/// Where an FRL sink's link training is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Training {
+    /// Legacy (TMDS), or not started: `FRL_Rate` 0.
+    Legacy,
+    /// LTS:3 at `rate` (the `FRL_Rate` value): the requests are posted.
+    Requesting { rate: u8 },
+    /// The pass is posted; `FRL_start` comes once the lanes lock.
+    Passed { rate: u8 },
+    /// `FRL_start` is set.
+    Started { rate: u8 },
+}
+
+/// The `FRL_Rate` value of `rate`.
+const fn frl_value(rate: HdmiForumFrl) -> u8 {
+    match rate {
+        HdmiForumFrl::Rate3Gbps3Lanes => 1,
+        HdmiForumFrl::Rate6Gbps3Lanes => 2,
+        HdmiForumFrl::Rate6Gbps4Lanes => 3,
+        HdmiForumFrl::Rate8Gbps4Lanes => 4,
+        HdmiForumFrl::Rate10Gbps4Lanes => 5,
+        HdmiForumFrl::Rate12Gbps4Lanes => FRL_RATE_MAX,
+        _ => 0,
+    }
+}
+
+/// Whether the lanes carry the same signal on `a` and on `b`, so their locks hold: in FRL,
+/// the same rate and patterns, whatever the output (video starts on locked lanes).
+fn same_lanes(a: Line, b: Line) -> bool {
+    match (a, b) {
+        (
+            Line::Frl { rate, patterns, .. },
+            Line::Frl {
+                rate: other_rate,
+                patterns: other_patterns,
+                ..
+            },
+        ) => rate == other_rate && patterns == other_patterns,
+        _ => a == b,
+    }
+}
+
+/// How many lanes the `FRL_Rate` value `rate` uses.
+const fn frl_lanes(rate: u8) -> usize {
+    if rate <= FRL_3_LANES_MAX { 3 } else { 4 }
 }
 
 const NACK_DATA: DdcErrorKind = DdcErrorKind::NoAcknowledge(NoAcknowledgeSource::Data);
@@ -774,7 +1032,7 @@ impl Scdc {
                 }
                 Operation::Read { addr: SCDC, buf } => {
                     for byte in buf.iter_mut() {
-                        if matches!(self.offset, SCRAMBLING_STATUS | STATUS_FLAGS_0) {
+                        if matches!(self.offset, UPDATE_0 | SCRAMBLING_STATUS | STATUS_FLAGS_0) {
                             self.evaluate(env, Some(self.offset));
                         }
                         let counter = (CED..=CED_CHECKSUM).contains(&self.offset);

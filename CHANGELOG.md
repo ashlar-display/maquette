@@ -84,7 +84,12 @@ implementations of hdmi-hal's traits.
   the strict sink (output started after the write, and 1 ms after a ratio change),
   refusals, the enable timeout (100 ms by default, from the write that set
   `Scrambling_Enable` or changed the ratio), the HPD resets, `Status_Update`, `CED_Update`,
-  clear on read and the registers during a read.
+  clear on read, the registers during a read, the maximum FRL rate and the LTP requests.
+- **FRL link training, the sink's side:** a sink with a maximum FRL rate sets `FLT_ready`;
+  a write of `FRL_Rate` clears `FRL_start` and posts its LTP requests with `FLT_update`
+  (0xF on every lane for a rate it cannot take); once the source has cleared `FLT_update`
+  and every active lane has carried its pattern, it posts the pass; once the lanes lock on
+  the source's FRL output, it sets `FRL_start`. `FRL_Rate` 0 returns to legacy.
 - **The character error counters (0x50–0x56):** lanes 0–2 count the link's errors while
   locked, saturate at 0x7FFF, are valid while locked, and keep the checksum; they reset with
   `RegisterGroup::ErrorCounters`. `CED_Update` is set by a check at each whole second when

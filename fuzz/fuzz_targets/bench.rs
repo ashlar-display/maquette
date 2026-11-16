@@ -15,7 +15,8 @@
 //! - no `Register` event changes a register the sink owns by `Actor::Source`;
 //! - the segment pointer never outlives its command sequence: every EDID read at 0x50 that
 //!   succeeds reads segment 0;
-//! - the transcript's times never go backwards.
+//! - the transcript's times never go backwards;
+//! - an FRL sink's lanes lock only at the trained rate, without patterns.
 
 #![no_main]
 
@@ -207,6 +208,9 @@ impl Input<'_> {
         }
         if c & (1 << 14) != 0 {
             config = config.with_during_read(DuringRead::Moving);
+        }
+        if c & (1 << 15) != 0 {
+            config = config.with_max_frl_rate(Some(HdmiForumFrl::Rate6Gbps4Lanes));
         }
         config = config.with_past_store(if b % 2 == 0 {
             PastStore::Fill
@@ -429,6 +433,31 @@ fn check_flags(bench: &Bench<'_, LOG>) {
     );
     if flags & 0x0E != 0 {
         assert_eq!(flags & 0x0E, 0x0E, "lanes 0-2 lock together");
+        if let Line::Frl { rate, patterns, .. } = line {
+            let value = match rate {
+                HdmiForumFrl::Rate6Gbps4Lanes => 3,
+                HdmiForumFrl::Rate8Gbps4Lanes => 4,
+                _ => 0,
+            };
+            assert_eq!(flags & 1, 0, "clock detected in FRL");
+            assert_eq!(
+                sink.config_1().map(|config| config & 0x0F),
+                Some(value),
+                "lanes locked at a rate not trained"
+            );
+            assert_eq!(
+                patterns,
+                LanePatterns::default(),
+                "lanes locked on patterns"
+            );
+            assert_eq!(
+                flags & 0x10,
+                0x10,
+                "lane 3 locked with the others at 4 lanes"
+            );
+            return;
+        }
+        assert_eq!(flags & 0x10, 0, "lane 3 locked in TMDS");
         let Line::Tmds {
             character_rate_khz,
             ratio,
@@ -583,7 +612,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
         }
         let mut bytes = [0u8; 8];
         let mut buf = [0u8; 64];
-        match input.byte() % 23 {
+        match input.byte() % 25 {
             0 => {
                 let addr = input.addr();
                 let _ = bus.write(addr, input.bytes(&mut bytes));
@@ -664,12 +693,26 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let _ = phy.set_scrambling(input.bit());
             }
             18 => {
-                let _ = match input.byte() % 6 {
+                let _ = match input.byte() % 10 {
                     0 => phy.start_output(),
                     1 => phy.stop_output(),
                     2 => phy.power_on(),
                     3 => phy.power_off(),
                     4 => phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes),
+                    5 => phy.set_frl_rate(HdmiForumFrl::Rate8Gbps4Lanes),
+                    // The default sink's requests, and none.
+                    6 => phy.send_ltp(LanePatterns {
+                        lane0: Some(LtpPattern::Lfsr0),
+                        lane1: Some(LtpPattern::Lfsr1),
+                        lane2: Some(LtpPattern::Lfsr2),
+                        lane3: Some(LtpPattern::Lfsr3),
+                    }),
+                    7 => phy.send_ltp(LanePatterns::default()),
+                    8 => phy.set_frl_output(if input.bit() {
+                        FrlOutput::Active
+                    } else {
+                        FrlOutput::GapOnly
+                    }),
                     _ => phy.set_frl_rate(HdmiForumFrl::NotSupported),
                 };
             }
@@ -695,6 +738,16 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let _ = bench.schedule_action(action, when);
             }
             21 => bench.set_character_errors(input.errors()),
+            // A source's FRL steps: Config_1 with a rate (0, 6 Gbps at 4 lanes, 8 Gbps at 4
+            // lanes, or a value naming none), and Update_0's flags written back.
+            22 => {
+                let rate = [0, 3, 4, 9][usize::from(input.byte() % 4)];
+                let _ = bus.write(0x54, &[0x31, rate]);
+            }
+            23 => {
+                let flags = if input.bit() { 0x20 } else { input.byte() };
+                let _ = bus.write(0x54, &[0x10, flags]);
+            }
             _ => {
                 let _ = clock.now();
             }
