@@ -83,10 +83,13 @@ implementations of hdmi-hal's traits.
   128-byte boundary, the segment pointer, what answers while HPD is low, the lock's trigger,
   the strict sink (output started after the write, and 1 ms after a ratio change),
   refusals, the enable timeout (100 ms by default, from the write that set
-  `Scrambling_Enable` or changed the ratio), the HPD resets and `Status_Update`.
+  `Scrambling_Enable` or changed the ratio), the HPD resets, `Status_Update` and
+  `CED_Update`.
 - **The character error counters (0x50–0x56):** lanes 0–2 count the link's errors while
   locked, saturate at 0x7FFF, are valid while locked, and keep the checksum; they reset with
-  `RegisterGroup::ErrorCounters`. Each default is sourced or
+  `RegisterGroup::ErrorCounters`. `CED_Update` is set by a check at each whole second when
+  a locked lane's count rose by 4 or more since the last check or just reached 0x7FFF
+  (`CedUpdate::EverySecond`), or never. Each default is sourced or
   marked *chosen*, the least forgiving where sources differ.
 
 **The PHY**

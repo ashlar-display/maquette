@@ -23,8 +23,8 @@ use hdmi_hal::phy::TmdsClockRatio;
 use hdmi_hal::time::Timestamp;
 
 use crate::config::{
-    DuringHpdLow, HpdReset, OwnedWrite, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd,
-    SinkConfig, StatusUpdate, Trigger,
+    CedUpdate, DuringHpdLow, HpdReset, OwnedWrite, Refusal, RefusalKind, RegisterGroup,
+    ScdcPastEnd, SinkConfig, StatusUpdate, Trigger,
 };
 use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
 use crate::line::{ErrorRates, Line, RATIO_40_ABOVE_KHZ};
@@ -39,6 +39,10 @@ const RATIO_40: u8 = 1 << 1;
 const STATUS: u8 = 1 << 0;
 /// `Update_0` bit 0: `Status_Update`.
 const STATUS_UPDATE: u8 = 1 << 0;
+/// `Update_0` bit 1: `CED_Update`.
+const CED_UPDATE: u8 = 1 << 1;
+/// How often the sink checks its counters for `CED_Update`.
+const CED_CHECK: Duration = Duration::from_secs(1);
 /// `Status_Flags_0` bit 0: `Clock_Detected`.
 const CLOCK_DETECTED: u8 = 1 << 0;
 /// `Status_Flags_0` bits 1–3: lanes 0–2 locked.
@@ -162,6 +166,9 @@ fn role(reg: u8) -> Role {
 /// Xilinx's receiver, embeddedsw `97f2baf7f69e`,
 /// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2306–2345`. Their changes are
 /// not recorded: they move with time; a test reads them through the bench's `Sink` view.
+/// `CED_Update` is set by [`CedUpdate`]'s rule, its checks at whole seconds on the bench's
+/// clock, each seeing the counts as they were at that second; the flag set is recorded at
+/// the bench event at or after that second, as a scheduled action's time is.
 ///
 /// Evaluated at every event: each transaction, each byte written, each read of the status
 /// or the status flags, and every update. The line and the registers change only at events, so what an
@@ -210,6 +217,10 @@ pub(crate) struct Scdc {
     counted_to: Timestamp,
     errors: ErrorRates,
     ced_shown: [u8; 7],
+    ced_update: CedUpdate,
+    /// The last `CED_Update` check, and the counts it saw.
+    checked_at: Timestamp,
+    ced_checked: [u64; 3],
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
     reset_done: [bool; RegisterGroup::COUNT],
@@ -252,6 +263,9 @@ impl Scdc {
             counted_to: Timestamp::from_micros(0),
             errors: ErrorRates::NONE,
             ced_shown: [0; 7],
+            ced_update: config.ced_update,
+            checked_at: Timestamp::from_micros(0),
+            ced_checked: [0; 3],
             hpd_low_since: None,
             reset_done: [false; RegisterGroup::COUNT],
         })
@@ -350,6 +364,7 @@ impl Scdc {
                     if reg == CED {
                         self.ced = [0; 4];
                         self.ced_shown = [0; 7];
+                        self.ced_checked = [0; 3];
                     }
                 }
             }
@@ -363,7 +378,7 @@ impl Scdc {
     /// is about to read, which for `Scrambling_Status` and `Status_Flags_0` counts toward
     /// `Trigger::AfterReads`.
     fn evaluate(&mut self, env: &mut Env<'_>, reading: Option<u8>) {
-        self.count_errors(env.now());
+        self.count_and_check(env);
         self.hpd_resets(env);
         let now = env.now();
         let line = env.line();
@@ -427,8 +442,70 @@ impl Scdc {
         self.show_errors();
     }
 
-    /// Counts the errors since the last evaluation, at the rates and on the lanes locked
-    /// since then: neither changes between events.
+    /// Counts the errors since the last evaluation, with the `CED_Update` checks that fell
+    /// in between, each at its second. Rates and locks do not change between events, so
+    /// every count in between is known. After a check that leaves the flag set, or no
+    /// locked lane whose count can rise, later checks change nothing but the counts they
+    /// keep: they are skipped to the last.
+    fn count_and_check(&mut self, env: &mut Env<'_>) {
+        let now = env.now();
+        let CedUpdate::EverySecond { rise } = self.ced_update else {
+            self.count_errors(now);
+            return;
+        };
+        let rise = u64::from(rise.max(1));
+        while let Some(next) = self.checked_at.checked_add(CED_CHECK) {
+            if next > now {
+                break;
+            }
+            self.count_errors(next);
+            self.see_counts(next, rise, env);
+            if self.get(UPDATE_0) & CED_UPDATE != 0 || !self.counts_rising() {
+                let seconds = now.saturating_duration_since(next).as_secs();
+                let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
+                if let Some(last) = next.checked_add(CED_CHECK.saturating_mul(seconds)) {
+                    self.count_errors(last);
+                    self.see_counts(last, rise, env);
+                }
+                break;
+            }
+        }
+        self.count_errors(now);
+    }
+
+    /// Whether a count can rise until the next event: a lane is locked, with errors, and
+    /// below 0x7FFF.
+    fn counts_rising(&self) -> bool {
+        self.flags & LANES_LOCKED != 0
+            && self
+                .ced
+                .iter()
+                .zip(self.errors.lanes())
+                .take(3)
+                .any(|(&count, rate)| rate > 0 && count < CED_MAX * CED_UNIT)
+    }
+
+    /// The check at `at`: sets `CED_Update` when a locked lane's count rose by `rise` since
+    /// the last check, or just reached 0x7FFF; and keeps the counts for the next check.
+    fn see_counts(&mut self, at: Timestamp, rise: u64, env: &mut Env<'_>) {
+        self.checked_at = at;
+        if self.flags & LANES_LOCKED == 0 {
+            return;
+        }
+        let mut set = false;
+        for (count, checked) in self.ced.iter().zip(&mut self.ced_checked) {
+            let count = (count / CED_UNIT).min(CED_MAX);
+            set |= count >= checked.saturating_add(rise) || (count != *checked && count == CED_MAX);
+            *checked = count;
+        }
+        let update = self.get(UPDATE_0);
+        if set && update & CED_UPDATE == 0 {
+            self.set(UPDATE_0, update | CED_UPDATE, Actor::Sink, env);
+        }
+    }
+
+    /// Counts the errors up to `now`, at the rates and on the lanes locked since the last
+    /// count: neither changes between events.
     fn count_errors(&mut self, now: Timestamp) {
         let micros = now.saturating_duration_since(self.counted_to).as_micros();
         let micros = u64::try_from(micros).unwrap_or(u64::MAX);

@@ -23,12 +23,12 @@ use core::time::Duration;
 
 use libfuzzer_sys::fuzz_target;
 use maquette::{
-    Action, Actor, Bench, BlockBoundary, Clock, ColorBitDepth, ColorFormat, DdcBus,
+    Action, Actor, Bench, BlockBoundary, CedUpdate, Clock, ColorBitDepth, ColorFormat, DdcBus,
     DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, ErrorRates, Event,
     Fault, Filter, FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource,
     OpKind, OwnedWrite, PastStore, PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal,
-    RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, Times, Timestamp, TmdsClockRatio, TmdsPhy,
-    TmdsPhyConfig, TmdsVideo, Trigger, When,
+    RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Times, Timestamp,
+    TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo, Trigger, When,
 };
 
 /// The most actions one input runs.
@@ -142,7 +142,7 @@ impl Input<'_> {
     fn config(&mut self) -> SinkConfig {
         let a = self.byte();
         let b = self.byte();
-        // Two bits for each group's HPD reset.
+        // Two bits for each group's HPD reset (bits 0-9), then the update flags' rules.
         let c = u16::from_le_bytes([self.byte(), self.byte()]);
         let mut config = SinkConfig::new();
         // Each group's HPD reset: the default (on any low), never, as HPD rises, or after
@@ -181,6 +181,15 @@ impl Input<'_> {
         }
         if a & 0x80 != 0 {
             config = config.with_enable_timeout(None);
+        }
+        config = config.with_ced_update(match (c >> 10) % 4 {
+            0 => config.ced_update(),
+            1 => CedUpdate::Never,
+            2 => CedUpdate::EverySecond { rise: 0 },
+            _ => CedUpdate::EverySecond { rise: 1_000 },
+        });
+        if c & (1 << 12) != 0 {
+            config = config.with_status_update(StatusUpdate::Never);
         }
         config = config.with_past_store(if b % 2 == 0 {
             PastStore::Fill

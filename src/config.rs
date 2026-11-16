@@ -37,6 +37,7 @@ pub struct SinkConfig {
     pub(crate) enable_timeout: Option<Duration>,
     pub(crate) hpd_resets: [HpdReset; RegisterGroup::COUNT],
     pub(crate) status_update: StatusUpdate,
+    pub(crate) ced_update: CedUpdate,
 }
 
 impl SinkConfig {
@@ -59,6 +60,7 @@ impl SinkConfig {
             enable_timeout: Some(Duration::from_millis(100)),
             hpd_resets: [HpdReset::OnHpdLow; RegisterGroup::COUNT],
             status_update: StatusUpdate::OnChange,
+            ced_update: CedUpdate::EverySecond { rise: 4 },
         }
     }
 
@@ -230,6 +232,13 @@ impl SinkConfig {
         }
     }
 
+    /// When the sink sets `CED_Update`; by default [`CedUpdate::EverySecond`] with a rise of
+    /// 4 (*chosen*, after one receiver).
+    #[must_use]
+    pub const fn with_ced_update(self, ced_update: CedUpdate) -> Self {
+        Self { ced_update, ..self }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -308,6 +317,11 @@ impl SinkConfig {
     /// Whether the sink sets `Status_Update` when it changes the status flags.
     pub const fn status_update(&self) -> StatusUpdate {
         self.status_update
+    }
+
+    /// When the sink sets `CED_Update`.
+    pub const fn ced_update(&self) -> CedUpdate {
+        self.ced_update
     }
 }
 
@@ -455,6 +469,25 @@ pub enum StatusUpdate {
     /// Set at every such change, kept until the source clears it (*chosen* default).
     OnChange,
     /// Never set: a source that reads the flags only when it is set sees no change.
+    Never,
+}
+
+/// When the sink sets `CED_Update` (`Update_0` bit 1), which it keeps until the source clears
+/// it. One public receiver sets it from a check once a second: when a valid count has risen
+/// by at least 4 since the last check, or has just reached 0x7FFF (Xilinx embeddedsw
+/// `97f2baf7f69e`, `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`);
+/// Intel documents a receiver that did not set it on errors (knowledge base 000087546).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CedUpdate {
+    /// Checked at each whole second on the bench's clock (*chosen*): set when the count of
+    /// a lane locked since the last check has risen by at least `rise` since then, or has
+    /// just reached 0x7FFF. The default, with a `rise` of 4.
+    EverySecond {
+        /// The least rise in a second that sets it; 0 is taken as 1.
+        rise: u16,
+    },
+    /// Never set: a source that reads the counters only when it is set sees no errors.
     Never,
 }
 
