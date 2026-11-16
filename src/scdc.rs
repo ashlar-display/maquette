@@ -27,7 +27,7 @@ use crate::config::{
     SinkConfig, StatusUpdate, Trigger,
 };
 use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
-use crate::line::{Line, RATIO_40_ABOVE_KHZ};
+use crate::line::{ErrorRates, Line, RATIO_40_ABOVE_KHZ};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
 
@@ -75,6 +75,17 @@ pub(crate) const CONFIG_0: u8 = 0x30;
 pub(crate) const CONFIG_1: u8 = 0x31;
 /// `Source_Test_Configuration`: the sink's test requests to the source, read by the source.
 const SOURCE_TEST_CONFIGURATION: u8 = 0x35;
+/// The first character error counter, lane 0's low byte; each lane's is two bytes, low
+/// then high, lanes 0–2 at 0x50–0x55, and the checksum at 0x56.
+const CED: u8 = 0x50;
+/// A counter's high byte, bit 7: the count is valid.
+const CED_VALID: u8 = 1 << 7;
+/// A counter's largest count, where it stays.
+const CED_MAX: u64 = 0x7FFF;
+/// A count in the unit the sink keeps it: millionths of an error, so that a rate in errors
+/// a second times microseconds adds up exactly.
+const CED_UNIT: u64 = 1_000_000;
+
 /// `Status_Flags_0`: the sink's; bit 0 `Clock_Detected`, bits 1–4 lanes 0–3 locked, bit 6
 /// `FLT_ready`. The bits: Linux, github.com/torvalds/linux `e9954f3fbddd`:
 /// `include/drm/display/drm_scdc.h:55–64`; Amlogic's receiver,
@@ -139,6 +150,19 @@ fn role(reg: u8) -> Role {
 /// change sets `Status_Update`, unless [`StatusUpdate::Never`]. As with the status, the sink
 /// changes the flags only when what it sees changes, so a preset holds until then.
 ///
+/// The character error counters (0x50–0x56): each of lanes 0–2 counts the link's character
+/// errors on it ([`ErrorRates`]) while it is locked, up to 0x7FFF, where it stays; its high
+/// byte's bit 7 says the count is valid, set while the lane is locked (*chosen*: no source
+/// says what makes it valid; with it, an error-free locked link reads 0x80 at 0x56, as a
+/// real sink did). 0x56 is the checksum: the bytes 0x50–0x56 sum to zero. Settled by Linux,
+/// github.com/torvalds/linux `e9954f3fbddd`: `drivers/gpu/drm/display/drm_scdc_helper.c:383–412`
+/// (the checksum over 0x50–0x56 at 3 lanes, the valid bit); and Amlogic,
+/// github.com/CoreELEC/common_drivers `8ca9b6c3b715`:
+/// `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:35–68`. The count saturating at 0x7FFF:
+/// Xilinx's receiver, embeddedsw `97f2baf7f69e`,
+/// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2306–2345`. Their changes are
+/// not recorded: they move with time; a test reads them through the bench's `Sink` view.
+///
 /// Evaluated at every event: each transaction, each byte written, each read of the status
 /// or the status flags, and every update. The line and the registers change only at events, so what an
 /// evaluation sees has held since the one before: a condition that begins to hold is seen
@@ -173,16 +197,22 @@ pub(crate) struct Scdc {
     lock_from: Option<Timestamp>,
     reads: u32,
     locked: bool,
-    hpd_resets: [HpdReset; 4],
+    hpd_resets: [HpdReset; RegisterGroup::COUNT],
     status_update: StatusUpdate,
     /// Since when the sink can decode the line, `None` while it cannot; reads of
     /// `Status_Flags_0` since; and the flags as the sink last set them.
     lanes_from: Option<Timestamp>,
     flag_reads: u32,
     flags: u8,
+    /// Errors counted per lane, in [`CED_UNIT`]s, through `counted_to`; the rates as last
+    /// seen; and the counter bytes 0x50–0x56 as the sink last set them.
+    ced: [u64; 4],
+    counted_to: Timestamp,
+    errors: ErrorRates,
+    ced_shown: [u8; 7],
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
-    reset_done: [bool; 4],
+    reset_done: [bool; RegisterGroup::COUNT],
 }
 
 impl Scdc {
@@ -218,8 +248,12 @@ impl Scdc {
             lanes_from: None,
             flag_reads: 0,
             flags: 0,
+            ced: [0; 4],
+            counted_to: Timestamp::from_micros(0),
+            errors: ErrorRates::NONE,
+            ced_shown: [0; 7],
             hpd_low_since: None,
-            reset_done: [false; 4],
+            reset_done: [false; RegisterGroup::COUNT],
         })
     }
 
@@ -285,7 +319,7 @@ impl Scdc {
             (None, true) => return,
             (None, false) => {
                 self.hpd_low_since = Some(now);
-                self.reset_done = [false; 4];
+                self.reset_done = [false; RegisterGroup::COUNT];
                 now
             }
             (Some(since), _) => since,
@@ -313,6 +347,10 @@ impl Scdc {
                         self.flags = 0;
                         self.lanes_from = None;
                     }
+                    if reg == CED {
+                        self.ced = [0; 4];
+                        self.ced_shown = [0; 7];
+                    }
                 }
             }
         }
@@ -325,6 +363,7 @@ impl Scdc {
     /// is about to read, which for `Scrambling_Status` and `Status_Flags_0` counts toward
     /// `Trigger::AfterReads`.
     fn evaluate(&mut self, env: &mut Env<'_>, reading: Option<u8>) {
+        self.count_errors(env.now());
         self.hpd_resets(env);
         let now = env.now();
         let line = env.line();
@@ -384,6 +423,51 @@ impl Scdc {
             }
         }
         self.evaluate_flags(env, reading == Some(STATUS_FLAGS_0));
+        self.errors = env.character_errors();
+        self.show_errors();
+    }
+
+    /// Counts the errors since the last evaluation, at the rates and on the lanes locked
+    /// since then: neither changes between events.
+    fn count_errors(&mut self, now: Timestamp) {
+        let micros = now.saturating_duration_since(self.counted_to).as_micros();
+        let micros = u64::try_from(micros).unwrap_or(u64::MAX);
+        self.counted_to = now;
+        if self.flags & LANES_LOCKED == 0 {
+            return;
+        }
+        let rates = self.errors.lanes();
+        for (count, rate) in self.ced.iter_mut().zip(rates).take(3) {
+            let more = u64::from(rate).saturating_mul(micros);
+            *count = count.saturating_add(more).min(CED_MAX * CED_UNIT);
+        }
+    }
+
+    /// The counter bytes 0x50–0x56 for the counts, written where they changed since the
+    /// sink last wrote them, so a preset holds until then.
+    fn show_errors(&mut self) {
+        let valid = if self.flags & LANES_LOCKED != 0 {
+            CED_VALID
+        } else {
+            0
+        };
+        let mut bytes = [0u8; 7];
+        for (lane, &count) in self.ced.iter().take(3).enumerate() {
+            let [low, high, ..] = (count / CED_UNIT).to_le_bytes();
+            bytes[2 * lane] = low;
+            bytes[2 * lane + 1] = high | valid;
+        }
+        bytes[6] = bytes[..6]
+            .iter()
+            .fold(0u8, |sum, &byte| sum.wrapping_add(byte))
+            .wrapping_neg();
+        for (i, (&byte, shown)) in bytes.iter().zip(&mut self.ced_shown).enumerate() {
+            if byte != *shown {
+                *shown = byte;
+                // `i` is below 7.
+                self.regs[usize::from(CED) + i] = byte;
+            }
+        }
     }
 
     /// Whether the trigger has passed for conditions that hold since `from`, with `reads`

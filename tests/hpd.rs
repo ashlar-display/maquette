@@ -263,7 +263,7 @@ fn a_reset_records_each_change_of_the_status_once() {
 
 #[test]
 fn the_groups_and_their_defaults() {
-    assert_eq!(RegisterGroup::ALL.len(), 4);
+    assert_eq!(RegisterGroup::ALL.len(), 5);
     assert_eq!(RegisterGroup::TmdsConfig.registers(), [0x20]);
     assert_eq!(
         RegisterGroup::Status.registers(),
@@ -271,6 +271,8 @@ fn the_groups_and_their_defaults() {
     );
     assert_eq!(RegisterGroup::SourceVersion.registers(), [0x02]);
     assert_eq!(RegisterGroup::Config.registers(), [0x30, 0x31]);
+    let counters: Vec<u8> = (0x50..=0x5A).collect();
+    assert_eq!(RegisterGroup::ErrorCounters.registers(), counters);
     let config = SinkConfig::new();
     for &group in RegisterGroup::ALL {
         assert_eq!(config.hpd_reset(group), HpdReset::OnHpdLow);

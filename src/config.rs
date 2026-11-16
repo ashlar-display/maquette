@@ -35,7 +35,7 @@ pub struct SinkConfig {
     pub(crate) strict_lock: bool,
     pub(crate) refusal: Refusal,
     pub(crate) enable_timeout: Option<Duration>,
-    pub(crate) hpd_resets: [HpdReset; 4],
+    pub(crate) hpd_resets: [HpdReset; RegisterGroup::COUNT],
     pub(crate) status_update: StatusUpdate,
 }
 
@@ -57,7 +57,7 @@ impl SinkConfig {
             strict_lock: false,
             refusal: Refusal::NONE,
             enable_timeout: Some(Duration::from_millis(100)),
-            hpd_resets: [HpdReset::OnHpdLow; 4],
+            hpd_resets: [HpdReset::OnHpdLow; RegisterGroup::COUNT],
             status_update: StatusUpdate::OnChange,
         }
     }
@@ -471,6 +471,11 @@ pub enum RegisterGroup {
     SourceVersion,
     /// `Config_0` (0x30) and `Config_1` (0x31).
     Config,
+    /// The character error counters, their checksum and the Reed-Solomon corrections
+    /// (0x50–0x5A). A receiver resets them on HPD low to high or power-off (LG,
+    /// EP 3 160 152 A1, paragraph 0064), or with all of SCDC (Xilinx embeddedsw `97f2baf7f69e`,
+    /// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_intr.c:1181–1182`).
+    ErrorCounters,
 }
 
 impl RegisterGroup {
@@ -481,7 +486,11 @@ impl RegisterGroup {
         Self::Status,
         Self::SourceVersion,
         Self::Config,
+        Self::ErrorCounters,
     ];
+
+    /// How many groups there are.
+    pub(crate) const COUNT: usize = 5;
 
     pub(crate) const fn index(self) -> usize {
         match self {
@@ -489,6 +498,7 @@ impl RegisterGroup {
             Self::Status => 1,
             Self::SourceVersion => 2,
             Self::Config => 3,
+            Self::ErrorCounters => 4,
         }
     }
 
@@ -499,6 +509,9 @@ impl RegisterGroup {
             Self::Status => &[0x21, 0x10, 0x11, 0x40, 0x41, 0x42],
             Self::SourceVersion => &[0x02],
             Self::Config => &[0x30, 0x31],
+            Self::ErrorCounters => &[
+                0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A,
+            ],
         }
     }
 }

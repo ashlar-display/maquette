@@ -5,6 +5,8 @@
 //! - the same input gives the same transcript (each input runs twice);
 //! - nothing panics and no arithmetic overflows (the budget is off; the input bounds the
 //!   actions);
+//! - the status flags follow the line, and the character error counters keep their checksum
+//!   and are valid exactly while their lanes are locked (no action presets either);
 //! - `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
 //!   scrambled TMDS at the matching ratio, and that ratio fits the rate (no action presets
 //!   the status);
@@ -22,19 +24,23 @@ use core::time::Duration;
 use libfuzzer_sys::fuzz_target;
 use maquette::{
     Action, Actor, Bench, BlockBoundary, Clock, ColorBitDepth, ColorFormat, DdcBus,
-    DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, Event, Fault, Filter,
-    FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource, OpKind, OwnedWrite,
-    PastStore, PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal, RefusalKind, RegisterGroup,
-    ScdcPastEnd, SinkConfig, Times, Timestamp, TmdsClockRatio, TmdsPhy, TmdsPhyConfig, TmdsVideo,
-    Trigger, When,
+    DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, EddcTarget, Effect, ErrorRates, Event,
+    Fault, Filter, FrlPhy, HdmiForumFrl, HpdReset, Line, MissingSegment, NoAcknowledgeSource,
+    OpKind, OwnedWrite, PastStore, PhyCallKind, PhyFault, PhyPower, Point, Record, Refusal,
+    RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, Times, Timestamp, TmdsClockRatio, TmdsPhy,
+    TmdsPhyConfig, TmdsVideo, Trigger, When,
 };
 
 /// The most actions one input runs.
 const MAX_ACTIONS: usize = 256;
 
-/// The fuzz bench's transcript: room for every record an input makes (the longest seen
-/// make under a thousand), so the invariants see them all; `run` asserts none overflowed.
+/// The fuzz bench's transcript, so the invariants see every record: an input's actions stop
+/// once fewer than [`ROOM`] records are left, and `run` asserts none overflowed.
 const LOG: usize = 4096;
+
+/// More records than one action makes: the most is a segmented read in 64 one-byte pieces,
+/// a bus record each, with the events of the faults and scheduled actions it sets off.
+const ROOM: usize = 512;
 
 /// Two segments of EDID: segment 0 holds 0x00–0x7F, segment 1 holds 0x80–0xBF. A byte read
 /// from segment 1 cannot pass for one of segment 0, and the 0xFF read past a store is
@@ -117,10 +123,27 @@ impl Input<'_> {
         }
     }
 
+    /// Error rates from none to past saturating a counter within a second.
+    fn errors(&mut self) -> ErrorRates {
+        let rate = |byte: u8| match byte % 4 {
+            0 => 0,
+            1 => 1,
+            2 => 1_000 * u32::from(byte),
+            _ => u32::MAX,
+        };
+        ErrorRates {
+            lane0: rate(self.byte()),
+            lane1: rate(self.byte()),
+            lane2: rate(self.byte()),
+            lane3: rate(self.byte()),
+        }
+    }
+
     fn config(&mut self) -> SinkConfig {
         let a = self.byte();
         let b = self.byte();
-        let c = self.byte();
+        // Two bits for each group's HPD reset.
+        let c = u16::from_le_bytes([self.byte(), self.byte()]);
         let mut config = SinkConfig::new();
         // Each group's HPD reset: the default (on any low), never, as HPD rises, or after
         // 50 ms.
@@ -220,11 +243,11 @@ impl Input<'_> {
     /// as for presets.
     fn action(&mut self, now: Timestamp) -> (Action<'static>, When) {
         let a = self.byte();
-        let action = match a % 6 {
+        let action = match a % 7 {
             0 => {
                 let reg = self.byte();
                 Action::Preset {
-                    reg: if matches!(reg, 0x21 | 0x40) {
+                    reg: if matches!(reg, 0x21 | 0x40 | 0x50..=0x56) {
                         0x20
                     } else {
                         reg
@@ -236,6 +259,7 @@ impl Input<'_> {
             2 => Action::Unplug,
             3 => Action::Line(self.line()),
             4 => Action::Detach,
+            5 => Action::CharacterErrors(self.errors()),
             _ => Action::Reattach,
         };
         let nth = u32::from(self.byte() % 4);
@@ -354,6 +378,19 @@ fn check_flags(bench: &Bench<'_, LOG>) {
     let (Some(flags), Some(config)) = (sink.status_flags_0(), sink.tmds_config()) else {
         return;
     };
+    // The counters: their checksum, and valid exactly while the lanes are locked.
+    let counters: Vec<u8> = (0x50..=0x56).filter_map(|reg| sink.scdc(reg)).collect();
+    let sum = counters
+        .iter()
+        .fold(0u8, |sum, &byte| sum.wrapping_add(byte));
+    assert_eq!(sum, 0, "the counters' checksum is wrong: {counters:02x?}");
+    for high in [counters[1], counters[3], counters[5]] {
+        assert_eq!(
+            high & 0x80 != 0,
+            flags & 0x0E != 0,
+            "a counter valid without its lane locked, or not with it"
+        );
+    }
     let line = if sink.is_plugged() {
         bench.line()
     } else {
@@ -515,12 +552,12 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
     let mut phy = bench.phy();
 
     for _ in 0..MAX_ACTIONS {
-        if input.data.is_empty() {
+        if input.data.is_empty() || bench.transcript_len() > LOG - ROOM {
             break;
         }
         let mut bytes = [0u8; 8];
         let mut buf = [0u8; 64];
-        match input.byte() % 22 {
+        match input.byte() % 23 {
             0 => {
                 let addr = input.addr();
                 let _ = bus.write(addr, input.bytes(&mut bytes));
@@ -584,8 +621,9 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
             13 => {
                 let reg = input.byte();
                 let value = input.byte();
-                // Presets of the status or the flags would set them outside their conditions.
-                if !matches!(reg, 0x21 | 0x40) && bench.sink().scdc(0x01).is_some() {
+                // Presets of the status, the flags or the counters would set them outside
+                // their conditions.
+                if !matches!(reg, 0x21 | 0x40 | 0x50..=0x56) && bench.sink().scdc(0x01).is_some() {
                     bench.preset_scdc(reg, value);
                 }
             }
@@ -630,6 +668,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let (action, when) = input.action(bench.now());
                 let _ = bench.schedule_action(action, when);
             }
+            21 => bench.set_character_errors(input.errors()),
             _ => {
                 let _ = clock.now();
             }

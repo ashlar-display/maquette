@@ -7,7 +7,7 @@ use hdmi_hal::time::Timestamp;
 
 use crate::config::RefusalKind;
 use crate::fault::{Effect, FaultId, Point};
-use crate::line::Line;
+use crate::line::{ErrorRates, Line};
 use crate::phy::{PhyCall, PhyErrorKind};
 
 /// One entry of the transcript: what happened, and when.
@@ -62,6 +62,9 @@ pub enum Event {
     },
     /// What the source transmits changed ([`Bench::set_line`](crate::Bench::set_line)).
     Line(Line),
+    /// The character errors on the link changed
+    /// ([`Bench::set_character_errors`](crate::Bench::set_character_errors)).
+    CharacterErrors(ErrorRates),
     /// HPD changed.
     #[non_exhaustive]
     Hpd {

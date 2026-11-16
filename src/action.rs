@@ -5,7 +5,7 @@ use hdmi_hal::time::Timestamp;
 
 use crate::config::SinkConfig;
 use crate::fault::Filter;
-use crate::line::Line;
+use crate::line::{ErrorRates, Line};
 use crate::phy::PhyCallKind;
 
 /// Something the bench does by itself during a procedure, as the test scheduled it with
@@ -62,6 +62,9 @@ pub enum Action<'a> {
     },
     /// Sets what the source transmits, as [`Bench::set_line`](crate::Bench::set_line).
     Line(Line),
+    /// Sets the character errors on the link, as
+    /// [`Bench::set_character_errors`](crate::Bench::set_character_errors).
+    CharacterErrors(ErrorRates),
     /// Detaches the adapter, as [`Bench::detach`](crate::Bench::detach).
     Detach,
     /// Reattaches the adapter, as [`Bench::reattach`](crate::Bench::reattach).

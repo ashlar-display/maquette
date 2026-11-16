@@ -57,3 +57,46 @@ impl Default for Line {
         Self::Off
     }
 }
+
+/// Character errors on the link, per lane, in errors a second: what the sink's character
+/// error counters count while the lane is locked. Lane 3 carries data in 4-lane FRL only.
+///
+/// The test sets them with
+/// [`Bench::set_character_errors`](crate::Bench::set_character_errors); a target sees them
+/// with [`Env::character_errors`](crate::Env::character_errors). At creation there are none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ErrorRates {
+    /// Errors a second on lane 0.
+    pub lane0: u32,
+    /// Errors a second on lane 1.
+    pub lane1: u32,
+    /// Errors a second on lane 2.
+    pub lane2: u32,
+    /// Errors a second on lane 3.
+    pub lane3: u32,
+}
+
+impl ErrorRates {
+    /// No errors on any lane.
+    pub const NONE: Self = Self {
+        lane0: 0,
+        lane1: 0,
+        lane2: 0,
+        lane3: 0,
+    };
+
+    /// `per_second` errors a second on every lane.
+    pub const fn all(per_second: u32) -> Self {
+        Self {
+            lane0: per_second,
+            lane1: per_second,
+            lane2: per_second,
+            lane3: per_second,
+        }
+    }
+
+    /// The rates in lane order.
+    pub(crate) const fn lanes(self) -> [u32; 4] {
+        [self.lane0, self.lane1, self.lane2, self.lane3]
+    }
+}

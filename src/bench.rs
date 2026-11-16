@@ -16,7 +16,7 @@ use crate::ddc::{BusTiming, Ddc};
 use crate::eddc::Eddc;
 use crate::fault::{Effect, Fault, FaultId, Moment, Schedule, ScheduleFull, Strike};
 use crate::hook::ScdcHook;
-use crate::line::Line;
+use crate::line::{ErrorRates, Line};
 use crate::phy::{Phy, PhyCall, PhyErrorKind, PhyFault, PhySettings, PhyState};
 use crate::scdc::Scdc;
 use crate::target::{Env, Operation, Target};
@@ -55,6 +55,11 @@ pub const DEFAULT_PHY_CAPABILITIES: TmdsPhyCapabilities = TmdsPhyCapabilities::n
 /// The line as the sink receives it: nothing while it is unplugged.
 const fn sink_line(plugged: bool, line: Line) -> Line {
     if plugged { line } else { Line::Off }
+}
+
+/// The character errors as the sink receives them: none while it is unplugged.
+const fn sink_errors(plugged: bool, errors: ErrorRates) -> ErrorRates {
+    if plugged { errors } else { ErrorRates::NONE }
 }
 
 fn check_stores(edid: &[u8], displayid: Option<&[u8]>) -> Result<(), BenchError> {
@@ -114,6 +119,8 @@ struct State<'a, const LOG: usize, const FAULTS: usize> {
     /// The test's SCDC hook: it outlives a plug, which makes a fresh `scdc`.
     scdc_hook: Option<Hook<'a>>,
     line: Line,
+    /// The character errors on the link.
+    errors: ErrorRates,
     hpd: bool,
     plugged: bool,
     attached: bool,
@@ -142,10 +149,12 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             transcript,
             hpd,
             line,
+            errors,
             plugged,
             ..
         } = self;
-        let mut env = Env::new(at, *hpd, sink_line(*plugged, *line), transcript);
+        let mut env = Env::new(at, *hpd, sink_line(*plugged, *line), transcript)
+            .with_errors(sink_errors(*plugged, *errors));
         for target in routed(targets, eddc, scdc) {
             target.update(&mut env);
         }
@@ -213,10 +222,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
                 transcript,
                 hpd,
                 line,
+                errors,
                 ..
             } = self;
             let addr = ops.first().map_or(0, Operation::addr);
-            let mut env = Env::new(at, *hpd, *line, transcript);
+            let mut env = Env::new(at, *hpd, *line, transcript).with_errors(*errors);
             let first = targets
                 .iter_mut()
                 .map(|target| &mut **target as &mut dyn Target)
@@ -330,6 +340,15 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
         }
     }
 
+    /// Sets the character errors at `at`; the same rates change nothing.
+    fn set_character_errors(&mut self, at: Timestamp, errors: ErrorRates) {
+        if self.errors != errors {
+            self.errors = errors;
+            self.record(at, Event::CharacterErrors(errors));
+            self.update(at);
+        }
+    }
+
     /// Sets HPD at `at`; false when raising it on an unplugged sink, which changes nothing.
     fn set_hpd(&mut self, at: Timestamp, high: bool) -> bool {
         if high && !self.plugged {
@@ -359,6 +378,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             transcript,
             hpd,
             line,
+            errors,
             plugged,
             ..
         } = self;
@@ -366,7 +386,9 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
             return false;
         };
         let line = sink_line(*plugged, *line);
-        scdc.preset(reg, value, &mut Env::new(at, *hpd, line, transcript));
+        let mut env =
+            Env::new(at, *hpd, line, transcript).with_errors(sink_errors(*plugged, *errors));
+        scdc.preset(reg, value, &mut env);
         self.update(at);
         true
     }
@@ -390,6 +412,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> State<'a, LOG, FAULTS> {
                     config,
                 } => self.plug(at, edid, displayid, config),
                 Action::Line(line) => self.set_line(at, line),
+                Action::CharacterErrors(errors) => self.set_character_errors(at, errors),
                 Action::Detach => self.set_attached(at, false),
                 Action::Reattach => self.set_attached(at, true),
             }
@@ -503,6 +526,18 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// What the source transmits.
     pub fn line(&self) -> Line {
         self.locked(|state, _| state.line)
+    }
+
+    /// Sets the character errors on the link, per lane: a bench event, recorded as
+    /// `Event::CharacterErrors`. The sink's counters count them while the lane is locked;
+    /// setting the rates the link already has changes nothing and records nothing.
+    pub fn set_character_errors(&self, errors: ErrorRates) {
+        self.locked(|state, at| state.set_character_errors(at, errors));
+    }
+
+    /// The character errors on the link.
+    pub fn character_errors(&self) -> ErrorRates {
+        self.locked(|state, _| state.errors)
     }
 
     /// Sets HPD: a bench event, recorded as `Event::Hpd`; setting the level it already has
@@ -671,6 +706,11 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
             index += 1;
             record
         })
+    }
+
+    /// How many records the transcript holds, up to `LOG`.
+    pub fn transcript_len(&self) -> usize {
+        self.locked(|state, _| state.transcript.len())
     }
 
     /// How many records the transcript did not keep, past `LOG`: the newest by default, the
@@ -989,6 +1029,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
                 targets: self.targets,
                 scdc_hook: self.scdc_hook,
                 line: Line::Off,
+                errors: ErrorRates::NONE,
                 hpd: true,
                 plugged: true,
                 attached: true,

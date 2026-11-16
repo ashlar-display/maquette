@@ -558,9 +558,10 @@ fn the_transcript_counts_what_does_not_fit_and_clears() {
         bus.write(0x37, &[0]).unwrap_err();
     }
     assert_eq!(bench.transcript().count(), 2);
+    assert_eq!(bench.transcript_len(), 2);
     assert_eq!(bench.transcript_overflow(), 3);
     bench.clear_transcript();
-    assert_eq!(bench.transcript().count(), 0);
+    assert_eq!(bench.transcript_len(), 0);
     assert_eq!(bench.transcript_overflow(), 0);
 }
 

@@ -486,7 +486,13 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 
 `TmdsClockRatio` and `HdmiForumFrl` are hdmi-hal's. A target sees the line through
 `Env::line()`. Setting the line it already has is not a change: nothing is recorded and the
-time it started stays.
+time it started stays. An unplugged sink receives no line: its targets see `Line::Off`.
+
+The link's character errors go with the line: `ErrorRates`, errors a second on each of
+lanes 0–3 (public fields, as hdmi-hal's `LanePatterns`), none by default. The test sets
+them with `Bench::set_character_errors`, recorded as `Event::CharacterErrors`; a target sees
+them through `Env::character_errors()`, none while the sink is unplugged. The sink's
+counters count them while each lane is locked ("Sink behaviour").
 
 ### HPD, unplug and detach
 
@@ -562,6 +568,8 @@ pub enum Event {
     Note { addr: u8, code: u32, value: u32 },
     /// What the source transmits changed (`Bench::set_line`, or the PHY's output).
     Line(Line),
+    /// The character errors on the link changed (`Bench::set_character_errors`).
+    CharacterErrors(ErrorRates),
     /// HPD changed.
     Hpd { high: bool },
     /// The sink was unplugged or plugged.
@@ -591,6 +599,8 @@ pub struct BusRecord {
 impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     /// The records, oldest first; each is copied out under the lock.
     pub fn transcript(&self) -> impl Iterator<Item = Record> + '_;
+    /// How many records it holds, up to `LOG`.
+    pub fn transcript_len(&self) -> usize;
     /// How many records did not fit, past `LOG`.
     pub fn transcript_overflow(&self) -> usize;
     pub fn clear_transcript(&self);
@@ -622,10 +632,11 @@ source settles is marked *chosen*.
 | "Some displays refuse to set the scrambling bit right away" | one source, which reads two ways [4] | a setting in both readings: the status withheld, or `Scrambling_Enable` dropped from the write; for the first *n* attempts, an attempt being a write that sets `Scrambling_Enable`; default none (*chosen*) |
 | The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5]; settled that a source resumes within 100 ms of a ratio change [11] | a setting, default 100 ms (the least forgiving), counted from the write that set `Scrambling_Enable` or one that changed `TMDS_Bit_Clock_Ratio` while it was set; `None` never gives up |
 | A ratio change: the source suspends the TMDS clock and data, writes `TMDS_Bit_Clock_Ratio`, and resumes 1 to 100 ms after | settled [11] | the strict sink (below) does not take output resumed sooner than 1 ms after the write; the 100 ms is the timeout's |
-| `TMDS_Config` and other registers reset around an HPD low | settled that sources restore it [6]; the public sinks reset `TMDS_Config` as HPD falls [13]; for the other registers one sink each way [13] | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config}`): `HpdReset::OnHpdLow`, the default for every group (the least forgiving; *chosen* after Amlogic for all but `TMDS_Config`); `HpdReset::After(d)`; `HpdReset::OnHpdRise`, as Xilinx clears `FRL_Rate`, losing what was written during the low too; or `HpdReset::Never`. The `Status` group is `Scrambling_Status`, the update flags and the status flags (0x40–0x42). Each group resets once per HPD low, before the lock is evaluated; only registers that change are recorded |
+| `TMDS_Config` and other registers reset around an HPD low | settled that sources restore it [6]; the public sinks reset `TMDS_Config` as HPD falls [13]; for the other registers one sink each way [13] | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config, ErrorCounters}`): `HpdReset::OnHpdLow`, the default for every group (the least forgiving; *chosen* after Amlogic for all but `TMDS_Config`); `HpdReset::After(d)`; `HpdReset::OnHpdRise`, as Xilinx clears `FRL_Rate`, losing what was written during the low too; or `HpdReset::Never`. The `Status` group is `Scrambling_Status`, the update flags and the status flags (0x40–0x42); `ErrorCounters` is 0x50–0x5A, which a receiver resets on HPD low to high or power-off [16], or with all of SCDC [13]. Each group resets once per HPD low, before the lock is evaluated; only registers that change are recorded |
 | `Source_Version` written by the source, `Sink_Version` reported | [7] | `Sink_Version` a setting (default 1); `Source_Version` stored |
 | Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | kept until cleared; `Status_Update` set by the status flags (below), the others by a preset until the FRL responses set them |
 | `Status_Flags_0`: bit 0 `Clock_Detected`, bits 1–4 lanes 0–3 locked, set by the sink's hardware as the lanes lock | the bits settled [15]; no source shows the timing | `Clock_Detected` set while the line is TMDS (*chosen*: at once); lanes 0–2 locked once the sink can decode the line (TMDS at a ratio that fits the rate and matches `TMDS_Bit_Clock_Ratio`, scrambled exactly when `Scrambling_Enable` is set, and scrambled above 340 Mcsc) and the lock trigger has passed (*chosen*: the scrambling lock's, `AfterReads` counting reads of 0x40); cleared when it cannot. Lane 3 and `FLT_ready` are FRL's. Changed only when what the sink sees changes, so a preset holds until then; an unplugged sink receives no line |
+| Character error counters (0x50–0x56): 15 bits a lane, bit 7 of the high byte valid, saturating at 0x7FFF; 0x56 a checksum, 0x50–0x56 summing to zero over 3 lanes | the checksum and the valid bit settled [16]; saturation from one receiver [16]; no source says what makes a count valid | lanes 0–2 count the link's `ErrorRates` while locked, exactly (fractions carry over), and stop at 0x7FFF; valid while the lane is locked (*chosen*: an error-free locked link then reads 0x80 at 0x56, as a real sink did); not recorded, as they move with time; a preset holds until the counts change. Lane 3, the 4-lane checksum and the Reed-Solomon corrections are FRL's |
 | `Status_Update` set when the status flags change | no receiver source shows it (the receivers set it in hardware); one source family reads the flags only when it is set, others regardless [15] | a setting: `StatusUpdate::OnChange` (*chosen* default) or `Never` |
 | A sink without SCDC | one source: a failed `Source_Version` write means no SCDC [7] | NACKs 0x54 (*chosen*) |
 | A write to an SCDC register the sink owns | no source | a setting: acknowledged and ignored, recorded (*chosen*), or `NoAcknowledge(Data)` at that byte |
@@ -677,8 +688,8 @@ written, before each read of the status (which `Trigger::AfterReads` counts) and
 other bench event.
 
 Planned before the first release: FRL training responses (`FLT_ready`, LTP requests,
-`FLT_update`, `FRL_start`) and the CED counters (saturation at 0x7FFF, both clear-on-read
-behaviours, held or moving during a burst, reset on hot plug).
+`FLT_update`, `FRL_start`) and the rest of the CED counters (`CED_Update`, both
+clear-on-read behaviours, held or moving during a burst).
 
 ---
 
@@ -967,6 +978,7 @@ pub enum Action<'a> {
     Unplug,
     Plug { edid: &'a [u8], displayid: Option<&'a [u8]>, config: SinkConfig },
     Line(Line),                            // as Bench::set_line
+    CharacterErrors(ErrorRates),           // as Bench::set_character_errors
     Detach,
     Reattach,
 }
@@ -1387,6 +1399,7 @@ Driver source read at these commits; line numbers refer to them.
 | [13] | What the sink resets around HPD | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:740–765` (lowering HPD resets FRL, raising it clears `FRL_Rate`), `xv_hdmirx1_frl.c:76`, `1480–1502` (the reset clears `TMDS_Config` bits 1:0, in FRL builds), `xv_hdmirx1_intr.c:1168–1182` (the cable's 5 V lost clears all of SCDC); Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw.c:2045–2069`, `2854–2870` (SCDC cleared on T7 and later chips, or the HPD state handed to the IP's SCDC block), called with HPD low from `hdmi_rx_wrapper.c:3663`, `4794–4797` |
 | [14] | DDC at 100 kHz | i915 `drivers/gpu/drm/i915/display/intel_gmbus.c:960–961` ("a conservative clock rate"); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:1580` (the DDC clock divider) |
 | [15] | The status flags and `Status_Update` | the bits: Linux `include/drm/display/drm_scdc.h:55–64`, `drivers/gpu/drm/display/drm_scdc_helper.c:354–357`; Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4647` (comment), `4736–4744` (bits 0–3 all set: TMDS locked); set by the receiver's hardware, waited on in FRL training: Amlogic's receiver `hdmi_rx_hw_t3x.c:4645–4662`, Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:82`, `xv_hdmirx1_intr.c:2152–2162`; read only on `Status_Update`, which is then cleared: Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:88–112`; read regardless: Linux `drm_scdc_helper.c:440–478`, Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:886–903` |
+| [16] | The character error counters | the checksum over 0x50–0x56 at 3 lanes and the valid bit: Linux `drivers/gpu/drm/display/drm_scdc_helper.c:383–412`, Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:35–68`; saturation at 0x7FFF: Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2306–2345`; reset on HPD low to high or power-off: LG, EP 3 160 152 A1, [0064] |
 
 Standards (VESA, public):
 

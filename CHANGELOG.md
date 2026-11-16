@@ -34,7 +34,7 @@ implementations of hdmi-hal's traits.
   simulated PHY; `sink()`, a read-only view of the sink's registers, HPD and plug state.
   Calls from several threads are serialized: each bus call, and each delay with the event
   after it, is one step.
-- **The test's controls:** `advance`; `set_line`; `set_hpd` and `hpd_pulse`; `unplug` and
+- **The test's controls:** `advance`; `set_line`; `set_character_errors`; `set_hpd` and `hpd_pulse`; `unplug` and
   `plug` (a fresh sink with new stores and settings); `detach` and `reattach`;
   `preset_scdc`. Each is a bench event: every target sees the bench after it.
 - **The operation budget:** every bus call, clock read, delay and PHY call through the
@@ -63,7 +63,9 @@ implementations of hdmi-hal's traits.
   0xFF or wrapped, since the host acknowledges what it reads.
 - **The line** (`Line`: `Off`, `Tmds` with rate, ratio and scrambling, `Frl`, built with
   `Line::frl`), which the PHY drives when its output changes and a test sets with
-  `set_line`; the last change wins.
+  `set_line`; the last change wins. An unplugged sink receives no line.
+- **Character errors** (`ErrorRates`, errors a second on each lane), set with
+  `set_character_errors`.
 - **The scrambling lock:** `Scrambling_Status` is set once `Scrambling_Enable` is set, the
   line is scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names and that ratio fits the
   rate (1/40 above 340 Mcsc), no refusal withholds it, and the lock's `Trigger` has passed
@@ -73,7 +75,7 @@ implementations of hdmi-hal's traits.
   locks of lanes 0–2 are set once the sink can decode the line (the ratio fits the rate and
   matches `TMDS_Config`, the line is scrambled exactly when `Scrambling_Enable` is set, and
   always above 340 Mcsc) and the lock's `Trigger` has passed. Each change sets
-  `Status_Update`, unless `StatusUpdate::Never`. An unplugged sink receives no line.
+  `Status_Update`, unless `StatusUpdate::Never`.
 - **HPD resets:** each `RegisterGroup` resets as its `HpdReset` says: as HPD falls (the
   default, after the public sink drivers), after a time, as HPD rises, or never.
 - **`SinkConfig`**, the sink's settings with `const` builders and getters: SCDC or none, the
@@ -81,7 +83,10 @@ implementations of hdmi-hal's traits.
   128-byte boundary, the segment pointer, what answers while HPD is low, the lock's trigger,
   the strict sink (output started after the write, and 1 ms after a ratio change),
   refusals, the enable timeout (100 ms by default, from the write that set
-  `Scrambling_Enable` or changed the ratio), the HPD resets and `Status_Update`. Each default is sourced or
+  `Scrambling_Enable` or changed the ratio), the HPD resets and `Status_Update`.
+- **The character error counters (0x50–0x56):** lanes 0–2 count the link's errors while
+  locked, saturate at 0x7FFF, are valid while locked, and keep the checksum; they reset with
+  `RegisterGroup::ErrorCounters`. Each default is sourced or
   marked *chosen*, the least forgiving where sources differ.
 
 **The PHY**
@@ -105,10 +110,10 @@ implementations of hdmi-hal's traits.
   on its address byte). `Bench::schedule_phy` schedules a `PhyFault` in the same schedule.
   Each strike is an `Event::Fault`.
 - **Scheduled actions:** `Bench::schedule_action` takes an `Action` (a preset, HPD, unplug,
-  plug, the line, detach, reattach) and a `When` (before or after the `nth` matching bus
-  operation, after the `nth` PHY call, or at a time), so the sink changes during a
-  procedure. An action comes once, in the faults' schedule, recorded as an `Event::Action`
-  before the events its change makes.
+  plug, the line, the character errors, detach, reattach) and a `When` (before or after the
+  `nth` matching bus operation, after the `nth` PHY call, or at a time), so the sink changes
+  during a procedure. An action comes once, in the faults' schedule, recorded as an
+  `Event::Action` before the events its change makes.
 
 **Extending the sink**
 
@@ -127,7 +132,7 @@ implementations of hdmi-hal's traits.
   write, refusal, fault, PHY call, line, HPD, plug, adapter change, action and target note,
   with its time. `Record`, `BusRecord` and `Event` are read, not built: each `Event` variant
   with fields is `#[non_exhaustive]`. What does not fit is counted
-  (`Bench::transcript_overflow`); by default the oldest records are kept, and
+  (`Bench::transcript_overflow`; `Bench::transcript_len` counts what is kept); by default the oldest records are kept, and
   `BenchBuilder::keep_newest_records` keeps the newest, for a session-length test.
 
 **Async**

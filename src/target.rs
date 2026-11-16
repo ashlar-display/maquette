@@ -3,7 +3,7 @@
 use hdmi_hal::ddc::DdcErrorKind;
 use hdmi_hal::time::Timestamp;
 
-use crate::line::Line;
+use crate::line::{ErrorRates, Line};
 use crate::transcript::{Event, Record, Transcript};
 
 /// A device on the sink's DDC bus, as the bench routes transactions to it.
@@ -113,6 +113,7 @@ pub struct Env<'e> {
     now: Timestamp,
     hpd: bool,
     line: Line,
+    errors: ErrorRates,
     log: &'e mut dyn NoteSink,
 }
 
@@ -122,8 +123,14 @@ impl<'e> Env<'e> {
             now,
             hpd,
             line,
+            errors: ErrorRates::NONE,
             log,
         }
+    }
+
+    /// The bench as before, with the link's character errors.
+    pub(crate) fn with_errors(self, errors: ErrorRates) -> Self {
+        Self { errors, ..self }
     }
 
     /// The bench's time: for a transaction, when it started.
@@ -140,6 +147,12 @@ impl<'e> Env<'e> {
     /// unplugged.
     pub fn line(&self) -> Line {
         self.line
+    }
+
+    /// The character errors on the link, as the sink receives them: none while it is
+    /// unplugged.
+    pub fn character_errors(&self) -> ErrorRates {
+        self.errors
     }
 
     /// Records a built-in target's event at [`now`](Self::now).
