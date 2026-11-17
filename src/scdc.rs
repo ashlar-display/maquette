@@ -27,7 +27,7 @@ use crate::config::{
     RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Trigger,
 };
 use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
-use crate::line::{ErrorRates, Line, RATIO_40_ABOVE_KHZ};
+use crate::line::{ErrorRates, Line, LinkLanes, RATIO_40_ABOVE_KHZ};
 use crate::target::{Env, Operation, Target};
 use crate::transcript::{Actor, Event, Ignored};
 use hdmi_hal::HdmiForumFrl;
@@ -63,6 +63,14 @@ const LTP_REQ_01: u8 = 0x41;
 const LTP_REQ_23: u8 = 0x42;
 /// The request for a lower FRL rate.
 const LTP_RATE_CHANGE: u8 = 0xF;
+/// The request for another TxFFE level.
+const LTP_FFE_CHANGE: u8 = 0xE;
+/// The most `FFE_Levels` (`Config_1` bits 7:4) the LTS:3 timeouts count.
+const FFE_LEVELS_MAX: u8 = 3;
+/// `Source_Test_Configuration` bit 5: `FLT_no_timeout`.
+const FLT_NO_TIMEOUT: u8 = 1 << 5;
+/// `Config_0` bit 1: `FLT_no_retrain`.
+const FLT_NO_RETRAIN: u8 = 1 << 1;
 /// The highest `FRL_Rate` value that names a rate (12 Gbps, 4 lanes).
 const FRL_RATE_MAX: u8 = 6;
 /// The highest `FRL_Rate` value at 3 lanes (6 Gbps, 3 lanes).
@@ -219,6 +227,9 @@ fn role(reg: u8) -> Role {
 ///   the lock trigger has passed: `Status_Flags_0` bits 1–3, and bit 4 at 4 lanes. Once
 ///   they are locked and the source has cleared `FLT_update`, the sink sets `FRL_start`
 ///   (Xilinx `616–640`, `xv_hdmirx1_intr.c:2153–2165`; Amlogic `hdmi_rx_wrapper.c:6710–6719`).
+/// - Lanes that do not pass in time: [`SinkConfig::with_lts3_timeout`]'s attempts, 0xE on
+///   the lanes not passing, then 0xF on every lane (*chosen*, after Xilinx `440–547`; once
+///   0xE is cleared, the patterns are requested again: `1118–1135`).
 /// - `FRL_Rate` 0 returns to legacy: the requests are cleared (Xilinx `183–224`). So does a
 ///   reset of the status group, which loses the requests (*chosen*).
 ///
@@ -287,6 +298,14 @@ pub(crate) struct Scdc {
     flt_ready_shown: bool,
     match_from: Option<Timestamp>,
     match_reads: u32,
+    /// The requests the sink wants posted; the LTS:3 budget, when the training began, the
+    /// timeouts so far and the source's `FFE_Levels`; the lane limits as last seen.
+    wanted: [u8; 4],
+    lts3_timeout: Option<Duration>,
+    lts3_from: Timestamp,
+    timeouts: u32,
+    ffe_levels: u8,
+    lanes_seen: LinkLanes,
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
     reset_done: [bool; RegisterGroup::COUNT],
@@ -348,6 +367,12 @@ impl Scdc {
             flt_ready_shown: max_frl != 0,
             match_from: None,
             match_reads: 0,
+            wanted: [0; 4],
+            lts3_timeout: config.lts3_timeout,
+            lts3_from: Timestamp::from_micros(0),
+            timeouts: 0,
+            ffe_levels: 0,
+            lanes_seen: LinkLanes::NONE,
             hpd_low_since: None,
             reset_done: [false; RegisterGroup::COUNT],
         })
@@ -387,12 +412,13 @@ impl Scdc {
             }
         }
         if reg == CONFIG_1 && self.max_frl != 0 {
-            self.start_training(to & 0x0F, env);
+            self.start_training(to, env);
         }
     }
 
-    /// A write of `Config_1` with `FRL_Rate` `rate`: LTS:3 at it, or legacy for 0.
-    fn start_training(&mut self, rate: u8, env: &mut Env<'_>) {
+    /// A write of `Config_1` holding `config`: LTS:3 at its `FRL_Rate`, or legacy for 0.
+    fn start_training(&mut self, config: u8, env: &mut Env<'_>) {
+        let rate = config & 0x0F;
         self.match_from = None;
         if rate == 0 {
             self.training = Training::Legacy;
@@ -404,12 +430,15 @@ impl Scdc {
             self.set(UPDATE_0, update & !FRL_START, Actor::Sink, env);
         }
         self.training = Training::Requesting { rate };
-        let requests = if rate > self.max_frl {
+        self.lts3_from = env.now();
+        self.timeouts = 0;
+        self.ffe_levels = (config >> 4).min(FFE_LEVELS_MAX);
+        self.wanted = if rate > self.max_frl {
             [LTP_RATE_CHANGE; 4]
         } else {
             self.ltp_requests
         };
-        self.post_requests(requests, true, env);
+        self.post_requests(self.wanted, true, env);
     }
 
     /// Writes `requests` to 0x41–0x42 where they change, then sets `FLT_update` if `update`.
@@ -435,43 +464,108 @@ impl Scdc {
         [a & 0x0F, a >> 4, b & 0x0F, b >> 4]
     }
 
-    /// LTS:3: once the source has cleared `FLT_update` and the line has carried the
-    /// requested patterns for the lock trigger, the sink posts the pass.
+    /// Whether `lane` passes at `rate` on `line` within `limits`: requested nothing, or
+    /// carrying its requested pattern within its limits.
+    fn lane_passes(lane: usize, rate: u8, posted: [u8; 4], line: Line, limits: LinkLanes) -> bool {
+        if posted[lane] == 0 {
+            return true;
+        }
+        let Line::Frl {
+            rate: line_rate,
+            patterns,
+            equalization,
+            ..
+        } = line
+        else {
+            return false;
+        };
+        let carried = [
+            patterns.lane0,
+            patterns.lane1,
+            patterns.lane2,
+            patterns.lane3,
+        ]
+        .map(|pattern| pattern.map_or(0, LtpPattern::value));
+        let limit = limits.lanes()[lane];
+        frl_value(line_rate) == rate
+            && posted[lane] == carried[lane]
+            && limit.max_rate.is_none_or(|max| rate <= frl_value(max))
+            && tx_ffe_levels(equalization)[lane] >= limit.min_tx_ffe
+    }
+
+    /// The LTS:3 timeouts due by `now`, seen with the line and the lane limits as they were
+    /// since the last evaluation. Each of the first `FFE_Levels` asks for another TxFFE level
+    /// (0xE) on the lanes not passing; any later one asks for a lower rate (0xF) on every
+    /// lane, if a lane is not passing. The requests wait for `FLT_update` to be cleared.
+    fn run_timeouts(&mut self, now: Timestamp) {
+        let Training::Requesting { rate } = self.training else {
+            return;
+        };
+        let Some(budget) = self.lts3_timeout else {
+            return;
+        };
+        let no_timeout = self.get(SOURCE_TEST_CONFIGURATION) & FLT_NO_TIMEOUT != 0;
+        let no_retrain = self.get(CONFIG_0) & FLT_NO_RETRAIN != 0;
+        if no_timeout || no_retrain {
+            return;
+        }
+        let step = budget / (u32::from(self.ffe_levels) + 1);
+        let elapsed = now.saturating_duration_since(self.lts3_from);
+        let due = if step.is_zero() {
+            u128::from(u32::MAX)
+        } else {
+            elapsed.as_micros() / step.as_micros().max(1)
+        };
+        let due = u32::try_from(due).unwrap_or(u32::MAX);
+        if due <= self.timeouts {
+            return;
+        }
+        let posted = self.posted();
+        let failing: [bool; 4] = core::array::from_fn(|lane| {
+            lane < frl_lanes(rate)
+                && !Self::lane_passes(lane, rate, posted, self.line, self.lanes_seen)
+        });
+        let levels = u32::from(self.ffe_levels);
+        if self.timeouts < levels {
+            for (wanted, &failing) in self.wanted.iter_mut().zip(&failing) {
+                if failing {
+                    *wanted = LTP_FFE_CHANGE;
+                }
+            }
+        }
+        if due > levels && failing.contains(&true) {
+            self.wanted = [LTP_RATE_CHANGE; 4];
+        }
+        self.timeouts = due;
+    }
+
+    /// LTS:3: the sink posts what it wants once the source has cleared `FLT_update`, the
+    /// patterns again after a TxFFE request; and once the line has carried the requested
+    /// patterns for the lock trigger, it posts the pass.
     fn evaluate_training(&mut self, env: &mut Env<'_>, reading_update: bool) {
         let Training::Requesting { rate } = self.training else {
             return;
         };
         let now = env.now();
-        let posted = self.posted();
         let cleared = self.get(UPDATE_0) & FLT_UPDATE == 0;
-        let matches = cleared
-            && !posted.contains(&LTP_RATE_CHANGE)
-            && match self.line {
-                Line::Frl {
-                    rate: line_rate,
-                    patterns,
-                    equalization,
-                    ..
-                } if frl_value(line_rate) == rate => {
-                    let carried = [
-                        patterns.lane0,
-                        patterns.lane1,
-                        patterns.lane2,
-                        patterns.lane3,
-                    ]
-                    .map(|pattern| pattern.map_or(0, LtpPattern::value));
-                    let tx_ffe = tx_ffe_levels(equalization);
-                    let limits = env.lane_limits().lanes();
-                    (0..frl_lanes(rate)).all(|lane| {
-                        let within = limits[lane]
-                            .max_rate
-                            .is_none_or(|max| rate <= frl_value(max))
-                            && tx_ffe[lane] >= limits[lane].min_tx_ffe;
-                        posted[lane] == 0 || (posted[lane] == carried[lane] && within)
-                    })
+        if cleared && self.wanted != self.posted() {
+            self.post_requests(self.wanted, true, env);
+            for (wanted, &first) in self.wanted.iter_mut().zip(&self.ltp_requests) {
+                if *wanted == LTP_FFE_CHANGE {
+                    *wanted = first;
                 }
-                _ => false,
-            };
+            }
+            self.match_from = None;
+            return;
+        }
+        let posted = self.posted();
+        let limits = env.lane_limits();
+        let matches = cleared
+            && !posted
+                .iter()
+                .any(|&request| matches!(request, LTP_FFE_CHANGE | LTP_RATE_CHANGE))
+            && (0..frl_lanes(rate))
+                .all(|lane| Self::lane_passes(lane, rate, posted, self.line, limits));
         let match_from = matches.then(|| self.match_from.unwrap_or(now));
         if match_from != self.match_from {
             self.match_from = match_from;
@@ -483,6 +577,7 @@ impl Scdc {
         if match_from.is_some_and(|from| self.passed(from, now, self.match_reads)) {
             self.match_from = None;
             self.training = Training::Passed { rate };
+            self.wanted = [0; 4];
             self.post_requests([0; 4], true, env);
         }
     }
@@ -586,6 +681,7 @@ impl Scdc {
     /// `Trigger::AfterReads`.
     fn evaluate(&mut self, env: &mut Env<'_>, reading: Option<u8>) {
         self.count_and_check(env);
+        self.run_timeouts(env.now());
         self.hpd_resets(env);
         let now = env.now();
         let line = env.line();
@@ -650,6 +746,7 @@ impl Scdc {
         self.evaluate_flags(env, reading == Some(STATUS_FLAGS_0));
         self.evaluate_start(env);
         self.errors = env.character_errors();
+        self.lanes_seen = env.lane_limits();
         self.show_errors();
     }
 

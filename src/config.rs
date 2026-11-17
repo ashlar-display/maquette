@@ -45,6 +45,7 @@ pub struct SinkConfig {
     pub(crate) during_read: DuringRead,
     pub(crate) max_frl_rate: Option<HdmiForumFrl>,
     pub(crate) ltp_requests: LanePatterns,
+    pub(crate) lts3_timeout: Option<Duration>,
 }
 
 impl SinkConfig {
@@ -77,6 +78,7 @@ impl SinkConfig {
                 lane2: Some(LtpPattern::Lfsr2),
                 lane3: Some(LtpPattern::Lfsr3),
             },
+            lts3_timeout: Some(Duration::from_millis(180)),
         }
     }
 
@@ -299,6 +301,23 @@ impl SinkConfig {
         }
     }
 
+    /// How long an FRL sink gives the lanes at a rate before it asks for a lower one; `None`
+    /// never. By default 180 ms (*chosen*, after one receiver: Xilinx embeddedsw
+    /// `97f2baf7f69e`, `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:49–58`,
+    /// `440–547`). The time is split into `FFE_Levels` + 1 equal attempts (180, 90, 60 or
+    /// 45 ms, as Xilinx's table): at the end of each but the last, the lanes not passing are
+    /// asked for another TxFFE level (0xE), and the patterns requested again once the source
+    /// clears `FLT_update`; at the end of the last, every lane is asked for a lower rate
+    /// (0xF). `FLT_no_timeout` (0x35 bit 5) or `FLT_no_retrain` (`Config_0` bit 1) stops
+    /// them.
+    #[must_use]
+    pub const fn with_lts3_timeout(self, lts3_timeout: Option<Duration>) -> Self {
+        Self {
+            lts3_timeout,
+            ..self
+        }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -402,6 +421,11 @@ impl SinkConfig {
     /// The link training patterns an FRL sink first requests.
     pub const fn ltp_requests(&self) -> LanePatterns {
         self.ltp_requests
+    }
+
+    /// How long an FRL sink gives the lanes at a rate.
+    pub const fn lts3_timeout(&self) -> Option<Duration> {
+        self.lts3_timeout
     }
 }
 

@@ -307,7 +307,7 @@ builders for each setting (`without_scdc()`, `without_segment_pointer()`,
 `with_enable_timeout(..)`, `with_hpd_reset(group, rule)`, `with_scdc_during_hpd_low(..)`,
 `with_edid_during_hpd_low(..)`, `with_status_update(..)`, `with_ced_update(..)`,
 `with_ced_read(..)`, `with_during_read(..)`, `with_max_frl_rate(..)`,
-`with_ltp_requests(..)`,
+`with_ltp_requests(..)`, `with_lts3_timeout(..)`,
 …), with a getter for each, as the stack's other
 capability and option types are built (`DdcCapabilities`, `TmdsPhyCapabilities`). There are
 no named sink models: a name would suggest a real product whose behaviour no source backs.
@@ -666,6 +666,7 @@ source settles is marked *chosen*.
 | A rate the sink cannot take | one receiver: 0xF on every lane [17] | 0xF on every lane for a rate above the maximum or a value naming none (*chosen*) |
 | New requests only after the source clears `FLT_update`; 0 on every lane once each lane carries its pattern | settled [17]; how long matching takes, no source | matching counted from the clear, at the rate, within the link's `LaneLimits`, for the lock trigger (*chosen*); a lane requested 0 needs nothing |
 | `FRL_start` once the lanes lock after the pass and `FLT_update` is cleared | settled [17] | lanes 0–2 (and 3 at 4 lanes) lock once the line is FRL at the rate without patterns, for the lock trigger; a change of output keeps them; `Clock_Detected` stays clear in FRL (*chosen*) |
+| Lanes that do not pass in time | one receiver: an LTS:3 timer of 180/90/60/45 ms by `FFE_Levels` 0–3; at each timeout while FFE levels remain, 0xE on the lanes not passing, then the patterns again once cleared; after the last, 0xF on every lane; none with `FLT_no_timeout` or `FLT_no_retrain` [17] | a setting, `with_lts3_timeout`: 180 ms by default (*chosen*), split into `FFE_Levels` + 1 attempts as that receiver's table, or `None`; the timeouts seen with the line and lane limits as they were before the event that finds them due |
 | `FRL_Rate` 0 returns to legacy | settled [17] | the requests cleared; a reset of the status group also returns to legacy (*chosen*) |
 | `Status_Update` set when the status flags change | no receiver source shows it (the receivers set it in hardware); one source family reads the flags only when it is set, others regardless [15] | a setting: `StatusUpdate::OnChange` (*chosen* default) or `Never` |
 | A sink without SCDC | one source: a failed `Source_Version` write means no SCDC [7] | NACKs 0x54 (*chosen*) |
@@ -717,8 +718,8 @@ whoever set it. The lock is evaluated at the start of each transaction, after ea
 written, before each read of the status (which `Trigger::AfterReads` counts) and at every
 other bench event.
 
-Planned before the first release: lanes that fail FRL training (the TxFFE requests and the
-LTS:3 timeouts), lane 3's counter, the 4-lane checksum and the Reed-Solomon corrections.
+Planned before the first release: lane 3's counter, the 4-lane checksum and the
+Reed-Solomon corrections.
 
 ---
 
@@ -1430,7 +1431,7 @@ Driver source read at these commits; line numbers refer to them.
 | [14] | DDC at 100 kHz | i915 `drivers/gpu/drm/i915/display/intel_gmbus.c:960–961` ("a conservative clock rate"); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:1580` (the DDC clock divider) |
 | [15] | The status flags and `Status_Update` | the bits: Linux `include/drm/display/drm_scdc.h:55–64`, `drivers/gpu/drm/display/drm_scdc_helper.c:354–357`; Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4647` (comment), `4736–4744` (bits 0–3 all set: TMDS locked); set by the receiver's hardware, waited on in FRL training: Amlogic's receiver `hdmi_rx_hw_t3x.c:4645–4662`, Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:82`, `xv_hdmirx1_intr.c:2152–2162`; read only on `Status_Update`, which is then cleared: Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:88–112`; read regardless: Linux `drm_scdc_helper.c:440–478`, Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:886–903` |
 | [16] | The character error counters | the checksum over 0x50–0x56 at 3 lanes and the valid bit: Linux `drivers/gpu/drm/display/drm_scdc_helper.c:383–412`, Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:35–68`; saturation at 0x7FFF and `CED_Update`'s check: Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`; a receiver that did not set `CED_Update` on errors: Intel knowledge base 000087546; reading clears the counts, in a source's comments: Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:2979`; the whole map read for debugging: Linux `drm_scdc_helper.c:440–478`; reset on HPD low to high or power-off: LG, EP 3 160 152 A1, [0064] |
-| [17] | The sink's side of FRL link training | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:147–254` (`FLT_ready`, LTS:L and LTS:2), `398–412` (the pass), `557–559` (`FRL_start` cleared), `588–596` (no requests before the clear), `616–640` (`FRL_start`), `775–782` and `1112–1175` (requests and `FLT_update`, 0xF), `xv_hdmirx1_intr.c:2088–2100` (a rate write starts LTS:3), `2153–2165` (lane locks); Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4302–4303` (`FLT_ready`), `4774–4777` (`FRL_start` cleared, LFSR 0–3, `FLT_update`), `4778`, `4795` (waits for the clear), `4591–4601` (the pass), `hdmi_rx_wrapper.c:6692–6719` (rate 0 is TMDS; `FRL_start` once synchronised) |
+| [17] | The sink's side of FRL link training | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:147–254` (`FLT_ready`, LTS:L and LTS:2), `398–412` (the pass), `557–559` (`FRL_start` cleared), `588–596` (no requests before the clear), `616–640` (`FRL_start`), `775–782` and `1112–1175` (requests and `FLT_update`, 0xF, the patterns again after 0xE), `49–58` and `440–547` (the LTS:3 timeouts, 0xE and 0xF), `xv_hdmirx1_intr.c:2088–2100` (a rate write starts LTS:3), `2153–2165` (lane locks); Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4302–4303` (`FLT_ready`), `4774–4777` (`FRL_start` cleared, LFSR 0–3, `FLT_update`), `4778`, `4795` (waits for the clear), `4591–4601` (the pass), `hdmi_rx_wrapper.c:6692–6719` (rate 0 is TMDS; `FRL_start` once synchronised) |
 
 Standards (VESA, public):
 

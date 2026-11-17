@@ -768,9 +768,11 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
             }
             21 => bench.set_character_errors(input.errors()),
             // A source's FRL steps: Config_1 with a rate (0, 6 Gbps at 4 lanes, 8 Gbps at 4
-            // lanes, or a value naming none), and Update_0's flags written back.
+            // lanes, or a value naming none) and FFE levels, and Update_0's flags written
+            // back.
             22 => {
-                let rate = [0, 3, 4, 9][usize::from(input.byte() % 4)];
+                // With FFE_Levels 0, 1 or 3 in bits 7:4.
+                let rate = [0, 3, 4, 9, 0x13, 0x33][usize::from(input.byte() % 6)];
                 let _ = bus.write(0x54, &[0x31, rate]);
             }
             23 => {

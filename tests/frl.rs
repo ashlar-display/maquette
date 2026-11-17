@@ -343,3 +343,139 @@ fn the_lane_limits_are_a_bench_event_and_an_action() {
     assert_eq!(changes, [limits]);
     assert_eq!(LinkLanes::default(), LinkLanes::NONE);
 }
+
+/// Advances the bench to `ms` milliseconds after `from`.
+fn advance_to(bench: &Bench<'_>, from: maquette::Timestamp, ms: u64) {
+    let at = from.checked_add(Duration::from_millis(ms)).unwrap();
+    bench.advance(at.saturating_duration_since(bench.now()));
+}
+
+/// An FRL sink training at 6 Gbps, 4 lanes, with `FFE_Levels` `levels`, lane 1 needing
+/// TxFFE level `needs`; the source sends the requested patterns. Returns when LTS:3 began.
+fn failing_lane_1(
+    config: SinkConfig,
+    levels: u8,
+    needs: u8,
+) -> (Bench<'static>, maquette::Timestamp) {
+    let bench = Bench::new(config, &[]).unwrap();
+    bench.set_lane_limits(LinkLanes {
+        lane1: LaneLimits {
+            min_tx_ffe: tx_ffe(needs),
+            ..LaneLimits::NONE
+        },
+        ..LinkLanes::NONE
+    });
+    let start = bench.now();
+    train_to_patterns(&bench, HdmiForumFrl::Rate6Gbps4Lanes, (levels << 4) | 0x03);
+    (bench, start)
+}
+
+#[test]
+fn without_ffe_levels_a_failing_lane_gets_a_lower_rate_request_after_180_ms() {
+    let (bench, start) = failing_lane_1(FRL_SINK, 0, 1);
+    assert_eq!(FRL_SINK.lts3_timeout(), Some(Duration::from_millis(180)));
+    advance_to(&bench, start, 175);
+    assert_eq!(training(&bench), (0, 0x65, 0x87));
+    advance_to(&bench, start, 185);
+    assert_eq!(training(&bench), (0x20, 0xFF, 0xFF));
+}
+
+#[test]
+fn each_ffe_level_gets_a_txffe_request_on_the_failing_lanes() {
+    // Two FFE levels: three attempts of 60 ms.
+    let (bench, start) = failing_lane_1(FRL_SINK, 2, 2);
+    let mut phy = bench.phy();
+    advance_to(&bench, start, 55);
+    assert_eq!(training(&bench), (0, 0x65, 0x87));
+    advance_to(&bench, start, 65);
+    // Lane 1 only: another TxFFE level.
+    assert_eq!(training(&bench), (0x20, 0xE5, 0x87));
+    let mut eq = EqParams::new();
+    eq.lane1.tx_ffe_level = tx_ffe(1);
+    phy.adjust_equalization(eq).unwrap();
+    clear_flt_update(&bench);
+    // Once cleared, the patterns are requested again.
+    assert_eq!(training(&bench), (0x20, 0x65, 0x87));
+    clear_flt_update(&bench);
+    advance_to(&bench, start, 125);
+    assert_eq!(training(&bench), (0x20, 0xE5, 0x87));
+    eq.lane1.tx_ffe_level = tx_ffe(2);
+    phy.adjust_equalization(eq).unwrap();
+    clear_flt_update(&bench);
+    clear_flt_update(&bench);
+    advance_to(&bench, start, 130);
+    // Lane 1 at its level: the pass, before the last attempt runs out.
+    assert_eq!(training(&bench), (0x20, 0, 0));
+    advance_to(&bench, start, 400);
+    assert_eq!(training(&bench), (0x20, 0, 0));
+}
+
+#[test]
+fn once_the_ffe_levels_are_used_every_lane_gets_a_lower_rate_request() {
+    // One FFE level: two attempts of 90 ms; lane 1 never passes.
+    let (bench, start) = failing_lane_1(FRL_SINK, 1, 7);
+    advance_to(&bench, start, 95);
+    assert_eq!(training(&bench), (0x20, 0xE5, 0x87));
+    clear_flt_update(&bench);
+    clear_flt_update(&bench);
+    advance_to(&bench, start, 185);
+    assert_eq!(training(&bench), (0x20, 0xFF, 0xFF));
+}
+
+#[test]
+fn timeouts_due_together_end_with_the_lower_rate_request() {
+    let (bench, start) = failing_lane_1(FRL_SINK, 3, 7);
+    // Every attempt runs out within one advance: the last one's request is posted.
+    advance_to(&bench, start, 500);
+    assert_eq!(training(&bench), (0x20, 0xFF, 0xFF));
+}
+
+#[test]
+fn requests_wait_for_flt_update_to_be_cleared() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    bench.set_lane_limits(LinkLanes::all(LaneLimits {
+        min_tx_ffe: tx_ffe(7),
+        ..LaneLimits::NONE
+    }));
+    let start = bench.now();
+    // FLT_update left set.
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    advance_to(&bench, start, 200);
+    assert_eq!(training(&bench), (0x20, 0x65, 0x87));
+    clear_flt_update(&bench);
+    assert_eq!(training(&bench), (0x20, 0xFF, 0xFF));
+}
+
+#[test]
+fn no_timeouts_with_flt_no_retrain_flt_no_timeout_or_none_set() {
+    // FLT_no_retrain, from the source.
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    bench.ddc().write(SCDC, &[0x30, 0x02]).unwrap();
+    let start = bench.now();
+    train_to_patterns(&bench, HdmiForumFrl::Rate6Gbps4Lanes, 0x13);
+    bench.set_lane_limits(LinkLanes::all(LaneLimits {
+        min_tx_ffe: tx_ffe(7),
+        ..LaneLimits::NONE
+    }));
+    advance_to(&bench, start, 1_000);
+    assert_eq!(training(&bench), (0, 0x65, 0x87));
+    // FLT_no_timeout, the sink's test configuration.
+    let (bench, start) = failing_lane_1(FRL_SINK, 1, 7);
+    bench.preset_scdc(0x35, 0x20);
+    advance_to(&bench, start, 1_000);
+    assert_eq!(training(&bench), (0, 0x65, 0x87));
+    // No timeout set.
+    let config = FRL_SINK.with_lts3_timeout(None);
+    assert_eq!(config.lts3_timeout(), None);
+    let (bench, start) = failing_lane_1(config, 1, 7);
+    advance_to(&bench, start, 1_000);
+    assert_eq!(training(&bench), (0, 0x65, 0x87));
+}
+
+#[test]
+fn a_zero_timeout_asks_for_a_lower_rate_at_once() {
+    let config = FRL_SINK.with_lts3_timeout(Some(Duration::ZERO));
+    let (bench, _) = failing_lane_1(config, 2, 7);
+    bench.advance(Duration::from_micros(1));
+    assert_eq!(training(&bench), (0x20, 0xFF, 0xFF));
+}
