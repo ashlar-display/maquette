@@ -47,9 +47,8 @@ sink must do internally.
   `DdcBus`, `ScdcTransport`, `TmdsPhy`, `FrlPhy` and `PhyPower`.
 - **The async traits** (hdmi-hal-async) on the same handles, including their `Send` twins.
 
-Planned before the first release: a harness that cancels async procedures at every await
-point; the sink's FRL training responses; a message-level sink over embedded-hal 1.0's `I2c`,
-for checking a `DdcBus` at the wire.
+Planned: a harness that cancels async procedures at every await point; a message-level sink
+over embedded-hal 1.0's `I2c`, for checking a `DdcBus` at the wire.
 
 Later: an HDCP port, with the stack's HDCP support (until then a test adds one as a target);
 checks for the video pipeline and packet transmission traits, when those traits exist.
@@ -1339,7 +1338,7 @@ impl<'p, R: ?Sized> PhyCheck<'p, R> {
   polled, and the future is then ready, so an async procedure runs with any executor and
   its futures are `Send`. hdmi-hal-async is re-exported as `maquette::hdmi_hal_async`.
   `Coupled<P>` stays synchronous: an async PHY coupled to the line would need a coupling of
-  its own. The cancellation harness comes with this feature before the first release.
+  its own. The planned cancellation harness comes with this feature.
 - **`embedded-hal`** (planned): the message-level sink.
 
 CI builds each `no_std` feature set for a bare target (`thumbv7em-none-eabi`): a host build
