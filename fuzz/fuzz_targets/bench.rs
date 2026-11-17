@@ -169,6 +169,7 @@ impl Input<'_> {
             lane1: rate(self.byte()),
             lane2: rate(self.byte()),
             lane3: rate(self.byte()),
+            rs_corrections: rate(self.byte()),
         }
     }
 
@@ -298,7 +299,7 @@ impl Input<'_> {
             0 => {
                 let reg = self.byte();
                 Action::Preset {
-                    reg: if matches!(reg, 0x21 | 0x40 | 0x50..=0x56) {
+                    reg: if matches!(reg, 0x21 | 0x40 | 0x50..=0x5A) {
                         0x20
                     } else {
                         reg
@@ -430,9 +431,12 @@ fn check_flags(bench: &Bench<'_, LOG>) {
     let (Some(flags), Some(config)) = (sink.status_flags_0(), sink.tmds_config()) else {
         return;
     };
-    // The counters: their checksum, and valid exactly while the lanes are locked.
-    let counters: Vec<u8> = (0x50..=0x56).filter_map(|reg| sink.scdc(reg)).collect();
-    let sum = counters
+    // The counters: their checksum (lane 3's too at a 4-lane rate), and valid exactly while
+    // their lanes are locked, the corrections while the FRL lanes are.
+    let counters: Vec<u8> = (0x50..=0x5A).filter_map(|reg| sink.scdc(reg)).collect();
+    let rate = sink.config_1().unwrap_or(0) & 0x0F;
+    let summed = if (3..=6).contains(&rate) { 9 } else { 7 };
+    let sum = counters[..summed]
         .iter()
         .fold(0u8, |sum, &byte| sum.wrapping_add(byte));
     assert_eq!(sum, 0, "the counters' checksum is wrong: {counters:02x?}");
@@ -443,6 +447,17 @@ fn check_flags(bench: &Bench<'_, LOG>) {
             "a counter valid without its lane locked, or not with it"
         );
     }
+    assert_eq!(
+        counters[8] & 0x80 != 0,
+        flags & 0x10 != 0,
+        "lane 3's counter valid without its lock, or not with it"
+    );
+    let frl = sink.is_plugged() && matches!(bench.line(), Line::Frl { .. });
+    assert_eq!(
+        counters[10] & 0x80 != 0,
+        frl && flags & 0x0E != 0,
+        "the corrections valid outside locked FRL, or not in it"
+    );
     let line = if sink.is_plugged() {
         bench.line()
     } else {
@@ -700,7 +715,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let value = input.byte();
                 // Presets of the status, the flags or the counters would set them outside
                 // their conditions.
-                if !matches!(reg, 0x21 | 0x40 | 0x50..=0x56) && bench.sink().scdc(0x01).is_some() {
+                if !matches!(reg, 0x21 | 0x40 | 0x50..=0x5A) && bench.sink().scdc(0x01).is_some() {
                     bench.preset_scdc(reg, value);
                 }
             }

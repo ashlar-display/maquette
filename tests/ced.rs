@@ -308,9 +308,7 @@ fn read_counters(bench: &Bench<'_>) -> [u8; 7] {
 /// One error a microsecond on lane 0: at the default 90 µs a byte, 90 more each byte.
 const FAST: ErrorRates = ErrorRates {
     lane0: 1_000_000,
-    lane1: 0,
-    lane2: 0,
-    lane3: 0,
+    ..ErrorRates::NONE
 };
 
 #[test]

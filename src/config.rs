@@ -576,10 +576,11 @@ pub enum StatusUpdate {
     Never,
 }
 
-/// When the sink sets `CED_Update` (`Update_0` bit 1), which it keeps until the source clears
-/// it. One public receiver sets it from a check once a second: when a valid count has risen
-/// by at least 4 since the last check, or has just reached 0x7FFF (Xilinx embeddedsw
-/// `97f2baf7f69e`, `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`);
+/// When the sink sets `CED_Update` (`Update_0` bit 1), and `RSED_Update` (bit 6) for the
+/// Reed-Solomon corrections, which it keeps until the source clears them. One public
+/// receiver sets both from a check once a second: when a valid count has risen by at least
+/// 4 since the last check, or has just reached 0x7FFF (Xilinx embeddedsw `97f2baf7f69e`,
+/// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`, `2410–2436`);
 /// Intel documents a receiver that did not set it on errors (knowledge base 000087546).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]

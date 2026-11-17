@@ -66,7 +66,8 @@ implementations of hdmi-hal's traits.
   each lane's training pattern, the output and the equalization, built with `Line::frl` or
   `Line::frl_with` and `with_equalization`), which the PHY drives when its output changes and a test sets with
   `set_line`; the last change wins. An unplugged sink receives no line.
-- **Character errors** (`ErrorRates`, errors a second on each lane), set with
+- **Character errors** (`ErrorRates`, errors a second on each lane, and Reed-Solomon
+  corrections a second), set with
   `set_character_errors`, and **lane limits** for FRL link training (`LinkLanes`, each
   lane's highest rate and least TxFFE level), set with `set_lane_limits`.
 - **The scrambling lock:** `Scrambling_Status` is set once `Scrambling_Enable` is set, the
@@ -88,7 +89,8 @@ implementations of hdmi-hal's traits.
   refusals, the enable timeout (100 ms by default, from the write that set
   `Scrambling_Enable` or changed the ratio), the HPD resets, `Status_Update`, `CED_Update`,
   clear on read, the registers during a read, the maximum FRL rate, the LTP requests and the
-  LTS:3 timeout.
+  LTS:3 timeout. Each default is sourced or marked *chosen*, the least forgiving where
+  sources differ.
 - **FRL link training, the sink's side:** a sink with a maximum FRL rate sets `FLT_ready`;
   a write of `FRL_Rate` clears `FRL_start` and posts its LTP requests with `FLT_update`
   (0xF on every lane for a rate it cannot take); once the source has cleared `FLT_update`
@@ -96,14 +98,15 @@ implementations of hdmi-hal's traits.
   the source's FRL output, it sets `FRL_start`. `FRL_Rate` 0 returns to legacy. Lanes that
   do not pass within the LTS:3 timeout (180 ms by default, in `FFE_Levels` + 1 attempts)
   are asked for another TxFFE level (0xE), then every lane for a lower rate (0xF).
-- **The character error counters (0x50–0x56):** lanes 0–2 count the link's errors while
-  locked, saturate at 0x7FFF, are valid while locked, and keep the checksum; they reset with
-  `RegisterGroup::ErrorCounters`. `CED_Update` is set by a check at each whole second when
-  a locked lane's count rose by 4 or more since the last check or just reached 0x7FFF
-  (`CedUpdate::EverySecond`), or never. A read may clear a lane's count
-  (`CedRead::ClearOnRead`), and the counters may move during a read (`DuringRead::Moving`,
-  each byte at its own moment on the bus's time), so a burst reads torn values. Each default is sourced or
-  marked *chosen*, the least forgiving where sources differ.
+- **The character error counters (0x50–0x5A):** lanes 0–2, and lane 3 in 4-lane FRL,
+  count the link's errors while locked, and the Reed-Solomon corrections count while the
+  FRL lanes are; each saturates at 0x7FFF and is valid while counting, and the checksum
+  covers lane 3 at a 4-lane rate. They reset with `RegisterGroup::ErrorCounters`.
+  `CED_Update` (and `RSED_Update`, for the corrections) is set by a check at each whole
+  second when a count rose by 4 or more since the last check or just reached 0x7FFF
+  (`CedUpdate::EverySecond`), or never. A read may clear a count (`CedRead::ClearOnRead`),
+  and the counters may move during a read (`DuringRead::Moving`, each byte at its own moment
+  on the bus's time), so a burst reads torn values.
 
 **The PHY**
 

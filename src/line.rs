@@ -106,7 +106,8 @@ impl Default for Line {
 }
 
 /// Character errors on the link, per lane, in errors a second: what the sink's character
-/// error counters count while the lane is locked. Lane 3 carries data in 4-lane FRL only.
+/// error counters count while the lane is locked. Lane 3 carries data in 4-lane FRL only;
+/// the Reed-Solomon corrections are FRL's.
 ///
 /// The test sets them with
 /// [`Bench::set_character_errors`](crate::Bench::set_character_errors); a target sees them
@@ -121,6 +122,8 @@ pub struct ErrorRates {
     pub lane2: u32,
     /// Errors a second on lane 3.
     pub lane3: u32,
+    /// Reed-Solomon corrections a second, in FRL.
+    pub rs_corrections: u32,
 }
 
 impl ErrorRates {
@@ -130,15 +133,17 @@ impl ErrorRates {
         lane1: 0,
         lane2: 0,
         lane3: 0,
+        rs_corrections: 0,
     };
 
-    /// `per_second` errors a second on every lane.
+    /// `per_second` errors a second on every lane, and no corrections.
     pub const fn all(per_second: u32) -> Self {
         Self {
             lane0: per_second,
             lane1: per_second,
             lane2: per_second,
             lane3: per_second,
+            rs_corrections: 0,
         }
     }
 

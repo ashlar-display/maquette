@@ -5,8 +5,9 @@ use core::time::Duration;
 
 use maquette::hdmi_hal::ddc::SCDC;
 use maquette::{
-    Action, Bench, DdcBus, EqParams, Event, FrlOutput, FrlPhy, HdmiForumFrl, HpdReset, LaneLimits,
-    LanePatterns, LinkLanes, LtpPattern, RegisterGroup, SinkConfig, Trigger, TxFfeLevel, When,
+    Action, Bench, CedRead, DdcBus, DuringRead, EqParams, ErrorRates, Event, FrlOutput, FrlPhy,
+    HdmiForumFrl, HpdReset, LaneLimits, LanePatterns, LinkLanes, LtpPattern, RegisterGroup,
+    SinkConfig, Trigger, TxFfeLevel, When,
 };
 
 const MS: Duration = Duration::from_millis(1);
@@ -478,4 +479,127 @@ fn a_zero_timeout_asks_for_a_lower_rate_at_once() {
     let (bench, _) = failing_lane_1(config, 2, 7);
     bench.advance(Duration::from_micros(1));
     assert_eq!(training(&bench), (0x20, 0xFF, 0xFF));
+}
+
+/// A sink with `config`, trained to `FRL_start` at `rate` (the `FRL_Rate` value `value`).
+fn trained(config: SinkConfig, rate: HdmiForumFrl, value: u8) -> Bench<'static> {
+    let bench = Bench::new(config, &[]).unwrap();
+    let lanes = LanePatterns {
+        lane3: if value >= 3 { REQUESTED.lane3 } else { None },
+        ..REQUESTED
+    };
+    let mut phy = bench.phy();
+    bench.ddc().write(SCDC, &[0x31, value]).unwrap();
+    clear_flt_update(&bench);
+    phy.set_frl_rate(rate).unwrap();
+    phy.send_ltp(lanes).unwrap();
+    bench.advance(MS);
+    phy.send_ltp(LanePatterns::default()).unwrap();
+    clear_flt_update(&bench);
+    bench.advance(MS);
+    assert_eq!(training(&bench).0 & 0x10, 0x10, "FRL_start");
+    bench
+}
+
+/// The counter bytes 0x50–0x5A.
+fn counters(bench: &Bench<'_>) -> [u8; 11] {
+    core::array::from_fn(|i| bench.sink().scdc(0x50 + i as u8).unwrap())
+}
+
+fn sum(bytes: &[u8]) -> u8 {
+    bytes.iter().fold(0, |sum, &byte| sum.wrapping_add(byte))
+}
+
+#[test]
+fn at_4_lanes_lane_3_and_the_corrections_count_and_the_checksum_covers_lane_3() {
+    let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    // Error-free: four valid lanes and valid corrections; 4 × 0x80 sums to 0 by itself.
+    assert_eq!(
+        counters(&bench),
+        [0, 0x80, 0, 0x80, 0, 0x80, 0x00, 0, 0x80, 0, 0x80]
+    );
+    bench.set_character_errors(ErrorRates {
+        lane3: 5_000,
+        rs_corrections: 7_000,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_millis(2));
+    let bytes = counters(&bench);
+    assert_eq!(&bytes[7..], [10, 0x80, 14, 0x80]);
+    assert_eq!(sum(&bytes[..9]), 0, "0x50-0x58 sum to zero");
+    // The source reads the same in one burst.
+    let mut read = [0u8; 11];
+    bench.ddc().write_read(SCDC, &[0x50], &mut read).unwrap();
+    assert_eq!(read, counters(&bench));
+}
+
+#[test]
+fn at_3_lanes_lane_3_is_not_valid_and_the_checksum_covers_lanes_0_to_2() {
+    let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps3Lanes, 0x02);
+    bench.set_character_errors(ErrorRates::all(1_000));
+    bench.advance(Duration::from_millis(3));
+    let bytes = counters(&bench);
+    assert_eq!(&bytes[7..9], [0, 0], "lane 3 neither counts nor is valid");
+    assert_eq!(bytes[10], 0x80, "the corrections are valid in FRL");
+    assert_eq!(sum(&bytes[..7]), 0);
+}
+
+#[test]
+fn the_corrections_count_only_in_frl() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    bench.set_line(maquette::Line::Tmds {
+        character_rate_khz: 297_000,
+        ratio: maquette::TmdsClockRatio::Div10,
+        scrambled: false,
+    });
+    bench.set_character_errors(ErrorRates {
+        rs_corrections: 1_000_000,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_millis(5));
+    assert_eq!(bench.sink().status_flags_0().unwrap() & 0x0E, 0x0E);
+    assert_eq!(&counters(&bench)[9..], [0, 0]);
+}
+
+#[test]
+fn rsed_update_is_set_by_the_corrections_and_ced_update_by_the_lanes() {
+    let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    bench.set_character_errors(ErrorRates {
+        rs_corrections: 10,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_secs(2));
+    assert_eq!(
+        training(&bench).0 & 0x42,
+        0x40,
+        "RSED_Update, not CED_Update"
+    );
+    // Lane 3 alone sets CED_Update.
+    bench.ddc().write(SCDC, &[0x10, 0x40]).unwrap();
+    bench.set_character_errors(ErrorRates {
+        lane3: 10,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_secs(2));
+    assert_eq!(training(&bench).0 & 0x42, 0x02);
+}
+
+#[test]
+fn clear_on_read_and_moving_reads_reach_lane_3_and_the_corrections() {
+    let config = FRL_SINK
+        .with_ced_read(CedRead::ClearOnRead)
+        .with_during_read(DuringRead::Moving);
+    let bench = trained(config, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    bench.set_character_errors(ErrorRates {
+        lane3: 1_000,
+        rs_corrections: 1_000,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_millis(10));
+    bench.set_character_errors(ErrorRates::NONE);
+    let mut read = [0u8; 4];
+    bench.ddc().write_read(SCDC, &[0x57], &mut read).unwrap();
+    assert_eq!(read, [10, 0x80, 10, 0x80]);
+    bench.ddc().write_read(SCDC, &[0x57], &mut read).unwrap();
+    assert_eq!(read, [0, 0x80, 0, 0x80]);
 }

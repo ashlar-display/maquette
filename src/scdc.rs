@@ -110,8 +110,17 @@ const SOURCE_TEST_CONFIGURATION: u8 = 0x35;
 /// The first character error counter, lane 0's low byte; each lane's is two bytes, low
 /// then high, lanes 0–2 at 0x50–0x55, and the checksum at 0x56.
 const CED: u8 = 0x50;
-/// The checksum of the counters of lanes 0–2.
+/// The checksum of the counters of lanes 0–2, and of lane 3's at 4 lanes.
 const CED_CHECKSUM: u8 = 0x56;
+/// The last register of the counters: the Reed-Solomon corrections' high byte.
+const CED_LAST: u8 = 0x5A;
+/// Each counter's low byte, high byte following: lanes 0–3, then the Reed-Solomon
+/// corrections.
+const COUNTERS: [u8; 5] = [0x50, 0x52, 0x54, 0x57, 0x59];
+/// The Reed-Solomon corrections' index in [`COUNTERS`].
+const RS: usize = 4;
+/// `Update_0` bit 6: `RSED_Update`.
+const RSED_UPDATE: u8 = 1 << 6;
 /// A counter's high byte, bit 7: the count is valid.
 const CED_VALID: u8 = 1 << 7;
 /// A counter's largest count, where it stays.
@@ -279,16 +288,16 @@ pub(crate) struct Scdc {
     flags: u8,
     /// Errors counted per lane, in [`CED_UNIT`]s, through `counted_to`; the rates as last
     /// seen; and the counter bytes 0x50–0x56 as the sink last set them.
-    ced: [u64; 4],
+    ced: [u64; 5],
     counted_to: Timestamp,
     errors: ErrorRates,
-    ced_shown: [u8; 7],
+    ced_shown: [u8; 11],
     ced_update: CedUpdate,
     ced_read: CedRead,
     during_read: DuringRead,
     /// The last `CED_Update` check, and the counts it saw.
     checked_at: Timestamp,
-    ced_checked: [u64; 3],
+    ced_checked: [u64; 5],
     /// The highest `FRL_Rate` value the sink takes, 0 for none; the requests it posts first.
     max_frl: u8,
     ltp_requests: [u8; 4],
@@ -348,15 +357,15 @@ impl Scdc {
             lanes_from: None,
             flag_reads: 0,
             flags: 0,
-            ced: [0; 4],
+            ced: [0; 5],
             counted_to: Timestamp::from_micros(0),
             errors: ErrorRates::NONE,
-            ced_shown: [0; 7],
+            ced_shown: [0; 11],
             ced_update: config.ced_update,
             ced_read: config.ced_read,
             during_read: config.during_read,
             checked_at: Timestamp::from_micros(0),
-            ced_checked: [0; 3],
+            ced_checked: [0; 5],
             max_frl,
             ltp_requests: {
                 let lanes = config.ltp_requests;
@@ -664,9 +673,9 @@ impl Scdc {
                         self.match_from = None;
                     }
                     if reg == CED {
-                        self.ced = [0; 4];
-                        self.ced_shown = [0; 7];
-                        self.ced_checked = [0; 3];
+                        self.ced = [0; 5];
+                        self.ced_shown = [0; 11];
+                        self.ced_checked = [0; 5];
                     }
                 }
             }
@@ -786,39 +795,55 @@ impl Scdc {
         self.count_errors(now);
     }
 
-    /// Whether a count can rise until the next event: a lane is locked, with errors, and
+    /// Whether a count can rise until the next event: a counter counting, with errors, and
     /// below 0x7FFF.
     fn counts_rising(&self) -> bool {
-        self.flags & LANES_LOCKED != 0
-            && self
-                .ced
-                .iter()
-                .zip(self.errors.lanes())
-                .take(3)
-                .any(|(&count, rate)| rate > 0 && count < CED_MAX * CED_UNIT)
+        let rates = self.counter_rates();
+        (0..COUNTERS.len())
+            .any(|i| self.counting(i) && rates[i] > 0 && self.ced[i] < CED_MAX * CED_UNIT)
     }
 
-    /// The check at `at`: sets `CED_Update` when a locked lane's count rose by `rise` since
-    /// the last check, or just reached 0x7FFF; and keeps the counts for the next check.
+    /// Whether counter `i` counts and is valid: a lane while it is locked; the Reed-Solomon
+    /// corrections while the FRL lanes are locked (*chosen*: Linux reads them only in FRL).
+    fn counting(&self, i: usize) -> bool {
+        if i == RS {
+            matches!(self.line, Line::Frl { .. }) && self.flags & LANES_LOCKED != 0
+        } else {
+            self.flags & (1 << (i + 1)) != 0
+        }
+    }
+
+    /// Each counter's rate: the lanes' character errors, then the corrections.
+    fn counter_rates(&self) -> [u32; 5] {
+        let [a, b, c, d] = self.errors.lanes();
+        [a, b, c, d, self.errors.rs_corrections]
+    }
+
+    /// The check at `at`: sets `CED_Update` when a counting lane's count rose by `rise`
+    /// since the last check, or just reached 0x7FFF, and `RSED_Update` when the corrections
+    /// did; and keeps the counts for the next check.
     fn see_counts(&mut self, at: Timestamp, rise: u64, env: &mut Env<'_>) {
         self.checked_at = at;
-        if self.flags & LANES_LOCKED == 0 {
-            return;
-        }
-        let mut set = false;
-        for (count, checked) in self.ced.iter().zip(&mut self.ced_checked) {
-            let count = (count / CED_UNIT).min(CED_MAX);
-            set |= count >= checked.saturating_add(rise) || (count != *checked && count == CED_MAX);
-            *checked = count;
+        let mut set = 0;
+        for i in 0..COUNTERS.len() {
+            if !self.counting(i) {
+                continue;
+            }
+            let count = (self.ced[i] / CED_UNIT).min(CED_MAX);
+            let checked = self.ced_checked[i];
+            if count >= checked.saturating_add(rise) || (count != checked && count == CED_MAX) {
+                set |= if i == RS { RSED_UPDATE } else { CED_UPDATE };
+            }
+            self.ced_checked[i] = count;
         }
         let update = self.get(UPDATE_0);
-        if set && update & CED_UPDATE == 0 {
-            self.set(UPDATE_0, update | CED_UPDATE, Actor::Sink, env);
+        if update | set != update {
+            self.set(UPDATE_0, update | set, Actor::Sink, env);
         }
     }
 
-    /// Counts the errors up to `now`, at the rates and on the lanes locked since the last
-    /// count: neither changes between events.
+    /// Counts the errors up to `now`, at the rates and on the counters counting since the
+    /// last count: neither changes between events.
     /// A time before the last count (a byte's time runs ahead of the transaction's start)
     /// counts nothing.
     fn count_errors(&mut self, now: Timestamp) {
@@ -828,49 +853,48 @@ impl Scdc {
         let micros = now.saturating_duration_since(self.counted_to).as_micros();
         let micros = u64::try_from(micros).unwrap_or(u64::MAX);
         self.counted_to = now;
-        if self.flags & LANES_LOCKED == 0 {
-            return;
-        }
-        let rates = self.errors.lanes();
-        for (count, rate) in self.ced.iter_mut().zip(rates).take(3) {
-            let more = u64::from(rate).saturating_mul(micros);
-            *count = count.saturating_add(more).min(CED_MAX * CED_UNIT);
+        let rates = self.counter_rates();
+        for (i, rate) in rates.into_iter().enumerate() {
+            if self.counting(i) {
+                let more = u64::from(rate).saturating_mul(micros);
+                self.ced[i] = self.ced[i].saturating_add(more).min(CED_MAX * CED_UNIT);
+            }
         }
     }
 
-    /// A read of `reg` with [`CedRead::ClearOnRead`]: a lane's high byte clears its count.
+    /// A read of `reg` with [`CedRead::ClearOnRead`]: a counter's high byte clears it.
     fn clear_on_read(&mut self, reg: u8) {
-        if let Some(lane) = [CED + 1, CED + 3, CED + 5]
-            .iter()
-            .position(|&high| high == reg)
-        {
-            self.ced[lane] = 0;
-            self.ced_checked[lane] = 0;
+        if let Some(i) = COUNTERS.iter().position(|&low| low + 1 == reg) {
+            self.ced[i] = 0;
+            self.ced_checked[i] = 0;
         }
     }
 
-    /// The counter bytes 0x50–0x56 for the counts, written where they changed since the
-    /// sink last wrote them, so a preset holds until then.
+    /// The counter bytes 0x50–0x5A for the counts, written where they changed since the
+    /// sink last wrote them, so a preset holds until then. The checksum covers lane 3 when
+    /// `Config_1`'s rate is a 4-lane one, as the sources reading it do.
     fn show_errors(&mut self) {
-        let valid = if self.flags & LANES_LOCKED != 0 {
-            CED_VALID
-        } else {
-            0
-        };
-        let mut bytes = [0u8; 7];
-        for (lane, &count) in self.ced.iter().take(3).enumerate() {
-            let [low, high, ..] = (count / CED_UNIT).to_le_bytes();
-            bytes[2 * lane] = low;
-            bytes[2 * lane + 1] = high | valid;
+        let mut bytes = [0u8; 11];
+        for (i, &low) in COUNTERS.iter().enumerate() {
+            let [count_low, count_high, ..] = (self.ced[i] / CED_UNIT).to_le_bytes();
+            let valid = if self.counting(i) { CED_VALID } else { 0 };
+            let at = usize::from(low - CED);
+            bytes[at] = count_low;
+            bytes[at + 1] = count_high | valid;
         }
-        bytes[6] = bytes[..6]
+        let rate = self.get(CONFIG_1) & 0x0F;
+        let four_lanes = (1..=FRL_RATE_MAX).contains(&rate) && frl_lanes(rate) == 4;
+        let mut summed: u8 = bytes[..6]
             .iter()
-            .fold(0u8, |sum, &byte| sum.wrapping_add(byte))
-            .wrapping_neg();
+            .fold(0, |sum, &byte| sum.wrapping_add(byte));
+        if four_lanes {
+            summed = summed.wrapping_add(bytes[7]).wrapping_add(bytes[8]);
+        }
+        bytes[usize::from(CED_CHECKSUM - CED)] = summed.wrapping_neg();
         for (i, (&byte, shown)) in bytes.iter().zip(&mut self.ced_shown).enumerate() {
             if byte != *shown {
                 *shown = byte;
-                // `i` is below 7.
+                // `i` is below 11.
                 self.regs[usize::from(CED) + i] = byte;
             }
         }
@@ -1150,7 +1174,7 @@ impl Scdc {
                         if matches!(self.offset, UPDATE_0 | SCRAMBLING_STATUS | STATUS_FLAGS_0) {
                             self.evaluate(env, Some(self.offset));
                         }
-                        let counter = (CED..=CED_CHECKSUM).contains(&self.offset);
+                        let counter = (CED..=CED_LAST).contains(&self.offset);
                         if counter && self.during_read == DuringRead::Moving {
                             let ahead = env.byte_time().saturating_mul(wire);
                             let at = env.now().checked_add(ahead).unwrap_or(env.now());
