@@ -47,9 +47,8 @@ sink must do internally.
   `DdcBus`, `ScdcTransport`, `TmdsPhy`, `FrlPhy` and `PhyPower`.
 - **The async traits** (hdmi-hal-async) on the same handles, including their `Send` twins.
 
-Planned before the first release: a harness that cancels async procedures at every await
-point; the sink's FRL training responses; a message-level sink over embedded-hal 1.0's `I2c`,
-for checking a `DdcBus` at the wire; the CED counters, with torn reads.
+Planned: a harness that cancels async procedures at every await point; a message-level sink
+over embedded-hal 1.0's `I2c`, for checking a `DdcBus` at the wire.
 
 Later: an HDCP port, with the stack's HDCP support (until then a test adds one as a target);
 checks for the video pipeline and packet transmission traits, when those traits exist.
@@ -112,14 +111,14 @@ it:
 
 ```rust
 let bench = Bench::new(SinkConfig::new(), &edid_bytes)?;
-let bus = bench.ddc();     // impl DdcBus
+let bus = bench.ddc();     // impl DdcBus, and its own DdcHandle: passed by value
 let phy = bench.phy();     // impl TmdsPhy + FrlPhy + PhyPower; two phy() handles are one PHY
 let time = bench.time();   // impl Clock + Delay
-let scdc = culvert::Scdc::new(ScdcOverDdc::new(&bus).ok().unwrap());
+let scdc = culvert::Scdc::new(ScdcOverDdc::new(bus).ok().unwrap());
 let mut link = TmdsLink::new(scdc, phy, time, time);   // spiritlevel, `culvert` feature
 // … run the procedure …
 bench.hpd_pulse(Duration::from_millis(500));   // the test's controls
-assert_eq!(bench.sink().tmds_config(), 0);
+assert_eq!(bench.sink().tmds_config(), Some(0));
 ```
 
 The time handle implements both `Clock` and `Delay`, so one value is passed as both, as
@@ -151,6 +150,15 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
     pub fn time(&self) -> Time<'_>;    // Clock, Delay
     pub fn sink(&self) -> Sink<'_>;    // reads the sink's registers and state
 
+    /// Sets an SCDC register, the sink's own included; recorded as by `Actor::Test`. A bench
+    /// event: the sink evaluates its behaviour after it. Panics on a sink without SCDC.
+    pub fn preset_scdc(&self, reg: u8, value: u8);
+
+    /// Moves the bench's time forward, then lets every target see it (`Target::update`).
+    pub fn advance(&self, duration: Duration);
+    /// The bench's time.
+    pub fn now(&self) -> Timestamp;
+
     // The test's controls (HPD, plug, detach, advance, presets, faults, the transcript)
     // take `&self` too: a test calls them while the handles are lent to the procedure.
 }
@@ -164,6 +172,7 @@ impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
     pub fn ddc_capabilities(self, capabilities: DdcCapabilities) -> Self;
     pub fn phy_capabilities(self, capabilities: TmdsPhyCapabilities) -> Self;
     pub fn clock(self, clock: SimClock) -> Self;
+    pub fn bus_timing(self, timing: BusTiming) -> Self;
     pub fn targets(self, targets: &'a mut [&'a mut (dyn Target + Send)]) -> Self;
     pub fn capacities<const L: usize, const F: usize>(self) -> BenchBuilder<'a, L, F>;
     pub fn build(self) -> Result<Bench<'a, LOG, FAULTS>, BenchError>;
@@ -190,16 +199,18 @@ pub enum BenchError {
 - **The handles name no capacity.** `Ddc<'_>`, `Phy<'_>`, `Time<'_>` and `Sink<'_>` reach the
   bench through a private interface, so a function that takes a handle works with a bench of
   any size. Every handle is `Copy`, `Send` and `Sync`.
-- **What later parts add, they add as builder methods** (the PHY's settings, the bus's
-  timing, the operation budget) and as `#[non_exhaustive]` fields and variants, without
-  changing the signature above.
+- **Settings are builder methods** (the PHY's settings, the bus's timing, the operation
+  budget), and the types grow through `#[non_exhaustive]` fields and variants, so what is
+  added later leaves the signature above unchanged.
 - **`BenchError`** implements `Display` and `core::error::Error`.
 
 `Ddc`'s error is maquette's `BusError`: a `DdcErrorKind` with the operation and the address
 that failed, implementing `DdcError`. `Phy`'s is `PhyError`: a kind and whether the call took
 effect.
 
-*To settle:* whether an empty EDID store is accepted, as a sink whose EDID does not answer.
+An empty EDID store is accepted: a sink whose EDID does not answer, `NoAcknowledge(Address)`
+at 0x50 (*chosen*, the one way to model a sink without EDID). The DisplayID store is absent
+unless given, and 0x52 then does not answer either.
 
 ### State and threads
 
@@ -211,6 +222,13 @@ a bare target the user supplies one. The state is borrowed only inside
 `critical_section::with`, a synchronous closure, so no borrow is ever held across an
 `.await`.
 
+Calls from several threads are serialized: a bus call (the fault count, the routing, the
+records and the clock's charge) and a delay with the event after it each run in one
+critical section, which nests, so no other handle's call falls between their steps. The
+transcript is in time order and the *n*-th matching call a fault counts is the *n*-th in
+the transcript, whichever thread made it. A PHY call already runs under one lock; a call
+through `Coupled` runs the test's own PHY outside it, since that PHY may call the bench.
+
 ### Time
 
 `SimClock`'s `now` starts at zero and moves only when something advances it:
@@ -218,40 +236,81 @@ a bare target the user supplies one. The state is borrowed only inside
 - a `delay(d)`: by `d`, or by `d` plus a configured overshoot, so deadline arithmetic is
   tested against a delay that sleeps long, as a real one may;
 - a bus transfer: a charge per transfer and per byte, by default the byte time at 100 kHz,
-  I²C standard mode's maximum clock (DDC/CI 1.1), so the fastest a DDC bus runs; a slow sink
-  is a setting. A timeout fault charges the bus's `stretch_timeout_us` where it has one;
+  I²C standard mode's maximum clock, which sources use [14]; a faster or slower bus is a
+  setting. A timeout fault charges the bus's `stretch_timeout_us` where it has one;
 - the test (`advance(d)`).
 
 `now` never moves backwards, never reads the host, and saturates rather than overflowing. A
-tick setting gives it a coarse resolution, as some platform clocks have.
+tick setting gives it a coarse resolution, as some platform clocks have: `now` reads in
+whole ticks, rounded down, and a delay is rounded up to whole ticks, so `now` read after
+`delay(d)` is always at least `d` later than before it.
+
+```rust
+pub struct SimClock { /* private */ }   // Send + Sync
+
+impl SimClock {
+    pub const fn new() -> Self;                                // at zero, 1 µs tick
+    pub const fn with_tick(self, tick: Duration) -> Self;
+    pub const fn with_overshoot(self, overshoot: Duration) -> Self;
+    pub const fn tick(&self) -> Duration;
+    pub const fn overshoot(&self) -> Duration;
+    pub fn advance(&self, duration: Duration);
+}
+
+impl Clock for SimClock {}   impl Delay for SimClock {}
+impl Clock for &SimClock {}  impl Delay for &SimClock {}
+```
+
+Standing alone, the clock keeps its time behind a `critical_section::Mutex`, so it is `Sync`
+and can be a `static`. `Clock` and `Delay` are also implemented for `&SimClock`, so one clock
+is passed as both where a procedure takes them as separate values (`&clock`,
+`&mut &clock`), as hdmi-hal's time module describes for test doubles. Durations are rounded
+up to whole microseconds, the resolution of hdmi-hal's `Timestamp`.
 
 **When things are evaluated.** The sink evaluates its behaviour at every bench event: a bus
-transfer, a PHY call, a line change, an HPD change, `advance`. Nothing runs in the
-background, so a run is a function of the calls and the settings. A transfer is evaluated at
+transfer, a PHY call, a line change, an HPD, plug or adapter change, a delay on the bench's
+time handle (after it), `advance`. Nothing runs in the background, so a run is a function of
+the calls and the settings. A decision that falls due between two events (the status set
+1 ms after the write, a reset after 100 ms of HPD low) is taken at the first event at or
+after it, and recorded at that event's time: a read always sees it, since a read is an
+event, and the transcript stays in time order. A transfer is evaluated at
 its start and charged after it; an operation the bus's capabilities refuse touches nothing
 and is not charged; a faulted one is charged. A `read_segmented` that the bus splits into
 pieces (`segmented_piece`) is several transfers, each charged, so something can change
 between pieces, which an EDID read has to catch.
 
-**Torn reads.** By default the sink holds its registers still during a transfer (*chosen*:
-sinks of both kinds exist, and no source settles which is common). A sink that does not is a
-setting, as is a bus that `splits_reads`: each byte is then evaluated at its own moment, the
-transfer's start plus the per-byte charge so far. Only registers that change by themselves
-can tear — the CED counters and FRL's LTP requests — so the setting arrives with them.
+**Torn reads.** By default the sink's registers move during a transfer, `DuringRead::Moving`
+(*chosen*: no public source says whether a sink holds them still, and only a moving sink
+tears, the least forgiving): each byte read is taken at its own moment, the transfer's start
+plus the bench's time per byte for the bytes before it on the wire. A sink that holds them is
+the setting `DuringRead::Held`. Only registers that change by themselves between events can
+tear, the CED counters; the LTP requests change only at bench events, so a burst reads them
+whole. On a link without errors nothing moves. A backend that reads byte by byte makes a
+transaction of each, and time passes between them, so it can read torn values from a holding
+sink too.
 
-**The operation budget.** A bench counts bus operations, PHY calls and clock reads against a
-budget, configurable or off. Past it the bench panics, naming the budget: a procedure that
-loops without letting time move fails its test instead of hanging CI. A budget that failed
-operations instead could let the procedure end quietly and the test pass.
-
-*To settle:* the budget's default size.
+**The operation budget.** A bench counts every operation through its handles — bus calls,
+refused ones included, PHY calls, clock reads and delays — against a budget,
+`BenchBuilder::budget(Option<u64>)`: by default `DEFAULT_BUDGET`, 1 000 000 operations
+(*chosen*: far more than a bring-up, a training run or a long session of polling takes,
+and spent within seconds by a loop that never ends), `None` for none. Past it the bench
+panics, naming the budget and how many operations it allowed: a procedure that loops
+forever fails its test instead of hanging CI. A budget that failed operations instead could
+let the procedure end quietly and the test pass. A `SimClock` standing alone counts
+nothing.
 
 ### Settings
 
 One `SinkConfig`, `#[non_exhaustive]`, with a `const fn new()` (an SCDC sink with a segment
 pointer, `Sink_Version` 1, and the defaults in "Sink behaviour") and `const` `with_*`
 builders for each setting (`without_scdc()`, `without_segment_pointer()`,
-`with_scrambling_delay(d)`, `with_tmds_config_reset(rule)`, …), as the stack's other
+`with_scrambling_lock(trigger)`, `with_strict_lock(..)`, `with_scrambling_refusals(..)`,
+`with_enable_timeout(..)`, `with_hpd_reset(group, rule)`, `with_scdc_during_hpd_low(..)`,
+`with_edid_during_hpd_low(..)`, `with_status_update(..)`, `with_ced_update(..)`,
+`with_ced_read(..)`, `with_during_read(..)`, `with_max_frl_rate(..)`,
+`with_ltp_requests(..)`, `with_lts3_timeout(..)`, `with_frl_pass(..)`,
+`with_max_tmds_rate_khz(..)`,
+…), with a getter for each, as the stack's other
 capability and option types are built (`DdcCapabilities`, `TmdsPhyCapabilities`). There are
 no named sink models: a name would suggest a real product whose behaviour no source backs.
 The bus's and the PHY's capabilities are hdmi-hal's own types, passed to the bench, not
@@ -259,29 +318,145 @@ copied into `SinkConfig`.
 
 ### Targets
 
-The sink is a set of targets at DDC addresses, which the bench routes operations to. A
-public `Target` trait — `write`, `write_read` and `read` against the bench's time, with
-access to the transcript for the target's own events — is implemented by the built-in
-targets and by a test's own:
+The sink is a set of targets at DDC addresses, which the bench routes transactions to. A
+target sees what a device on the bus sees: transactions, each a sequence of writes and reads
+to addresses, ending in STOP. The built-in targets implement the same public trait a test's
+own do:
 
-- **SCDC (0x54):** a 256-byte register file. Which registers the source writes, which the
-  sink owns and which are write-1-to-clear are cited in the code from public sources. The
-  registers modelled first are those TMDS bring-up uses: `Sink_Version`, `Source_Version`,
-  `Update_0`, `TMDS_Config`, `Scrambling_Status`, `Config_1`.
-- **EDID (0x50) behind the segment pointer (0x30),** and optionally **DisplayID (0x52):**
-  the caller's bytes, a whole number of 128-byte blocks, up to 256. The pointer resets when a
-  NACK or STOP is received (E-DDC 1.3 §8.1.1, Table 9-1) — so a 0x30 write in one call does
-  not carry into the next, because the first call ended in STOP — and at the end of each
-  command sequence (§2.2.5). The word offset persists between calls: a read with no offset
-  written reads at the current address (§6.1). A sink without a segment pointer does not
-  acknowledge its address byte (§8.1.2), `NoAcknowledge(Address)`, and answers segment 0
-  reads (§9.5.1).
+```rust
+pub trait Target {
+    /// Whether this target answers at `addr` now (HPD may matter: `env.hpd()`).
+    fn answers(&self, addr: u8, env: &Env<'_>) -> bool;
 
-A test adds targets: DDC/CI at 0x37, an HDCP port, a vendor's register quirk. Register
-presets set any register, the sink-owned ones too.
+    /// One transaction: `ops` in order, ending in STOP. The target applies what it accepts
+    /// and fills every read; an error says how the transaction failed, and what the target
+    /// applied before it stays applied.
+    fn transaction(&mut self, ops: &mut [Operation<'_>], env: &mut Env<'_>)
+        -> Result<(), DdcErrorKind>;
 
-*To settle with the targets:* the `Target` trait's exact methods, and how a test's target
-and a built-in one at the same address are routed.
+    /// A bench event that is not a transaction: time moved, HPD or the line changed.
+    fn update(&mut self, env: &mut Env<'_>) {}
+}
+
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Operation<'b> {
+    Write { addr: u8, bytes: &'b [u8] },
+    Read { addr: u8, buf: &'b mut [u8] },
+}
+
+/// The bench as a target sees it, for the length of one call.
+pub struct Env<'e> { /* private */ }
+
+impl Env<'_> {
+    pub fn now(&self) -> Timestamp;
+    pub fn hpd(&self) -> bool;
+    /// Records one of the target's own events in the transcript.
+    pub fn note(&mut self, addr: u8, code: u32, value: u32);
+}
+```
+
+The bench turns each `DdcBus` call into one transaction: `write` and `read` into one
+operation, `write_read` into a write and a read, and a piece of `read_segmented` into a
+write of the segment to 0x30 (for segment 1 and higher), a write of the offset and a read.
+The line joins `Env` with the PHY.
+
+**Routing.** While the sink is unplugged or the adapter detached, the bench answers for it
+(see "HPD, unplug and detach"). Otherwise a transaction goes to the first target that
+answers the address of its first operation, the test's targets first, in the order given,
+then the built-in ones; when none answers, it fails `NoAcknowledge(Address)` and no target
+sees it. The target that takes a transaction takes all of it: a later operation to an
+address it does not answer is its to refuse, as a device that does not acknowledge. So a
+test's target at 0x54 replaces the built-in SCDC, and one that replaces the EDID for E-DDC
+reads answers 0x30 as well as 0x50.
+
+The built-in targets:
+
+- **SCDC (0x54):** a 256-byte register file [9]. A write sets the offset with its first
+  byte, then writes from there; a read starts at the offset, which advances with every byte,
+  and persists between transactions (*chosen*: every source surveyed writes the offset
+  before reading). What a byte written does depends on the register:
+  - **the source's** — `Source_Version` (0x02), `TMDS_Config` (0x20), `Config_0` (0x30),
+    `Config_1` (0x31), `Test_Read_Request` (0xC0) and the manufacturer's block past its
+    identification (0xDE–0xFF, which Amlogic marks `RW`) [12]: stored as written;
+  - **update flags** — `Update_0` (0x10) and `Update_1` (0x11): a 1 written clears that
+    flag [8];
+  - **the sink's** — `Sink_Version` (0x01), `Scrambling_Status` (0x21),
+    `Source_Test_Configuration` (0x35, the sink's test requests, which sources only read)
+    [12], the status flags (0x40–0x42), the error counters (0x50–0x5A), the manufacturer's
+    identification (0xD0–0xDD): by the setting in "Sink behaviour";
+  - **any other register:** stored as written (*chosen*, until it is modelled).
+
+  At creation every register is 0 but `Sink_Version`, which is the setting (1 by default).
+  Every byte written is recorded as a `Register` event, with its value before and after, or
+  as an `IgnoredWrite`. A test reads the registers through `bench.sink()` (`scdc(reg)`,
+  `tmds_config()`, `scrambling_status()`, …, each `None` for a sink without SCDC), which
+  takes no bus operation and no time.
+- **EDID (0x50) behind the segment pointer (0x30),** and optionally **DisplayID (0x52)**,
+  one target: the caller's bytes, a whole number of 128-byte blocks, up to 256. A segment
+  is 256 bytes (E-DDC 1.3 §2.2.5).
+  - The pointer is 0 at the start of every transaction: it resets on a NACK or STOP
+    (§8.1.1, Table 9-1) and at the end of each command sequence (§2.2.5), so a write to
+    0x30 matters only to the reads in the same transaction. A read at 0x30 is refused,
+    `NoAcknowledge(Address)` (*chosen*: §2.2.5 calls the pointer effectively write-only
+    because it resets after each command sequence, and does not say what a read gets); of
+    several bytes written to it, the first counts (*chosen*).
+  - Each structure's word offset persists between transactions and advances with every
+    byte read: a read with no offset written reads at the current address (§6.1, §6.3).
+    Past 0xFF it wraps within the segment.
+  - For segment 1 and higher the sink acknowledges the pointer value (§6.4–§6.5). A segment
+    is present when either store has bytes in it, the pointer being shared; a store that
+    lacks a present segment reads past its end.
+  - A sink without a segment pointer does not answer 0x30, `NoAcknowledge(Address)`, and
+    answers segment 0 reads (§8.1.2, Table 9-1).
+  - A write to 0x50 or 0x52 sets the word offset with its first byte; the bytes after it
+    are acknowledged and ignored without moving the offset, and recorded as `IgnoredWrite`:
+    E-DDC does not require a display to support writes there (§6).
+  - An empty store does not answer its address (*chosen*: a sink without that structure);
+    without a DisplayID store, nothing answers 0x52.
+  - The settings in "Sink behaviour" govern reads past the store, segments the sink does
+    not have and the 128-byte boundary: `with_past_store`, `with_missing_segment`,
+    `with_block_boundary`, and `without_segment_pointer`.
+
+A test adds targets: DDC/CI at 0x37, an HDCP port, a device at an address the sink does not
+use. Register presets set any register, the sink-owned ones too.
+
+**A quirk on the built-in SCDC sink** is an `ScdcHook`, not a target: a target at 0x54
+would replace the whole sink (the lock, the refusals, the HPD resets, the records). The
+hook decides each byte the source writes and what each read returns; the built-in keeps
+its offset, bursts, lock, resets and records.
+
+```rust
+pub trait ScdcHook {
+    /// A byte the source writes to `reg`, before the register's role applies.
+    fn write(&mut self, reg: u8, value: u8, regs: &ScdcRegisters<'_>, env: &mut Env<'_>)
+        -> HookWrite { HookWrite::Store(value) }
+    /// What a read of `reg`, holding `value`, returns on the wire.
+    fn read(&mut self, reg: u8, value: u8, regs: &ScdcRegisters<'_>, env: &mut Env<'_>)
+        -> u8 { value }
+}
+
+#[non_exhaustive]
+pub enum HookWrite {
+    Store(u8),          // on with this value, under the register's role
+    Drop,               // ignored: Event::IgnoredWrite with Ignored::Hook
+    Nack,               // NoAcknowledge(Data), the burst ends; recorded as Drop is
+    StoreRelocking(u8), // stored, and the lock lost as at the sink's own reset
+}
+// BenchBuilder::scdc_hook(&'a mut (dyn ScdcHook + Send)); ScdcRegisters: a read-only view.
+```
+
+- **Before the role.** A `Store` to a sink-owned register still follows `OwnedWrite`; a
+  `Drop` stops a source register from storing.
+- **Reads change the wire only.** The register keeps its value, so the lock, the `Sink`
+  view and later reads see the real one.
+- **Presets bypass it:** they are the test's own, and stay exact.
+- **One per bench,** kept across a `plug`: the quirk is the test's, not the sink's.
+- **`Env`** gives it the time, HPD, the line and `note`, as a target has.
+
+The quirks a source's lookup exists for (amdgpu's `skip_scdc_overwrite`, a sink that
+re-syncs when `TMDS_Config` is rewritten) are hooks a test writes; maquette ships none, as
+the stack ships no quirk table.
 
 ### The line
 
@@ -293,24 +468,100 @@ things can drive it:
 - `Coupled<P>`, which wraps any `TmdsPhy` (a third party's, a forwarding stub, a firmware
   PHY under hardware-in-the-loop), forwards each call and drives the line from what
   succeeded;
-- the test, directly.
+- the test, directly, with `Bench::set_line`.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Line {
+    /// Nothing transmitted.
+    Off,
+    /// TMDS at `character_rate_khz`, the clock at `ratio`, scrambled or not.
+    Tmds { character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool },
+    /// FRL at `rate`, the training pattern on each lane (`FrlPhy::send_ltp`), what the
+    /// lanes carry without one (`FrlPhy::set_frl_output`) and the equalization
+    /// (`FrlPhy::adjust_equalization`; `None` since the rate was entered: TxFFE level 0).
+    /// `#[non_exhaustive]`: built with `Line::frl(rate)` (no patterns, gap characters only,
+    /// as a PHY entering the rate) or `Line::frl_with(rate, patterns, output)`, with
+    /// `.with_equalization(eq)`, matched with `..`.
+    Frl {
+        rate: HdmiForumFrl,
+        patterns: LanePatterns,
+        output: FrlOutput,
+        equalization: Option<EqParams>,
+    },
+}
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    /// Sets what the source transmits: a bench event, recorded as `Event::Line`.
+    pub fn set_line(&self, line: Line);
+    pub fn line(&self) -> Line;
+}
+```
+
+`TmdsClockRatio`, `HdmiForumFrl`, `LanePatterns`, `FrlOutput` and `EqParams` are hdmi-hal's. A target sees the line through
+`Env::line()`. Setting the line it already has is not a change: nothing is recorded and the
+time it started stays. An unplugged sink receives no line: its targets see `Line::Off`.
+
+The link's character errors go with the line: `ErrorRates`, errors a second on each of
+lanes 0–3 and Reed-Solomon corrections a second in FRL, none by default
+(`ErrorRates::NONE.with_lane0(..)`, `ErrorRates::all(..)`). The test sets them with
+`Bench::set_character_errors`, recorded as `Event::CharacterErrors`; a target sees
+them through `Env::character_errors()`, none while the sink is unplugged. The sink's
+counters count them while each lane is locked ("Sink behaviour").
+
+So do the lanes' limits in FRL link training: `LinkLanes`, a `LaneLimits` for each lane (the
+highest rate it trains at, and the least TxFFE level it needs:
+`LaneLimits::NONE.with_max_rate(..).with_min_tx_ffe(..)`), none by default; set with
+`Bench::set_lane_limits`, recorded as `Event::LaneLimits`, seen through `Env::lane_limits()`.
+A lane outside its limits does not carry the patterns the sink asks for, so training does
+not pass: a procedure's TxFFE and rate fallbacks are tested against it. After the pass, a lane
+leaving its limits loses the lane locks (with `Status_Update`), as a link that degrades: a
+procedure's health monitoring and retraining are tested against it.
+
+`ErrorRates` and `LaneLimits` are `#[non_exhaustive]` with `const` builders, so a quantity or
+a limit added later breaks no test; `LinkLanes` holds the four lanes as public fields, as
+hdmi-hal's `LanePatterns`.
 
 ### HPD, unplug and detach
 
 Three events a test needs to tell apart:
 
-- **HPD** (`hpd(level)`, `hpd_pulse(d)`): the sink stays on the bus. What answers during HPD
-  low is a setting per target: the EDID answers by default (*chosen*, after E-DDC's rule that
-  the EDID is readable with the display powered off, §9.2, §9.5.3). What a long HPD low
-  resets is a setting over every register group (`TMDS_Config`, the status and update flags,
-  `Source_Version`, `Config_1`, later the CED counters).
-- **Unplug and replug** (`unplug()`, `plug(..)`): while unplugged nothing answers,
-  `NoAcknowledge(Address)` on every address. `plug` may bring a new EDID and new settings: a
-  different sink coming back.
-- **Detach** (`detach()`, `reattach()`): the adapter is gone; every operation fails
-  `Detached`.
+```rust
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn set_hpd(&self, high: bool);
+    /// HPD low, `low_for` on the bench's clock (`advance`), HPD high.
+    pub fn hpd_pulse(&self, low_for: Duration);
+    pub fn unplug(&self);
+    pub fn plug(&self, edid: &'a [u8], displayid: Option<&'a [u8]>, config: SinkConfig)
+        -> Result<(), BenchError>;
+    pub fn detach(&self);
+    pub fn reattach(&self);
+    pub fn is_attached(&self) -> bool;
+    /// How many operations the handles made: what the budget counts.
+    pub fn operations(&self) -> u64;
+}
+```
 
-*To settle with the sink's behaviour:* whether SCDC answers during HPD low by default.
+- **HPD:** the sink stays on the bus; `bench.sink().hpd()` and `is_plugged()` read it.
+  Raising HPD on an unplugged sink panics: the test plugs it in instead. What answers during
+  HPD low is a setting per built-in
+  target (`DuringHpdLow::{Answers, Silent}`): the EDID answers by default (settled: E-DDC
+  1.3 §4.2.2 makes it available whenever +5 V is present, and DVI 1.0 §2.2.9.2 has HPD high
+  only while it can be read, which does not forbid answering with HPD low; `Silent` is a
+  sink whose EDID is unavailable), and so does SCDC (*chosen*: no source says a sink's SCDC
+  stops answering). A test's own target decides with `Env::hpd()`. What an HPD low resets
+  is a setting per register group ("Sink behaviour").
+- **Unplug and replug:** while unplugged HPD is low and nothing answers, the test's own
+  targets included: `NoAcknowledge(Address)` on every address, charging the address byte.
+  `plug` brings a sink back — new stores and new settings, its registers fresh, HPD high:
+  a different sink, or the same one after a power cycle. The test's own targets stay.
+- **Detach:** the adapter is gone. Every `DdcBus` call that passes the argument and
+  capability checks fails `Detached`, reaches no target and takes no time, until
+  `reattach`.
+
+Each is a bench event, recorded: `Event::Hpd { high }`, `Event::Plug { plugged }`,
+`Event::Adapter { attached }`. A change to the state it already has records nothing.
 
 ### The transcript
 
@@ -320,6 +571,81 @@ refused, cleared a bit, set the status), each with its time. Ordering tests — 
 written before scrambled output starts, the FRL clear before `TMDS_Config`, the wait after a
 ratio write — assert on it, and a failing test shows why the sink did what it did.
 Behaviour can be triggered by a count of operations as well as by time.
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Record {
+    /// When it happened: for a bus operation, when it started.
+    pub at: Timestamp,
+    pub event: Event,
+}
+
+/// Each variant with fields is `#[non_exhaustive]` too: the bench makes records, a test
+/// matches them with `..`, and a variant may gain a field without a breaking change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Event {
+    /// A `DdcBus` call: what was asked and how it ended, refused calls included.
+    Bus(BusRecord),
+    /// A register of a built-in target was written or set, by the source, the sink or a
+    /// preset; `from` and `to` may be equal.
+    Register { addr: u8, reg: u8, from: u8, to: u8, by: Actor },
+    /// A built-in target ignored a write, and why.
+    IgnoredWrite { addr: u8, reg: u8, value: u8, why: Ignored },
+    /// A test's target's own event (`Env::note`).
+    Note { addr: u8, code: u32, value: u32 },
+    /// What the source transmits changed (`Bench::set_line`, or the PHY's output).
+    Line(Line),
+    /// The character errors on the link changed (`Bench::set_character_errors`).
+    CharacterErrors(ErrorRates),
+    /// The lanes' limits in FRL link training changed (`Bench::set_lane_limits`).
+    LaneLimits(LinkLanes),
+    /// HPD changed.
+    Hpd { high: bool },
+    /// The sink was unplugged or plugged.
+    Plug { plugged: bool },
+    /// The adapter was detached or reattached.
+    Adapter { attached: bool },
+    /// The sink refused to set the scrambling bit right away, at this attempt.
+    Refusal { attempt: u32, kind: RefusalKind },
+    /// A scheduled fault struck the bus operation recorded before it.
+    Fault { id: FaultId, effect: Effect, point: Point },
+    /// A call of the simulated or a coupled PHY, and how it ended.
+    Phy { call: PhyCall, result: Result<(), PhyErrorKind> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct BusRecord {
+    pub op: BusOp,        // Write, WriteRead, Read, ReadSegmented { target, segment }
+    pub addr: u8,
+    /// The first byte written (an offset or register), if any.
+    pub first: Option<u8>,
+    pub written: u16,
+    pub read: u16,
+    pub result: Result<(), DdcErrorKind>,
+}
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    /// The records, oldest first; each is copied out under the lock.
+    pub fn transcript(&self) -> impl Iterator<Item = Record> + '_;
+    /// How many records it holds, up to `LOG`.
+    pub fn transcript_len(&self) -> usize;
+    /// How many records did not fit, past `LOG`.
+    pub fn transcript_overflow(&self) -> usize;
+    pub fn clear_transcript(&self);
+}
+```
+
+Records are `Copy` and hold no slices, so the transcript needs no `alloc`; a bus record keeps
+the first byte written, which for SCDC and the EDID is the register or offset, and the
+register events carry the values. When the transcript is full, later records are counted,
+not stored: the oldest are the ones a test of a bring-up asks about. A session-length test
+asks about what came late (the retrain after a health reading), so
+`BenchBuilder::keep_newest_records` keeps the newest `LOG` instead, the oldest dropped and
+counted. The storage is a ring addressed by sequence number, so a bus record's result,
+completed after its transaction, reaches it only while it is still kept.
 
 ---
 
@@ -331,23 +657,78 @@ source settles is marked *chosen*.
 | Behaviour | Sources | In maquette |
 |---|---|---|
 | `TMDS_Config` holds the source's `Scrambling_Enable` and `TMDS_Bit_Clock_Ratio` | settled [1] | fixed |
-| `Scrambling_Status` set when scrambled TMDS runs at the ratio `TMDS_Bit_Clock_Ratio` names, with `Scrambling_Enable` set, for the delay after the later of the write and scrambled output starting | settled that sources read it [2]; the delay and the ratio match have no source | delay a setting, *chosen* default 1 ms; ratio match *chosen*; scrambling at 1/10 sets it too |
+| `Scrambling_Status` set when scrambled TMDS runs at the ratio `TMDS_Bit_Clock_Ratio` names, with `Scrambling_Enable` set, once the lock trigger has passed since the later of the write and scrambled output starting | settled that sources read it [2]; the delay and the ratio match have no source | the trigger a setting, `Trigger::After(d)`, *chosen* default 1 ms, or `Trigger::AfterReads(n)`, the *n*-th read of `Scrambling_Status`; ratio match *chosen*; scrambling at 1/10 sets it too |
+| The ratio fits the rate: 1/40 above 340 Mcsc, 1/10 at or below | settled above 340 Mcsc [10]; no source uses 1/40 at or below | fixed: the sink does not lock on a line whose ratio does not fit its rate; at or below 340 Mcsc, 1/40 does not lock (*chosen*) |
+| A sink's highest TMDS character rate | the sink's EDID states it; the bench does not read the EDID it serves | a setting, `with_max_tmds_rate_khz`: none by default (*chosen*: the EDID is the test's input); above it the clock is detected and nothing locks, so the enable timeout clears `Scrambling_Enable` |
 | A sink that does not lock when scrambled TMDS arrived before the write | sources that redo the whole mode set say some sinks would accept the SCDC writes alone; others restore with the output running [3] | a setting, off by default (the lenient sink) |
 | "Some displays refuse to set the scrambling bit right away" | one source, which reads two ways [4] | a setting in both readings: the status withheld, or `Scrambling_Enable` dropped from the write; for the first *n* attempts, an attempt being a write that sets `Scrambling_Enable`; default none (*chosen*) |
-| The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5] | a setting, default off |
-| `TMDS_Config` and other registers reset after a long HPD low | settled that sources restore it [6]; when the sink resets it has no public source | a setting per register group: after HPD low for at least *d*, *chosen* default 100 ms; or never; or on every HPD low |
+| The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5]; settled that a source resumes within 100 ms of a ratio change [11] | a setting, default 100 ms (the least forgiving), counted from the write that set `Scrambling_Enable` or one that changed `TMDS_Bit_Clock_Ratio` while it was set; `None` never gives up |
+| A ratio change: the source suspends the TMDS clock and data, writes `TMDS_Bit_Clock_Ratio`, and resumes 1 to 100 ms after | settled [11] | the strict sink (below) does not take output resumed sooner than 1 ms after the write; the 100 ms is the timeout's |
+| `TMDS_Config` and other registers reset around an HPD low | settled that sources restore it [6]; the public sinks reset `TMDS_Config` as HPD falls [13]; for the other registers one sink each way [13] | a setting per register group (`RegisterGroup::{TmdsConfig, Status, SourceVersion, Config, ErrorCounters}`): `HpdReset::OnHpdLow`, the default for every group (the least forgiving; *chosen* after Amlogic for all but `TMDS_Config`); `HpdReset::After(d)`; `HpdReset::OnHpdRise`, as Xilinx clears `FRL_Rate`, losing what was written during the low too; or `HpdReset::Never`. The `Status` group is `Scrambling_Status`, the update flags and the status flags (0x40–0x42); `ErrorCounters` is 0x50–0x5A, which the public receivers reset with all of SCDC [13]. Each group resets once per HPD low, before the lock is evaluated; only registers that change are recorded |
 | `Source_Version` written by the source, `Sink_Version` reported | [7] | `Sink_Version` a setting (default 1); `Source_Version` stored |
-| Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | set by a preset at first; the rule that sets them a setting |
-| A sink without SCDC | no source for its answer | NACKs 0x54 (*chosen*) |
+| Update flags set by the sink and kept until the source clears them; `FLT_update` cleared by writing it back as 1 | the clear settled [8] | kept until cleared; `Status_Update` set by the status flags and `CED_Update` by the counters (below), the others by a preset until the FRL responses set them |
+| `Status_Flags_0`: bit 0 `Clock_Detected`, bits 1–4 lanes 0–3 locked, set by the sink's hardware as the lanes lock | the bits settled [15]; no source shows the timing | `Clock_Detected` set while the line is TMDS (*chosen*: at once); lanes 0–2 locked once the sink can decode the line (TMDS at a ratio that fits the rate and matches `TMDS_Bit_Clock_Ratio`, scrambled exactly when `Scrambling_Enable` is set, and scrambled above 340 Mcsc; *chosen*: no source shows what a receiver fails to decode) and the lock trigger has passed (*chosen*: the scrambling lock's, `AfterReads` counting reads of 0x40); cleared when it cannot. Lane 3 and `FLT_ready` are FRL's. Changed only when what the sink sees changes, so a preset holds until then; an unplugged sink receives no line |
+| Character error counters (0x50–0x5A): 15 bits a lane, bit 7 of the high byte valid, saturating at 0x7FFF; 0x56 a checksum, 0x50–0x56 summing to zero over 3 lanes, 0x50–0x58 over 4; lane 3 at 0x57–0x58, the Reed-Solomon corrections at 0x59–0x5A, in no checksum | the checksum, at 3 and 4 lanes, and the valid bit settled [16]; saturation from one receiver [16]; no source says what makes a count valid | lanes 0–2 count the link's `ErrorRates` while locked, exactly (fractions carry over), and stop at 0x7FFF (*chosen*, after that receiver); valid while the lane is locked (*chosen*: an error-free locked link then reads 0x80 at 0x56, as a real sink did); lane 3 counts in 4-lane FRL, and the corrections (`ErrorRates::rs_corrections`) while the FRL lanes are locked (*chosen*: Linux reads them only in FRL); the checksum covers lane 3 when `Config_1`'s rate is a 4-lane one; `RSED_Update` follows `CED_Update`'s rule for the corrections; not recorded, as they move with time; a preset holds until the counts change |
+| `CED_Update` set from the counters | one receiver: checked once a second, set when a valid count rose by at least 4 since the last check or just reached 0x7FFF [16]; no second source | a setting: `CedUpdate::EverySecond { rise }` (*chosen* default, a rise of 4, checked at whole seconds on the bench's clock, each seeing the counts at its second and recorded at the bench event at or after it), or `Never` |
+| Reading a counter clears it | unresolved: one source's comments say reading clears the counts, its vendor's receiver keeps them, and Linux reads the whole map for debugging with no word of losing them [16] | a setting: `CedRead::Keep` (*chosen* default) or `ClearOnRead`, which clears a lane when its high byte, the second of its two, is read (*chosen*); the next `CED_Update` check measures its rise from 0 |
+| The counters during a read | no public source says whether a sink holds them still; the checksum is the source's protection | a setting: `DuringRead::Moving` (*chosen* default, the least forgiving), each byte at its own moment (Torn reads, above); or `Held`, a read sees them as at the transaction's start, and a clear shows from the next event |
+| An FRL sink: `FLT_ready` set before training | settled [17] | set from the start when `with_max_frl_rate` names a rate (`None` by default: a TMDS-only sink), and again after a reset clears it |
+| LTS:3 starts on a write of a non-zero `FRL_Rate`; `FRL_start` cleared; one request per lane in 0x41–0x42, LFSR patterns first, with `FLT_update` | settled [17]; which LFSR on which lane, one sink fixed, one configurable | every write of `Config_1` restarts it (*chosen*); the requests a setting, `with_ltp_requests`, by default LFSR 0–3 on lanes 0–3 |
+| A rate the sink cannot take | one receiver: 0xF on every lane [17] | 0xF on every lane for a rate above the maximum or a value naming none (*chosen*) |
+| The pass (0 on every lane, with `FLT_update`), then `FRL_start` | settled [17] | fixed |
+| What comes before the pass and `FRL_start` | the receivers differ [17]: one posts new requests only once the source clears `FLT_update`, passes once each lane carries its pattern, and sets `FRL_start` once the lanes lock and the pass is cleared; the other waits up to 100 ms for each clear, passes whatever the lanes carry (logging its error counts), and sets `FRL_start` without the lanes in sync | a setting, `with_frl_pass`: `FrlPass::Patterns` (*chosen* default, the least forgiving), matching counted from the clear, at the rate, within the link's `LaneLimits`, for the lock trigger (*chosen*), a lane requested 0 needing nothing, with the LTS:3 timeouts; or `FrlPass::Unchecked`, the 100 ms waits, no check of the lanes, no timeouts |
+| The FRL lane locks | settled that the receivers set them as the lanes lock [15] | lanes 0–2 (and 3 at 4 lanes) lock once the line is FRL at the rate without patterns, after the pass, each lane within the link's `LaneLimits`, for the lock trigger; a lane leaving its limits loses them (*chosen*: no source shows the lanes' margins); a change of output keeps them; `Clock_Detected` stays clear in FRL (*chosen*) |
+| Lanes that do not pass in time | one receiver: an LTS:3 timer of 180/90/60/45 ms by `FFE_Levels` 0–3; at each timeout while FFE levels remain, 0xE on the lanes not passing, then the patterns again once cleared; after the last, 0xF on every lane; none with `FLT_no_timeout` or `FLT_no_retrain` [17] | a setting, `with_lts3_timeout`: 180 ms by default (*chosen*), split into `FFE_Levels` + 1 attempts as that receiver's table, or `None`; the source's `FFE_Levels` always taken (*chosen*: that receiver asks for another TxFFE level only when its integrator enables it); the timeouts seen with the line and lane limits as they were before the event that finds them due |
+| `FRL_Rate` 0 returns to legacy | settled [17] | the requests cleared; a reset of the status group also returns to legacy (*chosen*) |
+| `Status_Update` set when the status flags change | no receiver source shows it (the receivers set it in hardware); one source family reads the flags only when it is set, others regardless [15] | a setting: `StatusUpdate::OnChange` (*chosen* default) or `Never` |
+| A sink without SCDC | one source: a failed `Source_Version` write means no SCDC [7] | NACKs 0x54 (*chosen*) |
+| A write to an SCDC register the sink owns | no source | a setting: acknowledged and ignored, recorded (*chosen*), or `NoAcknowledge(Data)` at that byte |
+| An SCDC read or write past 0xFF | left to the sink: hdmi-hal's `ScdcTransport` leaves it open, and no source covers it | a setting: the offset wraps to 0x00 (*chosen*, an 8-bit offset register), or a write's byte past 0xFF fails `NoAcknowledge(Data)`; a read always wraps, since the host acknowledges the bytes it reads (DDC/CI 1.1 §1.6) |
+| A read past the end of the EDID or DisplayID store, in a segment the sink has | E-DDC covers only the data a display has; the host acknowledges the bytes it reads, so the display cannot refuse one (DDC/CI 1.1 §1.6) | a setting: reads 0xFF (*chosen*), or wraps to the start of the store |
+| A segment the sink does not have | E-DDC requires an acknowledge of the pointer for segments that exist (§6.4–§6.5), not what follows for others | a setting: `NoAcknowledge(Data)` at the pointer value (*chosen*, as hdmi-hal's `DdcBus` contract reads it), or acknowledged and read as past the store |
+| Reading across the 128-byte boundary at 0x50 or 0x52 | "some implementations may support" it (E-DDC 1.3 §2.2.6) | a setting: continues into the next block (*chosen*), or wraps to the start of the block |
 
-*To settle with the targets, each with its sources or a chosen default:* a write to a
-register the sink owns; a read past the EDID store, and a segment the sink does not have
-(E-DDC 1.3 §6.4–§6.5 for segments that exist); an SCDC read past 0xFF; reading across the
-128-byte boundary at 0x50 (E-DDC 1.3 §2.2.6: "some implementations may support" it).
+**The scrambling lock, in full.** The lock's conditions: `Scrambling_Enable` is set, the
+line is scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names, that ratio fits the rate
+(1/40 above 340 Mcsc, 1/10 at or below), and no refusal withholds the status. The SCDC
+target keeps the time they last began to hold: the write that set `Scrambling_Enable` (from
+0 to 1; a rewrite that keeps it set, as a quick restore makes, does not restart it), a write
+that made the ratio match, an attempt accepted after a withheld one, or the line becoming
+what it is, whichever came last.
 
-Planned before the first release: FRL training responses (`FLT_ready`, LTP requests,
-`FLT_update`, `FRL_start`), the CED counters (saturation at 0x7FFF, both clear-on-read
-behaviours, held or moving during a burst, reset on hot plug) and `Status_Flags`.
+- **Locking:** `Scrambling_Status` is set once the lock trigger has passed since that time.
+- **The sink's own reset:** an HPD reset of the `Status` group loses the lock along with
+  the status, and the conditions begin to hold again at the reset: the lock is gained again
+  once the trigger has passed since. Only a test's preset of the status holds against the
+  lock.
+- **The strict sink** (`with_strict_lock(true)`; off by default): the output must start
+  after the write that set `Scrambling_Enable` or changed `TMDS_Bit_Clock_Ratio`, and at
+  least 1 ms after the last change of the ratio. Output already running at the write, or
+  resumed sooner, is not taken until it stops and starts again. With the PHY's default
+  start latency of 1 ms, output started at once after the write meets the 1 ms; a test of
+  the source's own wait sets the latency to 0.
+- **Losing it:** the status is cleared at the first event at which a condition fails: the
+  bit or the ratio changes, or the line stops, changes rate, or stops scrambling.
+- **Refusals** (`with_scrambling_refusals(Refusal { kind, attempts })`; none by default):
+  an attempt is a write that sets `Scrambling_Enable`. For the first `attempts` attempts the
+  sink either withholds the status (`RefusalKind::WithholdStatus`: no lock until a later
+  attempt) or stores the write without `Scrambling_Enable` (`RefusalKind::DropEnable`); each
+  refusal is an `Event::Refusal`.
+- **Giving up** (`with_enable_timeout(Some(d))`; 100 ms by default, `None` never gives up):
+  without scrambled TMDS at the matching ratio within `d` of the write that set
+  `Scrambling_Enable`, or of one that changed `TMDS_Bit_Clock_Ratio` while it was set, the
+  sink clears
+  `Scrambling_Enable` itself, at the first event at or after the deadline. Output that
+  starts at or after the deadline is late, whether or not an SCDC event fell between: the
+  line and the registers change only at events, so the sink knows what held since the last
+  one.
+
+Every change the sink makes on its own is a `Register` event by `Actor::Sink`. The sink
+changes `Scrambling_Status` only when its lock is gained or lost, so a test's preset of the
+status holds until then; `Scrambling_Enable` is tracked the same way, from the register,
+whoever set it. The lock is evaluated at the start of each transaction, after each byte
+written, before each read of the status (which `Trigger::AfterReads` counts) and at every
+other bench event.
 
 ---
 
@@ -359,46 +740,327 @@ such as an engine that reads only the EDID or only segment 0. It refuses what it
 capabilities rule out with `Unsupported` before touching the sink, as `DdcBus`'s contract
 asks; a test that wants a backend to misbehave uses a fault.
 
+- **Before the sink:** the argument rules of `DdcBus` (an address outside
+  `is_usable_address`, an empty `write`, a segment above `MAX_SEGMENT` or a read past 256
+  bytes of a segment: `Unsupported`; an empty buffer: `Ok`), then the capabilities. A
+  refused call touches no target, takes no time and is recorded with its result.
+- **`read_segmented`:** split into pieces of `segmented_piece` bytes where the capabilities
+  set one, each piece its own transaction with the pointer and offset written again, so
+  something can change between pieces. Segment 0 writes no pointer.
+- **Errors:** `BusError`, which implements `DdcError`, `Display` and `core::error::Error`:
+
+  ```rust
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  #[non_exhaustive]
+  pub struct BusError {
+      pub kind: DdcErrorKind,
+      pub op: BusOp,
+      pub addr: u8,
+  }
+  ```
+
+- **A failed read** fills its buffer with `0xA5`, so a caller that uses it after an error
+  reads a pattern, not plausible data (`DdcBus` leaves the contents unspecified).
+- **Timing:** each transaction charges the clock after it is evaluated, by `BusTiming`:
+  every byte of it, address bytes included, as if it all went out, except a transaction
+  nothing answered, which charges its first address byte.
+
+  ```rust
+  #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+  #[non_exhaustive]
+  pub struct BusTiming {
+      /// Each byte on the wire, address bytes included.
+      pub per_byte: Duration,
+      /// Each transaction, on top of its bytes.
+      pub per_transaction: Duration,
+  }
+
+  impl BusTiming {
+      /// 90 µs a byte (nine clocks at 100 kHz), nothing per transaction.
+      pub const STANDARD_MODE: Self;
+      pub const fn with_per_byte(self, d: Duration) -> Self;
+      pub const fn with_per_transaction(self, d: Duration) -> Self;
+  }
+  ```
+
+  A byte is eight data bits and the acknowledge, nine clocks; at 100 kHz, I²C standard
+  mode's maximum clock, that is 90 µs. DDC/CI 1.1 assumes standard mode without precluding
+  fast mode (400 kHz); sources use 100 kHz [14]. A faster or slower sink or adapter is a
+  setting.
+
 ---
 
 ## The simulated PHY
 
 `phy()` implements `TmdsPhy`, `FrlPhy` and `PhyPower` to hdmi-hal's contracts, including the
-mode rule (entering one mode leaves the other):
+mode rule (entering one mode leaves the other). Like the other handles it is `Copy`; two
+`phy()` handles are one PHY.
 
-- its power state at creation is a setting, **on** by default (*chosen*: `PhyPower`'s
-  documentation says procedures never change the power, so a procedure test expects a
-  powered PHY); creation in the on state counts as a power-on, so `start_output` after a
-  `configure` works either way the contract is read;
-- `start_output` needs a `configure` since the last power-on; `stop_output` works in every
-  state; `set_scrambling(true)` fails on a PHY without a scrambler (`TmdsPhyCapabilities`);
-- where the contract allows several behaviours — `configure` with the output running (fail,
-  or stop it), the scrambler after `configure` (kept, reset, or set from the rate), the
-  start-up latency — each is a setting, defaulting to the least forgiving one: a procedure
-  must be correct under any behaviour the contract allows.
+```rust
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn phy(&self) -> Phy<'_>;   // TmdsPhy + FrlPhy + PhyPower, Error = PhyError
+}
 
-Its calls go into the transcript and drive the line. The coupling between the line and the
-sink catches a procedure that never writes the sink or never starts scrambled output; it does
-not judge order, which a test checks from the transcript.
+impl<'a, const LOG: usize, const FAULTS: usize> BenchBuilder<'a, LOG, FAULTS> {
+    /// What the PHY can do; by default `DEFAULT_PHY_CAPABILITIES`: 600 000 kHz with a
+    /// scrambler that also scrambles at or below 340 Mcsc.
+    pub fn phy_capabilities(self, capabilities: TmdsPhyCapabilities) -> Self;
+    /// How the PHY behaves where the contract allows several behaviours.
+    pub fn phy(self, settings: PhySettings) -> Self;
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PhySettings {
+    /// Powered on at creation; true by default.
+    pub powered: bool,
+    pub configure_while_running: ConfigureWhileRunning,   // Fail (default) | StopFirst
+    pub scrambler_after_configure: ScramblerAfterConfigure,
+        // Opposite (default) | Keep | Off | FromRate
+    /// How long `start_output` takes before it returns, on the bench's clock; 1 ms by
+    /// default.
+    pub start_latency: Duration,
+}
+// PhySettings::DEFAULT, with const `with_*` builders.
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PhyError {
+    pub kind: PhyErrorKind,
+    pub call: PhyCall,
+    /// Whether the call took effect before it failed (a fault that strikes after).
+    pub took_effect: bool,
+}
+
+#[non_exhaustive]
+pub enum PhyErrorKind {
+    PoweredOff,     // configure, start_output, set_frl_rate and the FRL calls while off
+    NotConfigured,  // start_output without a configure since the last power-on
+    Running,        // configure with the output running, under `ConfigureWhileRunning::Fail`
+    Unsupported,    // beyond the capabilities: the rate, the scrambler, low-rate scrambling
+    NotInFrl,       // send_ltp, set_frl_output, adjust_equalization outside FRL
+    Fault,          // a scheduled PHY fault
+    Coupled,        // a coupled PHY's own error (see `Coupled<P>`)
+}
+```
+
+- **Power:** on at creation by default (*chosen*: `PhyPower`'s documentation says procedures
+  never change the power, so a procedure test expects a powered PHY); creation in the on
+  state counts as a power-on, so `start_output` after a `configure` works either way the
+  contract is read. `power_on` on a PHY that is on changes nothing; `power_off` stops the
+  output and forgets the mode and its configuration.
+- **TMDS:** `configure` fails while powered off, and for a rate above the capabilities'
+  maximum; it enters TMDS, leaving FRL, and leaves the output stopped. `start_output` needs a
+  `configure` since the last power-on; starting a running output changes nothing.
+  `stop_output` works in every state and leaves FRL. `set_scrambling(true)` fails on a PHY
+  without a scrambler, and at or below 340 000 kHz on one that cannot scramble there (a
+  capability, so an error rather than a silent no-op); `set_scrambling(false)` always
+  succeeds.
+- **FRL:** `set_frl_rate` with a rate enters FRL, leaving TMDS (the TMDS configuration is
+  forgotten), and returns once the PHY transmits at that rate; `NotSupported` leaves FRL and
+  enters nothing. `send_ltp`, `set_frl_output` and `adjust_equalization` need FRL; their
+  values are recorded, not modelled, until the sink's FRL responses arrive.
+- **Where the contract allows several behaviours, each is a setting defaulting to the least
+  forgiving one:** a procedure must be correct under any behaviour the contract allows.
+  `configure` with the output running fails (`ConfigureWhileRunning::Fail`) rather than
+  stopping it. After `configure` the scrambler is set to the opposite of what the rate
+  needs (`ScramblerAfterConfigure::Opposite`: on at or below 340 000 kHz, off above), so a
+  procedure that never calls `set_scrambling` fails at every rate. Every setting stays
+  within the capabilities: the scrambler is never on without one, nor on at or below
+  340 000 kHz where the PHY cannot scramble there. `start_output` takes 1 ms
+  before it returns, so a deadline counted from before it is visibly late.
+- **The line:** the PHY drives it whenever its own output changes: running TMDS output is
+  `Line::Tmds { character_rate_khz, ratio, scrambled }` from the configuration and the
+  scrambler; FRL is `Line::frl(rate)`; anything else is `Line::Off`. A test's own
+  `set_line` changes it too, and holds until the PHY's output next changes: the last change
+  wins.
+- **Records:** every call is an `Event::Phy { call, result }`, with `PhyCall` the call and
+  its arguments, recorded when it returns, followed by any line change it made. Each call
+  counts against the budget; `capabilities()`, a report, does not.
+- **Faults:** `Bench::schedule_phy(PhyFault)` schedules a PHY fault in the same schedule as
+  the bus's, sharing its `FAULTS` capacity: on the `nth` call matching an optional
+  `PhyCallKind`, for `times` calls, failing with `PhyErrorKind::Fault` either before the call
+  (`took_effect: false`, nothing changes) or after it (`PhyFault::after_effect()`;
+  `took_effect: true`, the call applied and the line driven). The struck call's
+  `Event::Phy` carries the fault's error.
+
+The coupling between the line and the sink catches a procedure that never writes the sink or
+never starts scrambled output; it does not judge order, which a test checks from the
+transcript.
+
+### `Coupled<P>`
+
+`Coupled::new(phy, &bench)` wraps any `TmdsPhy` — a third party's, a forwarding stub, a
+firmware PHY under hardware-in-the-loop — and implements `TmdsPhy` with `P`'s error, and
+`PhyPower` and `FrlPhy` where `P` does. Each call goes to `P` unchanged and returns what `P`
+returned; what succeeded drives the bench's line when the coupled output changes, and every
+call is recorded (a failure as `PhyErrorKind::Coupled`, `P`'s own error going back to the
+caller), is a bench event and counts against the budget, as the simulated PHY's are.
+Scheduled PHY faults are the simulated PHY's: `P` has its own. `get_ref`, `get_mut` (whose
+calls bypass the coupling) and `into_inner` reach `P`.
+
+The coupled line follows the contract's guarantees only: `configure` enters TMDS with the
+output stopped, `start_output` starts it, `stop_output` stops it and leaves FRL, a FRL rate
+enters FRL, `power_off` leaves every mode, and a failed call changes nothing. The line is
+unscrambled after `configure` until a `set_scrambling` says otherwise (*chosen*: what `P`
+does to its scrambler there is its own, and the bench cannot see it).
 
 ---
 
 ## Faults
 
-A test schedules faults: *on the n-th operation matching a filter* (an address, an operation
-kind, a register; operations the capabilities refuse do not count), *for k operations* or
-*until cleared*. A fault strikes at a point:
+A test schedules faults, each striking bus operations that match a filter, at a point of the
+operation, with an effect:
 
-- **before** the sink sees the operation;
-- **after** the sink applied it (a write latched, the error still returned);
-- **partway:** a NACK on data byte *k*, the bytes before it applied.
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Fault {
+    pub filter: Filter,
+    /// The first matching operation it strikes, counted from 1 from when it is scheduled.
+    pub nth: u32,
+    pub times: Times,
+    pub effect: Effect,
+    pub point: Point,
+}
 
-A fault fails with a `DdcErrorKind`; a NACK carries its `NoAcknowledgeSource`; a timeout
-charges the clock. An `Unsupported` fault breaks the `DdcBus` contract on purpose, to test
-code against a misbehaving backend, and its documentation says so. A failed read fills the
-buffer with a pattern, so a caller that uses it after an error fails (the contract leaves the
-contents unspecified). PHY faults use `PhyError`, with a kind and whether the call took
-effect. Faults are applied after the capability check and recorded in the transcript.
+impl Fault {
+    /// Strikes the first operation, once, before the sink sees it.
+    pub const fn new(effect: Effect) -> Self;
+    pub const fn on(self, filter: Filter) -> Self;
+    pub const fn nth(self, n: u32) -> Self;
+    pub const fn times(self, times: Times) -> Self;
+    pub const fn at(self, point: Point) -> Self;
+}
+
+/// Which operations a fault counts: every field that is set must match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Filter {
+    /// The operation's address; for `read_segmented`, the target's.
+    pub addr: Option<u8>,
+    pub op: Option<OpKind>,          // Write, WriteRead, Read, ReadSegmented
+    /// The first byte written: the register or offset.
+    pub first: Option<u8>,
+}
+// Filter::ANY, with const `with_addr`, `with_op`, `with_first` builders.
+
+pub enum Times { Count(u32), UntilCleared, For(Duration) }
+pub enum Effect { Fail(DdcErrorKind), Slow(Duration), Corrupt { byte: u16, xor: u8 } }
+pub enum Point { Before, After, Partway { byte: u16 } }
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn schedule(&self, fault: Fault) -> Result<FaultId, ScheduleFull>;
+    pub fn clear_fault(&self, id: FaultId) -> bool;
+    pub fn clear_faults(&self);
+    pub fn scheduled_faults(&self) -> usize;
+}
+```
+
+- **What an operation is:** one transaction — a `DdcBus` call, or one piece of a split
+  `read_segmented`. Calls refused by the argument or capability checks, empty buffers and
+  calls while detached do not count: nothing went out. Calls while unplugged count: they
+  reach the wire, and nothing answers.
+- **Counting:** each fault counts the matching operations from when it is scheduled, and
+  strikes the `nth` and, by `times`, the `k - 1` after it, every one until cleared, or
+  every one for `d` on the bench's clock from the first it strikes (`For(d)`: the first
+  after the window leaves it unstruck, so a host that backs off past it gets through where
+  one that retries at once does not). Faults
+  are checked in the order scheduled; the first that strikes applies, and every fault
+  counts the operation. A fault leaves the schedule once its last operation has passed,
+  struck or not (an earlier fault may have taken it); `Times::Count(0)` never strikes.
+  `FAULTS` is the schedule's capacity; a full schedule refuses with `ScheduleFull`, so the
+  test knows its fault is not there.
+- **Points:**
+  - **before** the sink sees the operation: no target sees it, and only its address byte
+    goes out;
+  - **after** the sink applied it: the transaction runs as usual (a write latched), and the
+    fault's error is returned in place of its result;
+  - **partway**, at data byte *k* of the transaction, counted across its operations: the
+    target sees the transaction cut there (a write's first *k* bytes; a read shortened; the
+    operations after it dropped), then the fault's error is returned. A transaction of *k*
+    data bytes or fewer is struck after. A `NoAcknowledge` cannot fall in a read's data, the
+    host acknowledging the bytes it reads (DDC/CI 1.1 §1.6): it falls on the read's address
+    byte, before any of its data; a timeout, busy or other kind cuts the read where it is.
+- **Effects:**
+  - `Fail(kind)`: the call fails with `kind`. A NACK carries its `NoAcknowledgeSource`; a
+    timeout also charges the bus's `stretch_timeout_us` where its capabilities give one; a
+    `Detached` fault fails that operation only, the adapter staying attached. An
+    `Unsupported` fault breaks the `DdcBus` contract on purpose (`Unsupported` means
+    refused before bus activity), to test code against a misbehaving backend.
+  - `Slow(d)`: the operation succeeds and takes `d` longer.
+  - `Corrupt { byte, xor }`: the operation succeeds, and read byte `byte`, counted across
+    its read data, comes back XORed with `xor`: the device sent it right, the line or a
+    dongle garbled it. EDID readers check and retry for this (Linux's `edid_block_read`,
+    up to 4 tries; amdgpu's `dm_helpers_read_local_edid`, 25), so a reader that trusts
+    the first read fails against the bench. Writes are not changed.
+- **Time:** a faulted operation is charged for the bytes that went out: its address byte
+  before, all of it after, up to byte *k* partway.
+- **Records:** the bus record carries the call's result; an `Event::Fault { id, effect,
+  point }` follows it. A failed read fills the buffer with the pattern, so a caller that
+  uses it after an error fails.
+
+PHY faults are `PhyFault`s, in the same schedule (see "The simulated PHY").
+
+### Scheduled actions
+
+A test changes the sink between its own calls; a procedure under test runs many steps in
+one call. A scheduled action is a change the bench makes by itself, at a moment the test
+chose within such a call: `FLT_update` set after the source writes `Config_1`,
+`CED_update` set on the third poll of `Update_0`, an unplug partway through training.
+
+```rust
+#[non_exhaustive]
+pub enum Action<'a> {
+    Preset { reg: u8, value: u8 },        // as Bench::preset_scdc
+    Hpd(bool),                             // as Bench::set_hpd
+    Unplug,
+    Plug { edid: &'a [u8], displayid: Option<&'a [u8]>, config: SinkConfig },
+    Line(Line),                            // as Bench::set_line
+    CharacterErrors(ErrorRates),           // as Bench::set_character_errors
+    LaneLimits(LinkLanes),                 // as Bench::set_lane_limits
+    Detach,
+    Reattach,
+}
+
+#[non_exhaustive]
+pub enum When {
+    BeforeOp { filter: Filter, nth: u32 },  // before the nth matching bus operation
+    AfterOp { filter: Filter, nth: u32 },   // after it, before its time is charged
+    PhyCall { kind: Option<PhyCallKind>, nth: u32 }, // after the nth PHY call returns
+    At(Timestamp),                          // at the first bench event at or after it
+}
+
+impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
+    pub fn schedule_action(&self, action: Action<'a>, when: When)
+        -> Result<FaultId, ScheduleFull>;
+}
+```
+
+- **Once.** An action comes once and leaves the schedule; a test that wants it again
+  schedules it again. `clear_fault` with its id removes it before it comes.
+- **One schedule.** Actions share the faults' `FAULTS` slots, and count what a fault would:
+  from when they are scheduled, from 1; refused, empty and detached calls do not count. A
+  call through `Coupled` counts once.
+- **Where it lands.** It runs inside the triggering call's critical section, so no other
+  handle's call falls between: before the operation is routed (`BeforeOp`), after the
+  target and before the bus charges the time (`AfterOp`), or as the PHY call returns
+  (`PhyCall`). An action at a time (`At`) is taken at the first bench event at or after it
+  and recorded at that event's time, as a sink's own reset is: before a bus operation, or
+  at an update (`advance`, a delay, a line, HPD or PHY change). An update inside an
+  operation, made by a `BeforeOp` action's change, takes only actions due by time, so the
+  operation's own `AfterOp` actions wait for its transaction. A fault striking the same operation is recorded after its bus record, so a
+  `BeforeOp` action comes ahead of both.
+- **Records.** An `Event::Action { id }` comes first, then the events the change makes, as
+  its control makes them: a preset as a `Register` event by `Actor::Test`, HPD as
+  `Event::Hpd`, and so on. An action that cannot apply when it comes (a preset on a sink
+  without SCDC, HPD raised on an unplugged sink) is only that record: a panic in the middle
+  of the code under test would serve the test worse. A `Plug` whose stores are not whole
+  blocks is refused when it is scheduled, with a panic, as a mistake in the test.
+
+`hpd_pulse` has no action: it spans time, so a test schedules `Hpd(false)` and a later
+`Hpd(true)`, at two times. A scheduled unplug during a test's own `hpd_pulse` leaves HPD
+low at its end.
 
 ---
 
@@ -424,7 +1086,8 @@ not reported: without `std` it ends the check.
   after `configure`; `set_scrambling` with the output on and off; `configure` leaving the
   output stopped; `power_on` leaving it stopped; after `power_off`, `configure` again before
   `start_output`; the mode rule on a PHY implementing both mode traits. What the traits
-  cannot show — whether the output is running — comes from a probe the implementor passes.
+  cannot show — what the PHY transmits: whether its output runs, at which rate and ratio,
+  scrambled or not, or FRL at which rate — comes from a probe the implementor passes.
 
 **What each can see.** Run against the bench, everything above. Against Linux's `i2c-stub`
 or a board, only what the trait returns: an allowed operation to an address where nothing
@@ -441,9 +1104,235 @@ not turn red on `cargo update`.
 maquette runs each check against its own implementations, and the checks' negative cases
 against deliberately broken doubles.
 
-*To settle before the checks are written:* their signatures — how clock and delay are passed
-(as two values, the general platform case), how the known device and its image are
-described, the PHY probe's type, the report type, and the async forms.
+### The checks' shape
+
+Every check lives in `maquette::check`, takes the implementation under test as the trait
+values a procedure would get, and returns a `Report` of its own failure type:
+
+```rust
+/// What a check found: the points that failed, in the order found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Report<F, const N: usize = 16> { /* private */ }
+
+impl<F, const N: usize> Report<F, N> {
+    /// An empty report, and a point recorded in it: for a check of a crate's own trait
+    /// that runs against the bench, so its users get the report maquette's checks give.
+    pub fn new() -> Self;
+    pub fn record(&mut self, failure: Option<F>);
+    /// Whether every point passed.
+    pub fn is_ok(&self) -> bool;
+    /// How many points the check ran.
+    pub fn points(&self) -> usize;
+    /// How many points failed, recorded or not.
+    pub fn failed(&self) -> usize;
+    /// The failed points recorded: the first `N`, in the order found.
+    pub fn failures(&self) -> impl Iterator<Item = &F>;
+    /// How many failed points were not recorded, past the first `N`.
+    pub fn overflow(&self) -> usize;
+    /// Panics, listing every recorded failure and the overflow, unless every point passed.
+    #[track_caller]
+    pub fn assert_ok(&self) where F: fmt::Display;
+}
+
+impl<F: fmt::Display, const N: usize> fmt::Display for Report<F, N> { /* one line per failure */ }
+```
+
+- **A report, not a panic:** a check runs every point, so an implementor sees every failure
+  at once. `assert_ok` is the one assertion a test needs.
+- **Fixed capacity, overflow counted:** no `alloc`; `failed()` stays exact past `N`.
+- **Failure types are the check's own** `#[non_exhaustive]` enums, `Copy` where their fields
+  are, implementing `Display`, so a check can gain a point in a breaking release without
+  changing the report type.
+- **A check is a struct** with `run` (and `run_async` with the `async` feature) on it, built
+  from what it needs: the clock check from settings with a `const DEFAULT` (and
+  `check::clock`, which runs it with them); the others from a description of what the
+  implementation is in front of, with `new`, since there is no default device, register
+  image or PHY configuration; `const` `with_*` builders for the rest. The PHY check runs by
+  the traits the PHY implements.
+- **The async form** takes hdmi-hal-async's trait, which their `Send` twins implement through
+  their blanket implementations, so one async check covers both. It does not promise a `Send`
+  future: a test drives it to completion where it is.
+
+### The clock check
+
+Clock and delay are passed as two values, as a platform supplies them from two peripherals;
+one value implementing both (a `SimClock`) is passed as `&clock` and `&mut &clock`.
+
+```rust
+/// The clock check with its default settings.
+pub fn clock<C: Clock + ?Sized, D: Delay + ?Sized>(clock: &C, delay: &mut D)
+    -> Report<ClockFailure>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct ClockCheck<'a> {
+    /// The delays run, each between two reads of the clock.
+    pub delays: &'a [Duration],
+    /// The reads of the clock in a row, with no delay between them.
+    pub reads: u32,
+}
+
+impl ClockCheck<'static> {
+    /// Delays of 0, 1 ns, 1 µs, 999 µs, 1 ms, 1.001 ms and 10 ms (about 13 ms in all on a
+    /// real timer), and 1000 reads in a row.
+    pub const DEFAULT: Self;
+}
+
+impl<'a> ClockCheck<'a> {
+    pub const fn with_delays<'b>(self, delays: &'b [Duration]) -> ClockCheck<'b>;
+    pub const fn with_reads(self, reads: u32) -> Self;
+
+    pub fn run<C: Clock + ?Sized, D: Delay + ?Sized>(&self, clock: &C, delay: &mut D)
+        -> Report<ClockFailure>;
+
+    #[cfg(feature = "async")]
+    pub async fn run_async<C, D>(&self, clock: &C, delay: &mut D) -> Report<ClockFailure>
+    where
+        C: Clock + ?Sized,
+        D: hdmi_hal_async::time::Delay + ?Sized;
+
+    /// Each delay measured on `reference` too, a clock the test trusts.
+    pub fn run_with_reference<C, D, R>(&self, clock: &C, delay: &mut D, reference: &R,
+        tolerance: Duration) -> Report<ClockFailure>
+    where C: Clock + ?Sized, D: Delay + ?Sized, R: Clock;
+    // run_with_reference_async with the `async` feature.
+}
+
+/// With `std`: `std::time::Instant` from its creation, a reference on a host.
+pub struct HostClock { /* … */ }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum ClockFailure {
+    /// A read of the clock was earlier than the read before it.
+    WentBackwards { earlier: Timestamp, later: Timestamp },
+    /// Across `delay(requested)`, the clock advanced only `elapsed`.
+    DelayTooShort { requested: Duration, elapsed: Duration },
+    /// The reference advanced short of `requested` by more than the tolerance.
+    DelayTooShortOnReference { requested: Duration, elapsed: Duration },
+    /// The clock and the reference advanced further apart than the tolerance.
+    Drift { requested: Duration, clock: Duration, reference: Duration },
+}
+```
+
+The points: each read compared with the read before it, over the reads in a row and around
+every delay (`WentBackwards`); each delay, measured on the clock from the read before it to
+the read after it (`DelayTooShort`). A clock that never advances fails every delay but the
+zero one. The delays run in the order given, so a coarse clock or a timer with a long
+minimum delay is checked at the durations its procedures use; `with_delays` sets them, for
+a platform whose real delays should be few or short.
+
+The clock alone cannot show its rate: a wrong timer frequency scales the clock and every
+delay measured on it alike, so a clock and delay 1000 times fast pass. `run_with_reference`
+reads a clock the test trusts around each delay too (on a host, `HostClock`; on a board,
+another timer): the delay must take at least the time asked on it (`DelayTooShortOnReference`),
+and the clock must advance as far as the reference (`Drift`), each within a tolerance for
+the reads between them and the reference's resolution.
+
+### The checks for hdmi-hal's traits
+
+Each takes the implementation under test, a description of what is on its other side, and
+the hooks a check needs for what the traits cannot show. The descriptions and hooks are
+plain values and small traits, so the checks run against the bench, against Linux's
+`i2c-stub`, against a board, or against a test's own double; the bench provides every hook.
+
+```rust
+/// What is behind a DDC bus, as far as the check needs to know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct DdcDevice<'d> {
+    /// The EDID the device serves, if the check should read and compare it.
+    pub edid: Option<&'d [u8]>,
+    /// Whether the device has an E-DDC segment pointer (`false`: segment 0 is read without
+    /// one, E-DDC 1.3 §8.1.2).
+    pub segment_pointer: bool,
+    /// An address the capabilities reach where nothing answers, for the `NoAcknowledge`
+    /// point.
+    pub silent: Option<u8>,
+}
+// DdcDevice::new(), with const `with_edid`, `without_segment_pointer`, `with_silent`.
+
+pub struct DdcBusCheck<'d> { /* the device */ }
+impl<'d> DdcBusCheck<'d> {
+    pub const fn new(device: DdcDevice<'d>) -> Self;
+    pub fn run<B: DdcBus + ?Sized>(&self, bus: &B) -> Report<DdcBusFailure>;
+    #[cfg(feature = "std")]   // concurrent calls from `threads` (> 0) threads, without a panic
+    pub fn run_threads<B: DdcBus + Sync + ?Sized>(&self, bus: &B, threads: usize)
+        -> Report<DdcBusFailure>;
+    #[cfg(feature = "async")]
+    pub async fn run_async<B: hdmi_hal_async::ddc::DdcBus + ?Sized>(&self, bus: &B)
+        -> Report<DdcBusFailure>;
+}
+
+/// The SCDC registers whose values the check knows and that hold still while it runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScdcImage { /* 256 × Option<u8> */ }
+// ScdcImage::new(), `with(reg, value)`; `ScdcImage::of(&bench)`: the bench's registers but
+// the ones that change by themselves (status and update flags, the error counters).
+
+/// Makes the next transfer fail, so a check can see what follows an error.
+pub trait FailNext {
+    fn fail_next(&self, kind: DdcErrorKind) -> bool; // whether it could
+    fn withdraw(&self) {}                             // a failure no transfer took
+}
+// Implemented for `Bench` (a scheduled fault on the next operation; `false` when the schedule
+// is full). A failure the hook cannot arm is the setup's: `ScdcTransportFailure::NotArmed`.
+
+pub struct ScdcTransportCheck<'i> { /* the image; an optional `&dyn FailNext` */ }
+impl<'i> ScdcTransportCheck<'i> {
+    pub const fn new(image: &'i ScdcImage) -> Self;
+    pub const fn with_faults(self, faults: &'i dyn FailNext) -> Self;
+    pub const fn with_write(self, reg: u8, value: u8) -> Self; // a register safe to write
+    pub fn run<T: ScdcTransport + ?Sized>(&self, transport: &mut T)
+        -> Report<ScdcTransportFailure>;
+    // run_async with the `async` feature, over hdmi-hal-async's `ScdcTransport`.
+}
+
+/// What the PHY transmits: what the traits cannot show. Handed the PHY, so a PHY that knows
+/// its own output is probed by a type that reads it.
+pub trait OutputProbe<P: ?Sized> {
+    /// `Some(Line::Off)` when nothing; `None` when it cannot tell, and the points that need
+    /// it are then skipped.
+    fn line(&self, phy: &P) -> Option<Line>;
+}
+// Implemented for `Bench` (its line, whichever PHY drives it) and `NoProbe` (`None`).
+
+pub struct PhyCheck<'p, R: ?Sized> { /* a configuration the PHY can do, an optional FRL rate, the probe */ }
+impl<'p, R: ?Sized> PhyCheck<'p, R> {
+    pub const fn new(config: TmdsPhyConfig, probe: &'p R) -> Self;
+    pub const fn with_frl_rate(self, rate: HdmiForumFrl) -> Self;
+    /// `TmdsPhy` alone: the points that need no power or FRL.
+    pub fn run_tmds<P>(&self, phy: &mut P) -> Report<PhyFailure>
+    where P: TmdsPhy + ?Sized, R: OutputProbe<P>;
+    /// With `PhyPower`: the power points too.
+    pub fn run_powered<P>(&self, phy: &mut P) -> Report<PhyFailure>
+    where P: TmdsPhy + PhyPower + ?Sized, R: OutputProbe<P>;
+    /// With `FrlPhy`: the mode rule too (needs `with_frl_rate`).
+    pub fn run_frl<P>(&self, phy: &mut P) -> Report<PhyFailure>
+    where P: TmdsPhy + PhyPower + FrlPhy + ?Sized, R: OutputProbe<P>;
+    // The async forms with the `async` feature.
+}
+```
+
+- **The device and the image are the caller's word.** The checks do not discover them: a
+  test on the bench builds the bench from the same values (or takes `ScdcImage::of`), and
+  a test against `i2c-stub` or a board states what it set up there. A point whose
+  description is missing (no EDID given, no silent address) is skipped, not failed.
+- **The `DdcBus` check drives only what is safe on a real device:** the refusals it checks
+  are reads, or writes to the silent address or past `write_max` there, so a backend that
+  wrongly lets one through writes nothing that matters; the only other write is an offset
+  byte to 0x50, which a display takes as its word offset (E-DDC 1.3 §6.1). The data points
+  read the EDID at offsets 0, 0x11, 0x20, 0x40 and 128, so a bus that drops an offset or a
+  write reads the wrong bytes. The read at the current address follows the write of its
+  offset, so `run_threads` leaves it out.
+- **The PHY's errors are `Debug` only**, so its failures say which point failed and how
+  (`Failed` where the contract says it succeeds, `Succeeded` where it says it fails,
+  `Running { expected, found }` and `Line { found }` from the probe), not why. Once the
+  output runs, the probe's line must be TMDS at the configuration's rate and ratio,
+  scrambled as `set_scrambling` last said where it has been called while running, or FRL
+  at the rate entered. The configuration is the caller's: one the PHY can do.
+- **Failure types** follow the clock check's: `#[non_exhaustive]` enums naming the point
+  (`DdcBusFailure`, `ScdcTransportFailure`, `PhyFailure`), `Copy`, with `Display`.
 
 ---
 
@@ -454,8 +1343,14 @@ described, the PHY probe's type, the report type, and the async forms.
 
 - **`std`:** critical-section's `std` implementation, and the concurrent-call `DdcBus`
   check (threads). Not a default feature, as across the stack: a host test enables it.
-- **`async`:** hdmi-hal-async's traits and their `Send` twins on the same handles; the
-  cancellation harness when it comes.
+- **`async`:** hdmi-hal-async's traits on the same handles: `Ddc` implements `SendDdcBus`,
+  `Time` `SendDelay`, and `Phy` `SendTmdsPhy`, `SendFrlPhy` and `SendPhyPower`, and the
+  plain async traits come through hdmi-hal-async's blanket implementations. The bench is
+  synchronous: each async method runs its sync counterpart when its future is first
+  polled, and the future is then ready, so an async procedure runs with any executor and
+  its futures are `Send`. hdmi-hal-async is re-exported as `maquette::hdmi_hal_async`.
+  `Coupled<P>` stays synchronous: an async PHY coupled to the line would need a coupling of
+  its own. The planned cancellation harness comes with this feature.
 - **`embedded-hal`** (planned): the message-level sink.
 
 CI builds each `no_std` feature set for a bare target (`thumbv7em-none-eabi`): a host build
@@ -467,12 +1362,28 @@ without `std` does not prove `no_std`, because `std` is still available to depen
 
 See [`testing.md`](testing.md). maquette's own tests check its implementations against the
 conformance checks, the checks' negative cases against broken doubles, and the sink's rules
-against the sources above. A fuzz target drives the bench with arbitrary sequences of bus and
-PHY calls, line changes, faults, controls and clock advances, and checks the invariants a
-simulator must keep: the same input gives the same transcript; nothing panics and no
-arithmetic overflows; the status is set only under the coupling's conditions; registers the
-sink owns change only by the sink's rules; the segment pointer never outlives its command
-sequence.
+against the sources above.
+
+A fuzz target, its bench holding 4096 records so that none overflows (it asserts so), drives
+the bench with arbitrary sequences of bus calls, PHY calls, line changes, HPD, plug and
+adapter changes, presets, faults, scheduled actions and clock advances, on a sink whose
+settings and bus capabilities the input also chooses. It decodes
+the input bytes itself, as the stack's other fuzz targets do. After every action it checks
+the invariants a simulator must keep:
+
+- the same input gives the same transcript (the input is run twice);
+- nothing panics and no arithmetic overflows (the target builds with overflow checks; the
+  budget is off and the input bounds the actions);
+- `Scrambling_Status` is set only while `Scrambling_Enable` is set and the line is
+  scrambled TMDS at the matching ratio, and that ratio fits the rate (the input presets any
+  register but the status; its lines include ratios that do not fit);
+- once the lock's conditions have held for a time trigger, the status is set: for sinks
+  neither strict nor refusing, after an advance or a delay, with HPD high (the input picks
+  each register group's HPD reset);
+- no `Register` event changes a register the sink owns by `Actor::Source`;
+- the segment pointer never outlives its command sequence: every EDID read at 0x50 that
+  succeeds reads segment 0;
+- the transcript's times never go backwards.
 
 ---
 
@@ -519,13 +1430,27 @@ Driver source read at these commits; line numbers refer to them.
 | [4] | Displays that refuse to set the scrambling bit right away | DRM helper `drivers/gpu/drm/display/drm_hdmi_helper.c:521–523` |
 | [5] | The sink disabling scrambling without a scrambled clock within 100 ms | i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2767–2770` |
 | [6] | Restoring `TMDS_Config` when the sink may have lost it | i915, vc4 and the DRM helper (one lineage) `drivers/gpu/drm/i915/display/intel_ddi.c:4851–4880`, `drivers/gpu/drm/vc4/vc4_hdmi.c:276–354`, `drivers/gpu/drm/display/drm_hdmi_helper.c:640–641` (the sink's SCDC status "is reset and must be explicitly restored"); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:5053–5062`, `4786–4796` |
-| [7] | `Source_Version` and `Sink_Version` | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:592–600` (when `Sink_Version` is 1); Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:322–350`; dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:2112–2115`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–806` |
-| [8] | `FLT_update` cleared by writing it back as 1 | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:178–200`; Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:446–463` |
+| [7] | `Source_Version` and `Sink_Version` | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:592–600` (when `Sink_Version` is 1); Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:322–350`; dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:2112–2115`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:789–807` (a failed write: a sink without SCDC) |
+| [8] | Update flags cleared by writing them back as 1 | amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:178–200` (`FLT_update`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:446–463` (`FLT_update`), `hdmitx21/hdmi_tx_scdc.c:106–107` (`Status_update`, `CED_update`, `RSED_update`) |
+| [9] | The SCDC register map: addresses, bits, and which registers the source writes | Linux `include/drm/display/drm_scdc.h:27–85`; amdgpu `drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h:58–65`, `dc/link/protocols/link_ddc.c:602–609`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:41–49`, `645–669`, `719–743`, `790`, `870`; Amlogic `drivers/media/vout/hdmitx21/hw/hdmi_tx_ddc.h:16–56` (the source's registers marked `RW`) |
+| [10] | 1/40 and scrambling above 340 Mcsc, 1/10 at or below | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:262–267` (comment); i915 `drivers/gpu/drm/i915/display/intel_hdmi.c:2437–2440` (`port_clock > 340000`); amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_ddc.c:575`, `604–605` (`pix_clk > 340000` writes `TMDS_Config` 3); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:740–743` (the ratio bit above 3.4 Gbps) |
+| [11] | A ratio change: suspend, write `TMDS_Bit_Clock_Ratio`, resume 1 to 100 ms after | Linux's SCDC helper `drivers/gpu/drm/display/drm_scdc_helper.c:300–305` (waits 1–2 ms after the write); dw-hdmi `drivers/gpu/drm/bridge/synopsys/dw-hdmi.c:1407–1419`; Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_main.c:510–517` |
+| [12] | The sink's test and manufacturer registers | `Source_Test_Configuration` (0x35) read by the source: amdgpu `drivers/gpu/drm/amd/display/dc/link/protocols/link_hdmi_frl.c:58`, `98`, `220`, `310`; Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1_frl.c:360`, `538` (`xv_hdmitx1_hw.h:44`); Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_scdc.c:198–200`, and not marked `RW` in `hw/hdmi_tx_ddc.h:56`. Amlogic marks 0xC0 and 0xDE–0xFF `RW` (`hw/hdmi_tx_ddc.h:85`, `93`), not 0xD0–0xDD |
+| [13] | What the sink resets around HPD | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:740–765` (lowering HPD resets FRL, raising it clears `FRL_Rate`), `xv_hdmirx1_frl.c:76`, `1480–1502` (the reset clears `TMDS_Config` bits 1:0, in FRL builds), `xv_hdmirx1_intr.c:1168–1182` (the cable's 5 V lost clears all of SCDC); Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw.c:2045–2069`, `2854–2870` (SCDC cleared on T7 and later chips, or the HPD state handed to the IP's SCDC block), called with HPD low from `hdmi_rx_wrapper.c:3663`, `4794–4797` |
+| [14] | DDC at 100 kHz | i915 `drivers/gpu/drm/i915/display/intel_gmbus.c:960–961` ("a conservative clock rate"); Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:1580` (the DDC clock divider) |
+| [15] | The status flags and `Status_Update` | the bits: Linux `include/drm/display/drm_scdc.h:55–64`, `drivers/gpu/drm/display/drm_scdc_helper.c:354–357`; Amlogic's receiver `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4647` (comment), `4736–4744` (bits 0–3 all set: TMDS locked); set by the receiver's hardware, waited on in FRL training: Amlogic's receiver `hdmi_rx_hw_t3x.c:4645–4662`, Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:82`, `xv_hdmirx1_intr.c:2152–2162`; read only on `Status_Update`, which is then cleared: Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:88–112`; read regardless: Linux `drm_scdc_helper.c:440–478`, Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:886–903` |
+| [16] | The character error counters | the checksum over 0x50–0x56 at 3 lanes and the valid bit: Linux `drivers/gpu/drm/display/drm_scdc_helper.c:383–412`, Amlogic `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:38–77`; saturation at 0x7FFF and `CED_Update`'s and `RSED_Update`'s check: Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`, `2410–2436`; the 4-lane checksum over 0x50–0x58: Linux `drm_scdc_helper.c:383–412`, Amlogic `drivers/media/vout/hdmitx21/hdmi_tx_scdc.c:31–37`; lane 3 and the corrections' registers: Linux `include/drm/display/drm_scdc.h:31–36`, `81–85`, `drm_scdc_helper.c:474–476`; reading clears the counts, in a source's comments: Xilinx `XilinxProcessorIPLib/drivers/v_hdmitx1/src/xv_hdmitx1.c:2979`; the whole map read for debugging: Linux `drm_scdc_helper.c:440–478` |
+| [17] | The sink's side of FRL link training | Xilinx's receiver `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:147–254` (`FLT_ready`, LTS:L and LTS:2), `398–412` (the pass), `557–559` (`FRL_start` cleared), `588–596` (no requests before the clear), `616–640` (`FRL_start`), `775–782` and `1112–1175` (requests and `FLT_update`, 0xF, the patterns again after 0xE), `49–58` and `440–547` (the LTS:3 timeouts, 0xE and 0xF), `xv_hdmirx1_intr.c:2088–2100` (a rate write starts LTS:3), `2153–2165` (lane locks); Amlogic's receiver `hdmi_rx_hw.c:864–879` (the clear waited for up to 100 ms), `hdmi_rx_hw_t3x.c:4454–4576` (error counts only logged), `4770–4800` (the pass posted after them), `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4302–4303` (`FLT_ready`), `4774–4777` (`FRL_start` cleared, LFSR 0–3, `FLT_update`), `4778`, `4795` (waits for the clear), `4591–4601` (the pass), `hdmi_rx_wrapper.c:6692–6719` (rate 0 is TMDS; `FRL_start` once synchronised) |
 
 Standards (VESA, public):
 
 - **E-DDC 1.3:** the segment pointer (§2.2.5) and its reset on NACK or STOP (§8.1.1,
   Table 9-1); a display without one (§8.1.2, §9.5.1); the current-address read (§6.1);
-  segments (§6.4–§6.5); reading across 128 bytes (§2.2.6); the EDID readable with the
-  display powered off (§9.2, §9.5.3).
-- **DDC/CI 1.1:** I²C standard mode, at most 100 kHz.
+  segments (§6.4–§6.5); reading across 128 bytes (§2.2.6); the EDID available whenever +5 V
+  is present (§4.2.2), and readable with the display powered off (§9.2, §9.5.3).
+- **DDC/CI 1.1:** I²C standard mode, 100 kHz, assumed in its examples; fast mode (400 kHz)
+  and high-speed mode not precluded.
+
+Standards (DDWG, public):
+
+- **DVI 1.0:** HPD high only while the EDID can be read (§2.2.9.2).
