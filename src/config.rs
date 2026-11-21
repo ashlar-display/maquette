@@ -595,8 +595,8 @@ pub enum StatusUpdate {
 /// Reed-Solomon corrections, which it keeps until the source clears them. One public
 /// receiver sets both from a check once a second: when a valid count has risen by at least
 /// 4 since the last check, or has just reached 0x7FFF (Xilinx embeddedsw `97f2baf7f69e`,
-/// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`, `2410–2436`);
-/// Intel documents a receiver that did not set it on errors (knowledge base 000087546).
+/// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2303–2345`, `2410–2436`); no
+/// second source shows when, or whether, a receiver sets them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CedUpdate {
@@ -687,9 +687,11 @@ pub enum RegisterGroup {
     /// `Config_0` (0x30) and `Config_1` (0x31).
     Config,
     /// The character error counters, their checksum and the Reed-Solomon corrections
-    /// (0x50–0x5A). A receiver resets them on HPD low to high or power-off (LG,
-    /// EP 3 160 152 A1, paragraph 0064), or with all of SCDC (Xilinx embeddedsw `97f2baf7f69e`,
-    /// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_intr.c:1181–1182`).
+    /// (0x50–0x5A). The public receivers reset them with all of SCDC: Xilinx's when the
+    /// cable's 5 V is lost (embeddedsw `97f2baf7f69e`,
+    /// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_intr.c:1181–1182`), Amlogic's
+    /// with HPD low (github.com/CoreELEC/common_drivers `8ca9b6c3b715`,
+    /// `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw.c:2045–2069`).
     ErrorCounters,
 }
 
