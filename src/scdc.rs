@@ -23,8 +23,8 @@ use hdmi_hal::phy::TmdsClockRatio;
 use hdmi_hal::time::Timestamp;
 
 use crate::config::{
-    CedRead, CedUpdate, DuringHpdLow, DuringRead, HpdReset, OwnedWrite, Refusal, RefusalKind,
-    RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Trigger,
+    CedRead, CedUpdate, DuringHpdLow, DuringRead, FrlPass, HpdReset, OwnedWrite, Refusal,
+    RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Trigger,
 };
 use crate::hook::{HookWrite, ScdcHook, ScdcRegisters};
 use crate::line::{ErrorRates, Line, LinkLanes, RATIO_40_ABOVE_KHZ};
@@ -65,6 +65,9 @@ const LTP_REQ_23: u8 = 0x42;
 const LTP_RATE_CHANGE: u8 = 0xF;
 /// The request for another TxFFE level.
 const LTP_FFE_CHANGE: u8 = 0xE;
+/// How long a sink with [`FrlPass::Unchecked`] waits for the source to clear `FLT_update`
+/// before it goes on: Amlogic's `HZ / 10` (`hdmi_rx_hw.c:864–879`).
+const FLT_CLEAR_WAIT: Duration = Duration::from_millis(100);
 /// The most `FFE_Levels` (`Config_1` bits 7:4) the LTS:3 timeouts count.
 const FFE_LEVELS_MAX: u8 = 3;
 /// `Source_Test_Configuration` bit 5: `FLT_no_timeout`.
@@ -211,11 +214,11 @@ fn role(reg: u8) -> Role {
 /// counters sees them at the transaction's start, or with [`DuringRead::Moving`] each byte
 /// at its own moment; with [`CedRead::ClearOnRead`] reading a lane's high byte clears it.
 ///
-/// FRL link training, for a sink with a maximum FRL rate. Settled by both public receivers
+/// FRL link training, for a sink with a maximum FRL rate, after the two public receivers
 /// (Xilinx embeddedsw `97f2baf7f69e`, `XilinxProcessorIPLib/drivers/v_hdmirx1/src/`
 /// `xv_hdmirx1_frl.c` and `xv_hdmirx1_intr.c`; Amlogic, github.com/CoreELEC/common_drivers
-/// `8ca9b6c3b715`, `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c` and
-/// `hdmi_rx_wrapper.c`):
+/// `8ca9b6c3b715`, `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c`, `hdmi_rx_hw.c` and
+/// `hdmi_rx_wrapper.c`). Settled by both:
 ///
 /// - `FLT_ready` is set from the start, and again after a reset clears it (Xilinx
 ///   `xv_hdmirx1_frl.c:183–254`; Amlogic `hdmi_rx_hw_t3x.c:4302–4303`).
@@ -226,19 +229,32 @@ fn role(reg: u8) -> Role {
 ///   `FLT_update` (Xilinx `1112–1175`; Amlogic `4775–4777`). A rate above its maximum, or a
 ///   value naming no rate, it answers with 0xF on every lane, a request for a lower rate
 ///   (*chosen*, after Xilinx).
+/// - The pass is 0 on every lane, with `FLT_update` (Xilinx `398–412`; Amlogic
+///   `4591–4601`, `4792–4794`); `FRL_start` follows it in LTS:P (Xilinx `616–640`; Amlogic
+///   `hdmi_rx_hw_t3x.c:4717–4724`, `hdmi_rx_wrapper.c:6710–6719`).
+///
+/// What comes before the pass and `FRL_start`, the two differ on: [`FrlPass`], a setting.
+/// With [`FrlPass::Patterns`], the default after Xilinx (*chosen*: the least forgiving):
+///
 /// - Once the source has cleared `FLT_update` (the sink posts nothing before: Xilinx
-///   `588–596`; Amlogic `4778`), and each active lane has carried its requested pattern on
-///   the line at the rate, within the link's [`LaneLimits`](crate::LaneLimits), for the lock
-///   trigger (*chosen*: no source gives the time), the sink posts 0 on every lane, the
-///   pass, with `FLT_update` (Xilinx `398–412`; Amlogic `4591–4601`, `4792–4794`). A lane
-///   requested 0 needs nothing.
+///   `588–596`), and each active lane has carried its requested pattern on the line at the
+///   rate, within the link's [`LaneLimits`](crate::LaneLimits), for the lock trigger
+///   (*chosen*: no source gives the time), the sink posts the pass. A lane requested 0 needs
+///   nothing.
 /// - After the pass, the lanes lock once the line is FRL at the rate without patterns and
 ///   the lock trigger has passed: `Status_Flags_0` bits 1–3, and bit 4 at 4 lanes. Once
 ///   they are locked and the source has cleared `FLT_update`, the sink sets `FRL_start`
-///   (Xilinx `616–640`, `xv_hdmirx1_intr.c:2153–2165`; Amlogic `hdmi_rx_wrapper.c:6710–6719`).
-/// - Lanes that do not pass in time: [`SinkConfig::with_lts3_timeout`]'s attempts, 0xE on
-///   the lanes not passing, then 0xF on every lane (*chosen*, after Xilinx `440–547`; once
-///   0xE is cleared, the patterns are requested again: `1118–1135`).
+///   (Xilinx `xv_hdmirx1_intr.c:2153–2165`).
+///
+/// With [`FrlPass::Unchecked`], after Amlogic, the sink waits up to 100 ms for each clear
+/// (`hdmi_rx_hw.c:864–879`) and checks nothing else: the pass after the lock trigger
+/// whatever the lanes carry (its BIST counts only logged, `hdmi_rx_hw_t3x.c:4454–4576`),
+/// `FRL_start` whatever the line carries (`hdmi_rx_wrapper.c:6711–6719`). The lanes still
+/// lock as above, and there are no LTS:3 timeouts. Further:
+///
+/// - With `Patterns`, lanes that do not pass in time: [`SinkConfig::with_lts3_timeout`]'s
+///   attempts, 0xE on the lanes not passing, then 0xF on every lane (*chosen*, after Xilinx
+///   `440–547`; once 0xE is cleared, the patterns are requested again: `1118–1135`).
 /// - `FRL_Rate` 0 returns to legacy: the requests are cleared (Xilinx `183–224`). So does a
 ///   reset of the status group, which loses the requests (*chosen*).
 ///
@@ -317,6 +333,9 @@ pub(crate) struct Scdc {
     timeouts: u32,
     ffe_levels: u8,
     lanes_seen: LinkLanes,
+    /// What the sink checks before it passes, and when it last set `FLT_update`.
+    frl_pass: FrlPass,
+    update_set_at: Timestamp,
     /// When HPD went low, while it is low, and which groups this low has reset.
     hpd_low_since: Option<Timestamp>,
     reset_done: [bool; RegisterGroup::COUNT],
@@ -385,6 +404,8 @@ impl Scdc {
             timeouts: 0,
             ffe_levels: 0,
             lanes_seen: LinkLanes::NONE,
+            frl_pass: config.frl_pass,
+            update_set_at: Timestamp::from_micros(0),
             hpd_low_since: None,
             reset_done: [false; RegisterGroup::COUNT],
         })
@@ -465,8 +486,25 @@ impl Scdc {
             }
         }
         let flags = self.get(UPDATE_0);
-        if update && flags & FLT_UPDATE == 0 {
-            self.set(UPDATE_0, flags | FLT_UPDATE, Actor::Sink, env);
+        if update {
+            self.update_set_at = env.now();
+            if flags & FLT_UPDATE == 0 {
+                self.set(UPDATE_0, flags | FLT_UPDATE, Actor::Sink, env);
+            }
+        }
+    }
+
+    /// Whether the sink goes on past the `FLT_update` it last set, at `now`: once the source
+    /// has cleared it, or with [`FrlPass::Unchecked`], once the wait for it is over. The
+    /// moment it went on, if it was the wait's end.
+    fn past_flt_update(&self, now: Timestamp) -> (bool, Option<Timestamp>) {
+        if self.get(UPDATE_0) & FLT_UPDATE == 0 {
+            return (true, None);
+        }
+        let waited = self.update_set_at.checked_add(FLT_CLEAR_WAIT);
+        match waited {
+            Some(end) if self.frl_pass == FrlPass::Unchecked && end <= now => (true, Some(end)),
+            _ => (false, None),
         }
     }
 
@@ -516,6 +554,9 @@ impl Scdc {
         let Some(budget) = self.lts3_timeout else {
             return;
         };
+        if self.frl_pass == FrlPass::Unchecked {
+            return;
+        }
         let no_timeout = self.get(SOURCE_TEST_CONFIGURATION) & FLT_NO_TIMEOUT != 0;
         let no_retrain = self.get(CONFIG_0) & FLT_NO_RETRAIN != 0;
         if no_timeout || no_retrain {
@@ -572,13 +613,18 @@ impl Scdc {
         }
         let posted = self.posted();
         let limits = env.lane_limits();
-        let matches = cleared
+        let (past, waited_until) = self.past_flt_update(now);
+        let lanes_pass = match self.frl_pass {
+            FrlPass::Unchecked => true,
+            _ => (0..frl_lanes(rate))
+                .all(|lane| Self::lane_passes(lane, rate, posted, self.line, limits)),
+        };
+        let matches = past
             && !posted
                 .iter()
                 .any(|&request| matches!(request, LTP_FFE_CHANGE | LTP_RATE_CHANGE))
-            && (0..frl_lanes(rate))
-                .all(|lane| Self::lane_passes(lane, rate, posted, self.line, limits));
-        let match_from = matches.then(|| self.match_from.unwrap_or(now));
+            && lanes_pass;
+        let match_from = matches.then(|| self.match_from.or(waited_until).unwrap_or(now));
         if match_from != self.match_from {
             self.match_from = match_from;
             self.match_reads = 0;
@@ -611,7 +657,11 @@ impl Scdc {
             return;
         };
         let update = self.get(UPDATE_0);
-        if update & FLT_UPDATE == 0 && self.flags & LANES_LOCKED != 0 {
+        let start = match self.frl_pass {
+            FrlPass::Unchecked => self.past_flt_update(env.now()).0,
+            _ => update & FLT_UPDATE == 0 && self.flags & LANES_LOCKED != 0,
+        };
+        if start {
             self.training = Training::Started { rate };
             self.set(UPDATE_0, update | FRL_START, Actor::Sink, env);
         }

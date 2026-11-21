@@ -5,8 +5,8 @@ use core::time::Duration;
 
 use maquette::hdmi_hal::ddc::SCDC;
 use maquette::{
-    Action, Bench, CedRead, DdcBus, DuringRead, EqParams, ErrorRates, Event, FrlOutput, FrlPhy,
-    HdmiForumFrl, HpdReset, LaneLimits, LanePatterns, LinkLanes, LtpPattern, RegisterGroup,
+    Action, Bench, CedRead, DdcBus, DuringRead, EqParams, ErrorRates, Event, FrlOutput, FrlPass,
+    FrlPhy, HdmiForumFrl, HpdReset, LaneLimits, LanePatterns, LinkLanes, LtpPattern, RegisterGroup,
     SinkConfig, Trigger, TxFfeLevel, When,
 };
 
@@ -691,4 +691,68 @@ fn the_last_timeout_asks_for_no_lower_rate_when_every_lane_passes() {
     assert_eq!(training(&bench), (0, 0x65, 0x87), "no lower-rate request");
     bench.advance(MS);
     assert_eq!(training(&bench), (0x20, 0, 0));
+}
+
+const UNCHECKED_SINK: SinkConfig = FRL_SINK.with_frl_pass(FrlPass::Unchecked);
+
+#[test]
+fn an_unchecked_sink_passes_whatever_the_lanes_carry() {
+    assert_eq!(FRL_SINK.frl_pass(), FrlPass::Patterns);
+    assert_eq!(UNCHECKED_SINK.frl_pass(), FrlPass::Unchecked);
+    let bench = Bench::new(UNCHECKED_SINK, &[]).unwrap();
+    let mut phy = bench.phy();
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
+    // No patterns sent; once the source clears FLT_update, the pass comes.
+    clear_flt_update(&bench);
+    bench.advance(MS);
+    assert_eq!(training(&bench), (0x20, 0, 0));
+    // FRL_start once cleared, though the lanes carry patterns and are not locked.
+    phy.send_ltp(REQUESTED).unwrap();
+    clear_flt_update(&bench);
+    assert_eq!(training(&bench).0 & 0x30, 0x10);
+    assert_eq!(bench.sink().status_flags_0().unwrap() & 0x1E, 0);
+}
+
+#[test]
+fn an_unchecked_sink_gives_up_waiting_for_the_clear_after_100_ms() {
+    let bench = Bench::new(UNCHECKED_SINK, &[]).unwrap();
+    let start = bench.now();
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    // The source never clears FLT_update.
+    advance_to(&bench, start, 95);
+    assert_eq!(training(&bench), (0x20, 0x65, 0x87));
+    advance_to(&bench, start, 105);
+    // The pass, 100 ms after the requests plus the lock trigger, its FLT_update still set.
+    assert_eq!(training(&bench), (0x20, 0, 0));
+    // FRL_start 100 ms after the pass.
+    advance_to(&bench, start, 195);
+    assert_eq!(training(&bench).0 & 0x10, 0);
+    advance_to(&bench, start, 210);
+    assert_eq!(training(&bench).0 & 0x10, 0x10);
+}
+
+#[test]
+fn an_unchecked_sink_has_no_lts3_timeouts_and_still_refuses_a_rate_above_its_maximum() {
+    let bench = Bench::new(UNCHECKED_SINK, &[]).unwrap();
+    bench.set_lane_limits(LinkLanes::all(LaneLimits {
+        min_tx_ffe: TxFfeLevel::MAX,
+        ..LaneLimits::NONE
+    }));
+    // Three FFE levels: a checking sink would ask for another TxFFE level at 45 ms; this
+    // one waits out its 100 ms and passes.
+    let start = bench.now();
+    bench.ddc().write(SCDC, &[0x31, 0x33]).unwrap();
+    advance_to(&bench, start, 60);
+    assert_eq!(training(&bench), (0x20, 0x65, 0x87), "no 0xE");
+    advance_to(&bench, start, 105);
+    assert_eq!(training(&bench), (0x20, 0, 0), "the pass");
+    let config = SinkConfig::new()
+        .with_max_frl_rate(Some(HdmiForumFrl::Rate6Gbps4Lanes))
+        .with_frl_pass(FrlPass::Unchecked);
+    let bench = Bench::new(config, &[]).unwrap();
+    bench.ddc().write(SCDC, &[0x31, 0x06]).unwrap();
+    clear_flt_update(&bench);
+    bench.advance(Duration::from_millis(300));
+    assert_eq!(training(&bench), (0, 0xFF, 0xFF));
 }

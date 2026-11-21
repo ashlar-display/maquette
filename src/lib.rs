@@ -61,7 +61,7 @@ pub use bench::{
 };
 pub use clock::SimClock;
 pub use config::{
-    BlockBoundary, CedRead, CedUpdate, DuringHpdLow, DuringRead, HpdReset, MissingSegment,
+    BlockBoundary, CedRead, CedUpdate, DuringHpdLow, DuringRead, FrlPass, HpdReset, MissingSegment,
     OwnedWrite, PastStore, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig,
     StatusUpdate, Trigger,
 };

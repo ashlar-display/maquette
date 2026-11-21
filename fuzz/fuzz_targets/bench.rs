@@ -26,7 +26,7 @@ use libfuzzer_sys::fuzz_target;
 use maquette::{
     Action, Actor, Bench, BlockBoundary, CedRead, CedUpdate, Clock, ColorBitDepth, ColorFormat,
     DdcBus, DdcCapabilities, DdcErrorKind, Delay, DuringHpdLow, DuringRead, EddcTarget, Effect,
-    EqParams, ErrorRates, Event, Fault, Filter, FrlOutput, FrlPhy, HdmiForumFrl, HpdReset,
+    EqParams, ErrorRates, Event, Fault, Filter, FrlOutput, FrlPass, FrlPhy, HdmiForumFrl, HpdReset,
     LaneEqParams, LaneLimits, LanePatterns, Line, LinkLanes, LtpPattern, MissingSegment,
     NoAcknowledgeSource, OpKind, OwnedWrite, PastStore, PhyCallKind, PhyFault, PhyPower, Point,
     Record, Refusal, RefusalKind, RegisterGroup, ScdcPastEnd, SinkConfig, StatusUpdate, Times,
@@ -233,6 +233,9 @@ impl Input<'_> {
         }
         if c & (1 << 15) != 0 {
             config = config.with_max_frl_rate(Some(HdmiForumFrl::Rate6Gbps4Lanes));
+        }
+        if b & 0x02 != 0 {
+            config = config.with_frl_pass(FrlPass::Unchecked);
         }
         config = config.with_past_store(if b % 2 == 0 {
             PastStore::Fill

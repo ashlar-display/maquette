@@ -88,8 +88,8 @@ implementations of hdmi-hal's traits.
   the strict sink (output started after the write, and 1 ms after a ratio change),
   refusals, the enable timeout (100 ms by default, from the write that set
   `Scrambling_Enable` or changed the ratio), the HPD resets, `Status_Update`, `CED_Update`,
-  clear on read, the registers during a read, the maximum FRL rate, the LTP requests and the
-  LTS:3 timeout. Each default is sourced or marked *chosen*, the least forgiving where
+  clear on read, the registers during a read, the maximum FRL rate, the LTP requests, the
+  LTS:3 timeout and what the sink checks before it passes. Each default is sourced or marked *chosen*, the least forgiving where
   sources differ.
 - **FRL link training, the sink's side:** a sink with a maximum FRL rate sets `FLT_ready`;
   a write of `FRL_Rate` clears `FRL_start` and posts its LTP requests with `FLT_update`
@@ -97,7 +97,9 @@ implementations of hdmi-hal's traits.
   and every active lane has carried its pattern, it posts the pass; once the lanes lock on
   the source's FRL output, it sets `FRL_start`. `FRL_Rate` 0 returns to legacy. Lanes that
   do not pass within the LTS:3 timeout (180 ms by default, in `FFE_Levels` + 1 attempts)
-  are asked for another TxFFE level (0xE), then every lane for a lower rate (0xF).
+  are asked for another TxFFE level (0xE), then every lane for a lower rate (0xF). That is
+  `FrlPass::Patterns`, the default; `FrlPass::Unchecked` is a sink that waits up to 100 ms
+  for each clear and passes, and sets `FRL_start`, whatever the lanes carry.
 - **The character error counters (0x50–0x5A):** lanes 0–2, and lane 3 in 4-lane FRL,
   count the link's errors while locked, and the Reed-Solomon corrections count while the
   FRL lanes are; each saturates at 0x7FFF and is valid while counting, and the checksum

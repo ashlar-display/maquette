@@ -46,6 +46,7 @@ pub struct SinkConfig {
     pub(crate) max_frl_rate: Option<HdmiForumFrl>,
     pub(crate) ltp_requests: LanePatterns,
     pub(crate) lts3_timeout: Option<Duration>,
+    pub(crate) frl_pass: FrlPass,
 }
 
 impl SinkConfig {
@@ -79,6 +80,7 @@ impl SinkConfig {
                 lane3: Some(LtpPattern::Lfsr3),
             },
             lts3_timeout: Some(Duration::from_millis(180)),
+            frl_pass: FrlPass::Patterns,
         }
     }
 
@@ -318,6 +320,14 @@ impl SinkConfig {
         }
     }
 
+    /// What an FRL sink checks before it passes link training and sets `FRL_start`; by
+    /// default [`FrlPass::Patterns`] (*chosen*: the two public receivers differ, and it is
+    /// the least forgiving).
+    #[must_use]
+    pub const fn with_frl_pass(self, frl_pass: FrlPass) -> Self {
+        Self { frl_pass, ..self }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -426,6 +436,11 @@ impl SinkConfig {
     /// How long an FRL sink gives the lanes at a rate.
     pub const fn lts3_timeout(&self) -> Option<Duration> {
         self.lts3_timeout
+    }
+
+    /// What an FRL sink checks before it passes link training and sets `FRL_start`.
+    pub const fn frl_pass(&self) -> FrlPass {
+        self.frl_pass
     }
 }
 
@@ -631,6 +646,31 @@ pub enum DuringRead {
     /// read sees the counts as they were at that second, and its flag is set at the next
     /// bench event, as a check between events is. The default (*chosen*).
     Moving,
+}
+
+/// What an FRL sink checks before it passes link training and sets `FRL_start`. The two
+/// public receivers differ: Xilinx's checks the patterns on every lane, waits for the
+/// source to clear `FLT_update`, and sets `FRL_start` once the lanes lock (embeddedsw
+/// `97f2baf7f69e`, `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1_frl.c:398–412`,
+/// `588–596`, `616–640`); Amlogic's posts the pass whatever the lanes carry (its BIST error
+/// counts are only logged), gives up waiting for the clear after 100 ms, and sets
+/// `FRL_start` without the lanes in sync (github.com/CoreELEC/common_drivers
+/// `8ca9b6c3b715`, `drivers/media/vin/tvin/hdmirx/hdmi_rx_hw_t3x.c:4454–4576`, `4770–4800`,
+/// `hdmi_rx_hw.c:864–879`, `hdmi_rx_wrapper.c:6711–6719`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FrlPass {
+    /// The pass once the source has cleared `FLT_update` and each active lane has carried
+    /// its requested pattern, within the link's lane limits, for the lock trigger;
+    /// `FRL_start` once the lanes lock and the source has cleared the pass's `FLT_update`;
+    /// the LTS:3 timeouts for lanes that do not pass. After Xilinx (*chosen* default).
+    Patterns,
+    /// The pass once the source has cleared `FLT_update`, or 100 ms after it was set, and
+    /// the lock trigger has passed, whatever the lanes carry; `FRL_start` once the source
+    /// has cleared the pass's `FLT_update`, or 100 ms after it, whatever the line carries;
+    /// no LTS:3 timeouts. After Amlogic. A rate above the sink's maximum is still answered
+    /// with a request for a lower one.
+    Unchecked,
 }
 
 /// A group of SCDC registers that an HPD low resets together.
