@@ -295,8 +295,10 @@ pub(crate) struct Scdc {
     ced_update: CedUpdate,
     ced_read: CedRead,
     during_read: DuringRead,
-    /// The last `CED_Update` check, and the counts it saw.
+    /// The last `CED_Update` check, and the counts it saw; and the flags a check past the
+    /// event's time set (a byte's, under `DuringRead::Moving`), set at the next evaluation.
     checked_at: Timestamp,
+    pending_update: u8,
     ced_checked: [u64; 5],
     /// The highest `FRL_Rate` value the sink takes, 0 for none; the requests it posts first.
     max_frl: u8,
@@ -365,6 +367,7 @@ impl Scdc {
             ced_read: config.ced_read,
             during_read: config.during_read,
             checked_at: Timestamp::from_micros(0),
+            pending_update: 0,
             ced_checked: [0; 5],
             max_frl,
             ltp_requests: {
@@ -765,6 +768,13 @@ impl Scdc {
     /// flag (each rising counter's flag is set, or none rises), later checks change nothing
     /// but the counts they keep: they are skipped to the last.
     fn count_and_check(&mut self, env: &mut Env<'_>) {
+        if self.pending_update != 0 {
+            let update = self.get(UPDATE_0);
+            if update | self.pending_update != update {
+                self.set(UPDATE_0, update | self.pending_update, Actor::Sink, env);
+            }
+            self.pending_update = 0;
+        }
         self.count_and_check_to(env.now(), env);
     }
 
@@ -801,7 +811,7 @@ impl Scdc {
     fn check_can_set(&self, at: Timestamp) -> bool {
         let rates = self.counter_rates();
         let flags = self.flags_at(at);
-        let update = self.get(UPDATE_0);
+        let update = self.get(UPDATE_0) | self.pending_update;
         (0..COUNTERS.len()).any(|i| {
             let flag = if i == RS { RSED_UPDATE } else { CED_UPDATE };
             self.counting(i, flags)
@@ -873,6 +883,12 @@ impl Scdc {
                 set |= if i == RS { RSED_UPDATE } else { CED_UPDATE };
             }
             self.ced_checked[i] = count;
+        }
+        // A check past the event's time (a byte's within a read) sets its flags at the next
+        // evaluation, so no record runs ahead of the transaction's.
+        if at > env.now() {
+            self.pending_update |= set;
+            return;
         }
         let update = self.get(UPDATE_0);
         if update | set != update {

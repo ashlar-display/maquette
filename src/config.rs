@@ -623,8 +623,11 @@ pub enum DuringRead {
     /// changes (a clear on read) shows from the next bench event (*chosen* default).
     Held,
     /// Each byte is taken at its own moment, the transaction's start plus the bench's time
-    /// per byte for the bytes before it on the wire: a burst can see a count rise, or a
-    /// clear, between a lane's bytes or before the checksum, and read a torn value.
+    /// per byte for the bytes before it on the wire (its time per transaction comes after
+    /// them): a burst can see a count rise, or a clear, between a lane's bytes or before the
+    /// checksum, and read a torn value. A `CED_Update` check whose second falls within the
+    /// read sees the counts as they were at that second, and its flag is set at the next
+    /// bench event, as a check between events is.
     Moving,
 }
 

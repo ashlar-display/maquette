@@ -401,3 +401,33 @@ fn errors_count_from_the_lock_even_when_one_advance_spans_it() {
     // The checks at 1 s and 2 s saw the counts as they were at those seconds.
     assert!(ced_update(&bench));
 }
+
+#[test]
+fn a_check_within_a_moving_read_sets_its_flag_at_the_next_event() {
+    let config = SinkConfig::new().with_during_read(DuringRead::Moving);
+    let bench = locked(config);
+    bench.set_character_errors(FAST);
+    // The read starts just before the 1 s check, which falls within it.
+    let start = maquette::Timestamp::from_micros(999_700);
+    bench.advance(start.saturating_duration_since(bench.now()));
+    read_counters(&bench);
+    assert!(!ced_update(&bench), "not set within the read");
+    bench.advance(MS);
+    assert!(ced_update(&bench));
+    // Recorded at that event, at or after the check's second, never before it.
+    let set_at: Vec<u64> = bench
+        .transcript()
+        .filter_map(|record| match record.event {
+            Event::Register {
+                reg: 0x10,
+                from,
+                to,
+                by: Actor::Sink,
+                ..
+            } if from & 0x02 == 0 && to & 0x02 != 0 => Some(record.at.as_micros()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(set_at.len(), 1);
+    assert!(set_at[0] >= 1_000_000, "{set_at:?}");
+}
