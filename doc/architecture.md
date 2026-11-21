@@ -1,8 +1,6 @@
 # Architecture
 
-> **Design.** This document describes `maquette` as designed, before it is built; it becomes
-> the description of the released crate when the design ships. Points marked *To settle* are
-> decided when the part they belong to is built. Claims about HDMI behaviour cite at least
+> This document describes how `maquette` works. Claims about HDMI behaviour cite at least
 > two independent public implementations of HDMI sources, or say that they do not and are
 > settings (see "Sources").
 
@@ -1409,8 +1407,7 @@ the invariants a simulator must keep:
 
 ## What comes next
 
-The parts of this design in the order they are built, and what follows them, are on the
-[roadmap](roadmap.md).
+What is planned is on the [roadmap](roadmap.md).
 
 ---
 

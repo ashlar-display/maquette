@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The README, roadmap and `doc/architecture.md` describe the released crate**: the
+  README's status no longer says the crate is before its first release, its "Verifying
+  releases" section says how 0.1.0 and later releases were and are uploaded, and the
+  architecture document describes how the crate works rather than a design to be built.
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
