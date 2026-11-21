@@ -279,13 +279,15 @@ and is not charged; a faulted one is charged. A `read_segmented` that the bus sp
 pieces (`segmented_piece`) is several transfers, each charged, so something can change
 between pieces, which an EDID read has to catch.
 
-**Torn reads.** By default the sink holds its registers still during a transfer (*chosen*:
-sinks of both kinds exist, and no source settles which is common). A sink that does not is a
-setting, `DuringRead::Moving`: each byte read is then taken at its own moment, the
-transfer's start plus the bench's time per byte for the bytes before it on the wire. Only
-registers that change by themselves can tear: the CED counters, and FRL's LTP requests when
-they come. A backend that reads byte by byte makes a transaction of each, and time passes
-between them, so it can read torn values from a holding sink too.
+**Torn reads.** By default the sink's registers move during a transfer, `DuringRead::Moving`
+(*chosen*: no public source says whether a sink holds them still, and only a moving sink
+tears, the least forgiving): each byte read is taken at its own moment, the transfer's start
+plus the bench's time per byte for the bytes before it on the wire. A sink that holds them is
+the setting `DuringRead::Held`. Only registers that change by themselves between events can
+tear, the CED counters; the LTP requests change only at bench events, so a burst reads them
+whole. On a link without errors nothing moves. A backend that reads byte by byte makes a
+transaction of each, and time passes between them, so it can read torn values from a holding
+sink too.
 
 **The operation budget.** A bench counts every operation through its handles — bus calls,
 refused ones included, PHY calls, clock reads and delays — against a budget,
@@ -660,7 +662,7 @@ source settles is marked *chosen*.
 | Character error counters (0x50–0x5A): 15 bits a lane, bit 7 of the high byte valid, saturating at 0x7FFF; 0x56 a checksum, 0x50–0x56 summing to zero over 3 lanes, 0x50–0x58 over 4; lane 3 at 0x57–0x58, the Reed-Solomon corrections at 0x59–0x5A, in no checksum | the checksum and the valid bit settled [16]; saturation from one receiver [16]; no source says what makes a count valid | lanes 0–2 count the link's `ErrorRates` while locked, exactly (fractions carry over), and stop at 0x7FFF; valid while the lane is locked (*chosen*: an error-free locked link then reads 0x80 at 0x56, as a real sink did); lane 3 counts in 4-lane FRL, and the corrections (`ErrorRates::rs_corrections`) while the FRL lanes are locked (*chosen*: Linux reads them only in FRL); the checksum covers lane 3 when `Config_1`'s rate is a 4-lane one; `RSED_Update` follows `CED_Update`'s rule for the corrections; not recorded, as they move with time; a preset holds until the counts change |
 | `CED_Update` set from the counters | one receiver: checked once a second, set when a valid count rose by at least 4 since the last check or just reached 0x7FFF [16]; one receiver that did not set it on errors [16] | a setting: `CedUpdate::EverySecond { rise }` (*chosen* default, a rise of 4, checked at whole seconds on the bench's clock, each seeing the counts at its second and recorded at the bench event at or after it), or `Never` |
 | Reading a counter clears it | unresolved: one source's comments say reading clears the counts, its vendor's receiver keeps them, and Linux reads the whole map for debugging with no word of losing them [16] | a setting: `CedRead::Keep` (*chosen* default) or `ClearOnRead`, which clears a lane when its high byte, the second of its two, is read (*chosen*); the next `CED_Update` check measures its rise from 0 |
-| The counters during a read | both kinds of sink exist; no source settles which is common | a setting: `DuringRead::Held` (*chosen* default), a read sees them as at the transaction's start, and a clear shows from the next event; or `Moving`, each byte at its own moment (Torn reads, above) |
+| The counters during a read | no public source says whether a sink holds them still; the checksum is the source's protection | a setting: `DuringRead::Moving` (*chosen* default, the least forgiving), each byte at its own moment (Torn reads, above); or `Held`, a read sees them as at the transaction's start, and a clear shows from the next event |
 | An FRL sink: `FLT_ready` set before training | settled [17] | set from the start when `with_max_frl_rate` names a rate (`None` by default: a TMDS-only sink), and again after a reset clears it |
 | LTS:3 starts on a write of a non-zero `FRL_Rate`; `FRL_start` cleared; one request per lane in 0x41–0x42, LFSR patterns first, with `FLT_update` | settled [17]; which LFSR on which lane, one sink fixed, one configurable | every write of `Config_1` restarts it (*chosen*); the requests a setting, `with_ltp_requests`, by default LFSR 0–3 on lanes 0–3 |
 | A rate the sink cannot take | one receiver: 0xF on every lane [17] | 0xF on every lane for a rate above the maximum or a value naming none (*chosen*) |

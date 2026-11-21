@@ -57,7 +57,8 @@ fn an_error_free_locked_link_reads_valid_zero_counts() {
 
 #[test]
 fn errors_are_counted_per_lane_with_a_checksum() {
-    let bench = locked(SinkConfig::new());
+    // Held, so a burst reads the bytes the sink holds.
+    let bench = locked(SinkConfig::new().with_during_read(DuringRead::Held));
     bench.set_character_errors(ErrorRates {
         lane1: 1_000,
         lane2: 300_000,
@@ -313,7 +314,7 @@ const FAST: ErrorRates = ErrorRates {
 
 #[test]
 fn a_held_burst_reads_the_counters_as_they_were_at_its_start() {
-    let bench = locked(SinkConfig::new());
+    let bench = locked(SinkConfig::new().with_during_read(DuringRead::Held));
     bench.set_character_errors(FAST);
     let read = read_counters(&bench);
     // The burst started as the errors did: every count 0, consistent with its checksum.
@@ -323,7 +324,8 @@ fn a_held_burst_reads_the_counters_as_they_were_at_its_start() {
 
 #[test]
 fn a_moving_burst_reads_each_byte_at_its_moment_and_can_tear() {
-    let config = SinkConfig::new().with_during_read(DuringRead::Moving);
+    // The default.
+    let config = SinkConfig::new();
     assert_eq!(config.during_read(), DuringRead::Moving);
     let bench = locked(config);
     bench.set_character_errors(FAST);
@@ -339,7 +341,9 @@ fn a_moving_burst_reads_each_byte_at_its_moment_and_can_tear() {
 
 #[test]
 fn a_counter_read_clears_it_with_clear_on_read() {
-    let config = SinkConfig::new().with_ced_read(CedRead::ClearOnRead);
+    let config = SinkConfig::new()
+        .with_ced_read(CedRead::ClearOnRead)
+        .with_during_read(DuringRead::Held);
     assert_eq!(config.ced_read(), CedRead::ClearOnRead);
     let bench = locked(config);
     bench.set_character_errors(ErrorRates::all(1_000));

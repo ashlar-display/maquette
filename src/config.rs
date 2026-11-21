@@ -70,7 +70,7 @@ impl SinkConfig {
             status_update: StatusUpdate::OnChange,
             ced_update: CedUpdate::EverySecond { rise: 4 },
             ced_read: CedRead::Keep,
-            during_read: DuringRead::Held,
+            during_read: DuringRead::Moving,
             max_frl_rate: None,
             ltp_requests: LanePatterns {
                 lane0: Some(LtpPattern::Lfsr0),
@@ -265,7 +265,7 @@ impl SinkConfig {
     }
 
     /// Whether the registers that change by themselves hold still during a read; by default
-    /// [`DuringRead::Held`] (*chosen*).
+    /// [`DuringRead::Moving`] (*chosen*: the least forgiving, as only it can tear).
     #[must_use]
     pub const fn with_during_read(self, during_read: DuringRead) -> Self {
         Self {
@@ -614,20 +614,22 @@ pub enum CedRead {
 }
 
 /// Whether the registers that change by themselves (the character error counters) hold
-/// still while a read is under way. Public sources show both kinds of sink, and none
-/// settles which is common.
+/// still while a read is under way. No public source says whether a sink holds them; the
+/// counters' checksum is the source's protection against a torn read, whatever the
+/// transport does. On a link without errors nothing moves, so the default tears only where
+/// a test sets [`ErrorRates`](crate::ErrorRates).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum DuringRead {
     /// A read returns them as they were when the transaction started; what the read
-    /// changes (a clear on read) shows from the next bench event (*chosen* default).
+    /// changes (a clear on read) shows from the next bench event.
     Held,
     /// Each byte is taken at its own moment, the transaction's start plus the bench's time
     /// per byte for the bytes before it on the wire (its time per transaction comes after
     /// them): a burst can see a count rise, or a clear, between a lane's bytes or before the
     /// checksum, and read a torn value. A `CED_Update` check whose second falls within the
     /// read sees the counts as they were at that second, and its flag is set at the next
-    /// bench event, as a check between events is.
+    /// bench event, as a check between events is. The default (*chosen*).
     Moving,
 }
 

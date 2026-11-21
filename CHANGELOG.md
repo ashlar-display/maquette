@@ -105,8 +105,8 @@ implementations of hdmi-hal's traits.
   `CED_Update` (and `RSED_Update`, for the corrections) is set by a check at each whole
   second when a count rose by 4 or more since the last check or just reached 0x7FFF
   (`CedUpdate::EverySecond`), or never. A read may clear a count (`CedRead::ClearOnRead`),
-  and the counters may move during a read (`DuringRead::Moving`, each byte at its own moment
-  on the bus's time), so a burst reads torn values.
+  and the counters move during a read by default (`DuringRead::Moving`, each byte at its own
+  moment on the bus's time), so a burst can read torn values; `DuringRead::Held` holds them.
 
 **The PHY**
 

@@ -512,7 +512,9 @@ fn sum(bytes: &[u8]) -> u8 {
 
 #[test]
 fn at_4_lanes_lane_3_and_the_corrections_count_and_the_checksum_covers_lane_3() {
-    let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    // Held, so a burst reads the bytes the sink holds.
+    let config = FRL_SINK.with_during_read(DuringRead::Held);
+    let bench = trained(config, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
     // Error-free: four valid lanes and valid corrections; 4 × 0x80 sums to 0 by itself.
     assert_eq!(
         counters(&bench),
