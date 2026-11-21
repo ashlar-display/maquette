@@ -24,17 +24,17 @@ conformance checks that an implementation of hdmi-hal's traits runs in its own t
 
 ## Status
 
-In development, before its first release. Built: `SimClock`, hdmi-hal's clock and delay on
-simulated time; the bench, with its DDC bus routed to a test's own targets, the sink's SCDC
-registers and its EDID and DisplayID behind the E-DDC segment pointer, register presets and
-the transcript; the line, HPD, unplug and detach; the sink's scrambling lock, status flags,
-character error counters (with torn reads) and FRL link training, and its HPD resets; the
-link's character errors and lane limits; scheduled faults, scheduled sink changes and an operation budget; a hook for a
+`maquette` provides `SimClock`, hdmi-hal's clock and delay on simulated time; the bench,
+with its DDC bus routed to a test's own targets, the sink's SCDC registers and its EDID and
+DisplayID behind the E-DDC segment pointer, register presets and the transcript; the line,
+HPD, unplug and detach; the sink's scrambling lock, status flags, character error counters
+(with torn reads) and FRL link training, and its HPD resets; the link's character errors and
+lane limits; scheduled faults, scheduled sink changes and an operation budget; a hook for a
 quirk on top of the sink's SCDC registers; a simulated PHY, or any PHY coupled to the bench,
-driving the line; hdmi-hal-async's traits on the same handles (`async` feature); a
-fuzz target checking the simulator's invariants; and conformance checks for implementations
-of hdmi-hal's `Clock` and `Delay`, `DdcBus`, `ScdcTransport`, `TmdsPhy`, `FrlPhy` and
-`PhyPower`. The design is in [`doc/architecture.md`](doc/architecture.md), and what comes
+driving the line; hdmi-hal-async's traits on the same handles (`async` feature); a fuzz
+target checking the simulator's invariants; and conformance checks for implementations of
+hdmi-hal's `Clock` and `Delay`, `DdcBus`, `ScdcTransport`, `TmdsPhy`, `FrlPhy` and
+`PhyPower`. How it works is in [`doc/architecture.md`](doc/architecture.md), and what comes
 next is on the [roadmap](doc/roadmap.md).
 
 ## Usage
@@ -198,16 +198,15 @@ signed provenance, install the [GitHub CLI](https://cli.github.com/) and run:
 gh attestation verify maquette-X.Y.Z.crate --repo ashlar-display/maquette
 ```
 
-The attested `.crate` will be attached to each
+The attested `.crate` is attached to each
 [GitHub release](https://github.com/ashlar-display/maquette/releases).
 
-The first release will be uploaded by the publish workflow with a crates.io API token scoped
-to publishing this new crate, because trusted publishing can only be set up for a crate
-already on crates.io; the token is revoked afterwards. Later releases will be uploaded
-through crates.io
+0.1.0 was uploaded by the publish workflow with a crates.io API token scoped to publishing
+this new crate, because trusted publishing can only be set up for a crate already on
+crates.io; the token was revoked afterwards. Later releases are uploaded through crates.io
 [trusted publishing](https://rust-lang.github.io/rfcs/3691-trusted-publishing-cratesio.html):
 the publish workflow obtains a short-lived token via OpenID Connect instead of using a
-stored API token. Each version's publishing details, including the workflow run and commit,
+stored API token, and crates.io rejects uploads made with an API token for this crate. Each version's publishing details, including the workflow run and commit,
 are available from the crates.io API:
 
 ```sh
