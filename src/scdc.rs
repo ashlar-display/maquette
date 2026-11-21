@@ -760,10 +760,10 @@ impl Scdc {
     }
 
     /// Counts the errors since the last evaluation, with the `CED_Update` checks that fell
-    /// in between, each at its second. Rates and locks do not change between events, so
-    /// every count in between is known. After a check that leaves the flag set, or no
-    /// locked lane whose count can rise, later checks change nothing but the counts they
-    /// keep: they are skipped to the last.
+    /// in between, each at its second. Rates do not change between events, and the locks
+    /// only where one comes due, so every count in between is known. After a check from which no later one can set a
+    /// flag (each rising counter's flag is set, or none rises), later checks change nothing
+    /// but the counts they keep: they are skipped to the last.
     fn count_and_check(&mut self, env: &mut Env<'_>) {
         self.count_and_check_to(env.now(), env);
     }
@@ -782,7 +782,7 @@ impl Scdc {
             }
             self.count_errors(next);
             self.see_counts(next, rise, env);
-            if self.get(UPDATE_0) & CED_UPDATE != 0 || !self.counts_rising(next) {
+            if !self.check_can_set(next) {
                 let seconds = now.saturating_duration_since(next).as_secs();
                 let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
                 if let Some(last) = next.checked_add(CED_CHECK.saturating_mul(seconds)) {
@@ -795,13 +795,20 @@ impl Scdc {
         self.count_errors(now);
     }
 
-    /// Whether a count can rise after `at` until the next event: a counter counting, with
-    /// errors, and below 0x7FFF.
-    fn counts_rising(&self, at: Timestamp) -> bool {
+    /// Whether a check after `at`, before the next event, can set a flag: a counter counting,
+    /// with errors, below 0x7FFF, whose flag (`CED_Update` for a lane, `RSED_Update` for the
+    /// corrections) is not set yet.
+    fn check_can_set(&self, at: Timestamp) -> bool {
         let rates = self.counter_rates();
         let flags = self.flags_at(at);
-        (0..COUNTERS.len())
-            .any(|i| self.counting(i, flags) && rates[i] > 0 && self.ced[i] < CED_MAX * CED_UNIT)
+        let update = self.get(UPDATE_0);
+        (0..COUNTERS.len()).any(|i| {
+            let flag = if i == RS { RSED_UPDATE } else { CED_UPDATE };
+            self.counting(i, flags)
+                && rates[i] > 0
+                && self.ced[i] < CED_MAX * CED_UNIT
+                && update & flag == 0
+        })
     }
 
     /// Whether counter `i` counts and is valid with the status flags `flags`: a lane while

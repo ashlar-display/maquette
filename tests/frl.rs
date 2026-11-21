@@ -628,3 +628,27 @@ fn frl_errors_count_from_the_lock_even_when_one_advance_spans_it() {
     let count = u16::from_le_bytes([bytes[7], bytes[8] & 0x7F]);
     assert_eq!(u128::from(count), locked_for.as_millis());
 }
+
+#[test]
+fn rsed_update_comes_from_its_own_checks_while_ced_update_is_set() {
+    // CED_Update set by the lanes; the corrections rise 1 a second, below the rise of 4.
+    let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    bench.set_character_errors(ErrorRates {
+        lane0: 100,
+        rs_corrections: 1,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_millis(1_500));
+    assert_eq!(training(&bench).0 & 0x42, 0x02);
+    // Ten more seconds in one advance: no one-second check saw a rise of 4.
+    bench.advance(Duration::from_secs(10));
+    assert_eq!(training(&bench).0 & 0x42, 0x02, "no RSED_Update");
+    // At 10 a second, it comes.
+    bench.set_character_errors(ErrorRates {
+        lane0: 100,
+        rs_corrections: 10,
+        ..ErrorRates::NONE
+    });
+    bench.advance(Duration::from_secs(3));
+    assert_eq!(training(&bench).0 & 0x42, 0x42);
+}
