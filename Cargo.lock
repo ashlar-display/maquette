@@ -25,16 +25,18 @@ dependencies = [
 
 [[package]]
 name = "hdmi-hal"
-version = "0.6.1"
-source = "git+https://github.com/ashlar-display/hdmi-hal?rev=ee13fc9c8faee2ec491275dd76d493ac67627e28#ee13fc9c8faee2ec491275dd76d493ac67627e28"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4f6f586de7562829805e036c9d35d5ccc67949933c6112240c03fbb6e30e0f09"
 dependencies = [
  "display-types",
 ]
 
 [[package]]
 name = "hdmi-hal-async"
-version = "0.3.1"
-source = "git+https://github.com/ashlar-display/hdmi-hal-async?rev=38d0c38e6585b5e3b642d1e419d618d7192bc0f9#38d0c38e6585b5e3b642d1e419d618d7192bc0f9"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "223a44cef55d956a2d7b333dbd30734b2571a1aea884e6fe6b99780f41eb8017"
 dependencies = [
  "display-types",
  "hdmi-hal",

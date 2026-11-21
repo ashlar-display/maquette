@@ -20,9 +20,3 @@ path = "fuzz_targets/bench.rs"
 test = false
 doc = false
 bench = false
-
-# The fuzz crate is its own workspace, so the parent's [patch] does not reach it: the same
-# pushed commit of hdmi-hal's feat/tmds-phy branch, moved with it (the fuzz target does not
-# use the async feature, so hdmi-hal-async is not in its graph).
-[patch.crates-io]
-hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "ee13fc9c8faee2ec491275dd76d493ac67627e28" }

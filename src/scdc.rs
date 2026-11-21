@@ -956,9 +956,9 @@ impl Scdc {
     /// A time before the last count (a byte's time runs ahead of the transaction's start)
     /// counts nothing.
     fn count_errors(&mut self, now: Timestamp) {
-        if let Some(due) = self.lock_due()
-            && self.counted_to < due
-            && due <= now
+        if let Some(due) = self
+            .lock_due()
+            .filter(|&due| self.counted_to < due && due <= now)
         {
             self.count_span(due, self.flags);
         }

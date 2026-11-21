@@ -97,4 +97,7 @@ The current baseline is stored in `.coverage-baseline`. CI fails if coverage dro
 than 0.1 percentage points below it. On pushes to `main` or `develop`, an improvement
 automatically opens a `ci/coverage-ratchet` PR to commit the new baseline. After a Rust
 update, measure from a clean `target/` first: instrumented binaries from another Rust
-version count as uncovered lines.
+version count as uncovered lines. A newer Rust or cargo-llvm-cov can also count lines
+differently, so measure with the versions CI's coverage job reports (its log names both);
+if the same code then measures lower, lower the baseline to that measurement, since the
+ratchet only raises it.
