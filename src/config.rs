@@ -311,7 +311,9 @@ impl SinkConfig {
     /// asked for another TxFFE level (0xE), and the patterns requested again once the source
     /// clears `FLT_update`; at the end of the last, every lane is asked for a lower rate
     /// (0xF). `FLT_no_timeout` (0x35 bit 5) or `FLT_no_retrain` (`Config_0` bit 1) stops
-    /// them.
+    /// them. The sink always takes the source's `FFE_Levels` (*chosen*: Xilinx's asks for
+    /// another TxFFE level only when its integrator enables it, and otherwise takes 0 levels,
+    /// `xv_hdmirx1_frl.c:263–269`, `503`).
     #[must_use]
     pub const fn with_lts3_timeout(self, lts3_timeout: Option<Duration>) -> Self {
         Self {

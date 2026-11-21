@@ -3,7 +3,7 @@
 //! Register addresses, bits and who writes each register, from public implementations of HDMI
 //! sources (no maquette code shares them with the crates it tests):
 //!
-//! - Linux, github.com/torvalds/linux `e9954f3fbddd`: `include/drm/display/drm_scdc.h:27–53`
+//! - Linux, github.com/torvalds/linux `e9954f3fbddd`: `include/drm/display/drm_scdc.h:27–85`
 //!   (addresses and bits);
 //! - amdgpu, the same tree: `drivers/gpu/drm/amd/display/dc/dc_hdmi_types.h:58–65` (address 0x54
 //!   and the registers), `dc/link/protocols/link_ddc.c:602–609` (`TMDS_Config` 3 and 1);
@@ -190,7 +190,8 @@ fn role(reg: u8) -> Role {
 /// no source gives the delay). The lane locks (lanes 0–2) are set once the sink can decode
 /// the line and the trigger has passed since it could: TMDS at a ratio that fits the rate
 /// and matches `TMDS_Bit_Clock_Ratio`, scrambled exactly when `Scrambling_Enable` is set,
-/// and scrambled above 340 Mcsc; cleared when it cannot. The receivers set them in hardware
+/// and scrambled above 340 Mcsc (*chosen*: no source shows what a receiver fails to decode);
+/// cleared when it cannot. The receivers set them in hardware
 /// as the lanes lock, and no source shows when (*chosen*: the scrambling lock's trigger,
 /// `AfterReads` counting reads of `Status_Flags_0`). Lane 3 and `FLT_ready` are FRL's. Each
 /// change sets `Status_Update`, unless [`StatusUpdate::Never`]. As with the status, the sink
@@ -204,9 +205,9 @@ fn role(reg: u8) -> Role {
 /// github.com/torvalds/linux `e9954f3fbddd`: `drivers/gpu/drm/display/drm_scdc_helper.c:383–412`
 /// (the checksum over 0x50–0x56 at 3 lanes, the valid bit); and Amlogic,
 /// github.com/CoreELEC/common_drivers `8ca9b6c3b715`:
-/// `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:35–68`. The count saturating at 0x7FFF:
-/// Xilinx's receiver, embeddedsw `97f2baf7f69e`,
-/// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2306–2345`. Their changes are
+/// `drivers/media/vout/hdmitx20/hdmi_tx_scdc.c:38–77`. The count saturating at 0x7FFF
+/// (*chosen*, after one receiver: Xilinx's, embeddedsw `97f2baf7f69e`,
+/// `XilinxProcessorIPLib/drivers/v_hdmirx1/src/xv_hdmirx1.c:2306–2345`). Their changes are
 /// not recorded: they move with time; a test reads them through the bench's `Sink` view.
 /// `CED_Update` is set by [`CedUpdate`]'s rule, its checks at whole seconds on the bench's
 /// clock, each seeing the counts as they were at that second; the flag set is recorded at
@@ -254,7 +255,7 @@ fn role(reg: u8) -> Role {
 ///
 /// - With `Patterns`, lanes that do not pass in time: [`SinkConfig::with_lts3_timeout`]'s
 ///   attempts, 0xE on the lanes not passing, then 0xF on every lane (*chosen*, after Xilinx
-///   `440–547`; once 0xE is cleared, the patterns are requested again: `1118–1135`).
+///   `440–547`; once 0xE is cleared, the patterns are requested again: `1134–1139`).
 /// - `FRL_Rate` 0 returns to legacy: the requests are cleared (Xilinx `183–224`). So does a
 ///   reset of the status group, which loses the requests (*chosen*).
 ///
