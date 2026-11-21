@@ -16,7 +16,10 @@
 //! - the segment pointer never outlives its command sequence: every EDID read at 0x50 that
 //!   succeeds reads segment 0;
 //! - the transcript's times never go backwards;
-//! - an FRL sink's lanes lock only at the trained rate, without patterns.
+//! - an FRL sink's lanes lock only at the trained rate, without patterns;
+//! - FRL training keeps its protocol: `FRL_start` only after the pass, new requests only
+//!   with `FLT_update` clear, and a lower rate asked only above the maximum or after the last
+//!   timeout (`check_training`).
 
 #![no_main]
 
@@ -519,6 +522,114 @@ fn check_flags(bench: &Bench<'_, LOG>) {
     }
 }
 
+/// The `FRL_Rate` value of `rate`.
+fn frl_value(rate: HdmiForumFrl) -> u8 {
+    match rate {
+        HdmiForumFrl::Rate3Gbps3Lanes => 1,
+        HdmiForumFrl::Rate6Gbps3Lanes => 2,
+        HdmiForumFrl::Rate6Gbps4Lanes => 3,
+        HdmiForumFrl::Rate8Gbps4Lanes => 4,
+        HdmiForumFrl::Rate10Gbps4Lanes => 5,
+        HdmiForumFrl::Rate12Gbps4Lanes => 6,
+        _ => 0,
+    }
+}
+
+/// Checks the FRL training protocol a source relies on, replaying the transcript's SCDC
+/// register records, for each sink plugged in (`configs`, in order) from each `Config_1`
+/// write on:
+///
+/// - `FRL_start` rises only once the pass is posted (0 on every lane), and with
+///   `FrlPass::Patterns` only with the lanes locked;
+/// - with `FrlPass::Patterns` the sink changes the requests only with `FLT_update` clear,
+///   but at a `Config_1` write, which restarts training;
+/// - 0xF is asked only for a rate above the maximum or naming none, or, with
+///   `FrlPass::Patterns`, once the last LTS:3 timeout (180 ms, the default) has passed.
+///
+/// A test's preset of `Update_0`, `Config_1` or the requests suspends the checks until the
+/// next `Config_1` write: the test then owns those registers.
+fn check_training(records: &[Record], configs: &[SinkConfig]) {
+    let mut configs = configs.iter();
+    let mut config = *configs.next().expect("the first sink's settings");
+    let mut regs = [0u8; 256];
+    let mut started: Option<Timestamp> = None;
+    let mut at_config_write = false;
+    let mut tampered = false;
+    for record in records {
+        match record.event {
+            Event::Plug { plugged: true, .. } => {
+                config = *configs.next().expect("a plug's settings");
+                regs = [0; 256];
+                started = None;
+                tampered = false;
+            }
+            Event::Bus(_) => at_config_write = false,
+            Event::Register {
+                addr: 0x54,
+                reg,
+                from,
+                to,
+                by,
+                ..
+            } => {
+                let Some(max) = config.max_frl_rate().map(frl_value).filter(|&max| max != 0) else {
+                    regs[usize::from(reg)] = to;
+                    continue;
+                };
+                let patterns = config.frl_pass() == FrlPass::Patterns;
+                match (by, reg) {
+                    (Actor::Test, 0x10 | 0x30 | 0x31 | 0x35 | 0x41 | 0x42) => tampered = true,
+                    (_, 0x31) => {
+                        at_config_write = true;
+                        if by == Actor::Source {
+                            started = Some(record.at);
+                            tampered = false;
+                        }
+                    }
+                    (Actor::Sink, 0x41 | 0x42) if !tampered => {
+                        if patterns {
+                            assert!(
+                                at_config_write || regs[0x10] & 0x20 == 0,
+                                "requests changed with FLT_update set"
+                            );
+                        }
+                        if [to & 0x0F, to >> 4].contains(&0x0F) {
+                            let rate = regs[0x31] & 0x0F;
+                            let timed_out = patterns
+                                && regs[0x30] & 0x02 == 0
+                                && regs[0x35] & 0x20 == 0
+                                && started
+                                    .and_then(|from| from.checked_add(Duration::from_millis(180)))
+                                    .is_some_and(|due| record.at >= due);
+                            assert!(
+                                rate > max || timed_out,
+                                "a lower rate asked at rate {rate} (maximum {max})"
+                            );
+                        }
+                    }
+                    (Actor::Sink, 0x10) if !tampered && from & 0x10 == 0 && to & 0x10 != 0 => {
+                        assert_eq!(
+                            (regs[0x41], regs[0x42]),
+                            (0, 0),
+                            "FRL_start before the pass"
+                        );
+                        if patterns {
+                            assert_eq!(
+                                regs[0x40] & 0x0E,
+                                0x0E,
+                                "FRL_start with the lanes unlocked"
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+                regs[usize::from(reg)] = to;
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Checks that the sink is locked once the lock's conditions have held for the trigger: for
 /// the sinks whose conditions the transcript shows (a time trigger, not strict, no
 /// refusals), after an advance or a delay, at which the sink evaluates. The conditions may
@@ -634,6 +745,8 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
     }
     let bench = builder.build().expect("the stores are whole blocks");
     let mut sink = config;
+    // Each sink's settings, in the order they were plugged in, for the training checks.
+    let mut configs = vec![config];
     let bus = bench.ddc();
     let clock = bench.time();
     let mut delay = bench.time();
@@ -695,6 +808,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                     .plug(&EDID, displayid, config)
                     .expect("the stores are whole blocks");
                 sink = config;
+                configs.push(config);
             }
             9 => bench.detach(),
             10 => bench.reattach(),
@@ -814,6 +928,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
         records.windows(2).all(|pair| pair[0].at <= pair[1].at),
         "the transcript's times went backwards"
     );
+    check_training(&records, &configs);
     assert_eq!(
         bench.transcript_overflow(),
         0,

@@ -199,11 +199,14 @@ implementations of hdmi-hal's traits.
   simulator's invariants: the same transcript for the same input, the scrambling status
   only under the lock's conditions and set once they have held for a time trigger, the
   sink's registers never changed by the source, the segment pointer never outliving its
-  command sequence, time never going backwards, and a transcript (4096 records) that never
-  overflows. CI
-  fuzzes it for 60 s on pushes and pull requests and for an hour weekly, opening a pull
-  request with the minimised corpus. release-prep refreshes maquette's entry in
-  `fuzz/Cargo.lock`; Dependabot keeps the fuzz lock file current.
+  command sequence, the status flags following the line, the error counters keeping their
+  checksum and valid exactly while counting, FRL training keeping its protocol (`FRL_start`
+  only after the pass, new requests only with `FLT_update` clear, a lower rate asked only
+  above the maximum or after the last timeout), time never going backwards, and a
+  transcript (4096 records) that never overflows. CI fuzzes it for 60 s on pushes and pull
+  requests and for an hour weekly, opening a pull request with the minimised corpus.
+  release-prep refreshes maquette's entry in `fuzz/Cargo.lock`; Dependabot keeps the fuzz
+  lock file current.
 
 - CI: format, clippy and tests without features, with `std` and with `async`; docs with
   every feature and `-D warnings`, as docs.rs builds them; `no_std` builds for the bare
