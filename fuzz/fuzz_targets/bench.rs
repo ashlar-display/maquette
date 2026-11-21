@@ -189,6 +189,9 @@ impl Input<'_> {
         if a & 0x01 != 0 {
             config = config.without_segment_pointer();
         }
+        if self.bit() {
+            config = config.with_max_tmds_rate_khz(Some(340_000));
+        }
         if a & 0x02 != 0 {
             config = config.with_strict_lock(true);
         }
@@ -396,9 +399,9 @@ fn tmds(character_rate_khz: u32, ratio: TmdsClockRatio, scrambled: bool) -> Line
 }
 
 /// Checks the invariants that hold after every action.
-fn check_state(bench: &Bench<'_, LOG>) {
+fn check_state(bench: &Bench<'_, LOG>, settings: &SinkConfig) {
     let sink = bench.sink();
-    check_flags(bench);
+    check_flags(bench, settings);
     let (Some(status), Some(config)) = (sink.scrambling_status(), sink.tmds_config()) else {
         return;
     };
@@ -417,6 +420,12 @@ fn check_state(bench: &Bench<'_, LOG>) {
                     character_rate_khz > 340_000,
                     "status set at a ratio that does not fit the rate"
                 );
+                assert!(
+                    settings
+                        .max_tmds_rate_khz()
+                        .is_none_or(|max| character_rate_khz <= max),
+                    "status set above the sink's maximum rate"
+                );
             }
             line => panic!("status set without scrambled TMDS: {line:?}"),
         }
@@ -425,7 +434,7 @@ fn check_state(bench: &Bench<'_, LOG>) {
 
 /// Checks the status flags against what the sink receives: `Clock_Detected` only on TMDS,
 /// the lane locks only on a line it can decode.
-fn check_flags(bench: &Bench<'_, LOG>) {
+fn check_flags(bench: &Bench<'_, LOG>, settings: &SinkConfig) {
     let sink = bench.sink();
     let (Some(flags), Some(config)) = (sink.status_flags_0(), sink.tmds_config()) else {
         return;
@@ -541,6 +550,12 @@ fn check_flags(bench: &Bench<'_, LOG>) {
         assert!(
             scrambled || !high,
             "lanes locked on unscrambled TMDS above 340 Mcsc"
+        );
+        assert!(
+            settings
+                .max_tmds_rate_khz()
+                .is_none_or(|max| character_rate_khz <= max),
+            "lanes locked above the sink's maximum rate"
         );
     }
 }
@@ -680,7 +695,11 @@ fn check_lock_comes(bench: &Bench<'_, LOG>, config: &SinkConfig) {
                 scrambled: true,
             } => {
                 let div40 = ratio == TmdsClockRatio::Div40;
-                div40 == (character_rate_khz > 340_000) && div40 == (tmds_config & 2 != 0)
+                div40 == (character_rate_khz > 340_000)
+                    && div40 == (tmds_config & 2 != 0)
+                    && config
+                        .max_tmds_rate_khz()
+                        .is_none_or(|max| character_rate_khz <= max)
             }
             _ => false,
         };
@@ -932,7 +951,7 @@ fn run(data: &[u8]) -> (Vec<Record>, usize) {
                 let _ = clock.now();
             }
         }
-        check_state(&bench);
+        check_state(&bench, &sink);
     }
 
     let records: Vec<Record> = bench.transcript().collect();

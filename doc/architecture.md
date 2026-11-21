@@ -309,6 +309,7 @@ builders for each setting (`without_scdc()`, `without_segment_pointer()`,
 `with_edid_during_hpd_low(..)`, `with_status_update(..)`, `with_ced_update(..)`,
 `with_ced_read(..)`, `with_during_read(..)`, `with_max_frl_rate(..)`,
 `with_ltp_requests(..)`, `with_lts3_timeout(..)`, `with_frl_pass(..)`,
+`with_max_tmds_rate_khz(..)`,
 …), with a getter for each, as the stack's other
 capability and option types are built (`DdcCapabilities`, `TmdsPhyCapabilities`). There are
 no named sink models: a name would suggest a real product whose behaviour no source backs.
@@ -658,6 +659,7 @@ source settles is marked *chosen*.
 | `TMDS_Config` holds the source's `Scrambling_Enable` and `TMDS_Bit_Clock_Ratio` | settled [1] | fixed |
 | `Scrambling_Status` set when scrambled TMDS runs at the ratio `TMDS_Bit_Clock_Ratio` names, with `Scrambling_Enable` set, once the lock trigger has passed since the later of the write and scrambled output starting | settled that sources read it [2]; the delay and the ratio match have no source | the trigger a setting, `Trigger::After(d)`, *chosen* default 1 ms, or `Trigger::AfterReads(n)`, the *n*-th read of `Scrambling_Status`; ratio match *chosen*; scrambling at 1/10 sets it too |
 | The ratio fits the rate: 1/40 above 340 Mcsc, 1/10 at or below | settled above 340 Mcsc [10]; no source uses 1/40 at or below | fixed: the sink does not lock on a line whose ratio does not fit its rate; at or below 340 Mcsc, 1/40 does not lock (*chosen*) |
+| A sink's highest TMDS character rate | the sink's EDID states it; the bench does not read the EDID it serves | a setting, `with_max_tmds_rate_khz`: none by default (*chosen*: the EDID is the test's input); above it the clock is detected and nothing locks, so the enable timeout clears `Scrambling_Enable` |
 | A sink that does not lock when scrambled TMDS arrived before the write | sources that redo the whole mode set say some sinks would accept the SCDC writes alone; others restore with the output running [3] | a setting, off by default (the lenient sink) |
 | "Some displays refuse to set the scrambling bit right away" | one source, which reads two ways [4] | a setting in both readings: the status withheld, or `Scrambling_Enable` dropped from the write; for the first *n* attempts, an attempt being a write that sets `Scrambling_Enable`; default none (*chosen*) |
 | The sink clears `Scrambling_Enable` without scrambled TMDS within 100 ms of the write | one source [5]; settled that a source resumes within 100 ms of a ratio change [11] | a setting, default 100 ms (the least forgiving), counted from the write that set `Scrambling_Enable` or one that changed `TMDS_Bit_Clock_Ratio` while it was set; `None` never gives up |

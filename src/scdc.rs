@@ -336,6 +336,8 @@ pub(crate) struct Scdc {
     timeouts: u32,
     ffe_levels: u8,
     lanes_seen: LinkLanes,
+    /// The highest TMDS character rate the sink takes, if it has one.
+    max_tmds_rate_khz: Option<u32>,
     /// What the sink checks before it passes, and when it last set `FLT_update`.
     frl_pass: FrlPass,
     update_set_at: Timestamp,
@@ -408,6 +410,7 @@ impl Scdc {
             ffe_levels: 0,
             lanes_seen: LinkLanes::NONE,
             frl_pass: config.frl_pass,
+            max_tmds_rate_khz: config.max_tmds_rate_khz,
             update_set_at: Timestamp::from_micros(0),
             hpd_low_since: None,
             reset_done: [false; RegisterGroup::COUNT],
@@ -765,7 +768,7 @@ impl Scdc {
             } => {
                 let div40 = ratio == TmdsClockRatio::Div40;
                 let fits = div40 == (character_rate_khz > RATIO_40_ABOVE_KHZ);
-                fits && div40 == (config & RATIO_40 != 0)
+                fits && div40 == (config & RATIO_40 != 0) && self.takes(character_rate_khz)
             }
             _ => false,
         };
@@ -1047,7 +1050,8 @@ impl Scdc {
                 let decodable = div40 == high
                     && div40 == (config & RATIO_40 != 0)
                     && scrambled == (config & SCRAMBLING_ENABLE != 0)
-                    && (scrambled || !high);
+                    && (scrambled || !high)
+                    && self.takes(character_rate_khz);
                 (true, decodable)
             }
             Line::Frl {
@@ -1103,6 +1107,12 @@ impl Scdc {
         if self.status_update == StatusUpdate::OnChange && update & STATUS_UPDATE == 0 {
             self.set(UPDATE_0, update | STATUS_UPDATE, Actor::Sink, env);
         }
+    }
+
+    /// Whether the sink takes TMDS at `character_rate_khz`: at most its maximum, if it has one.
+    fn takes(&self, character_rate_khz: u32) -> bool {
+        self.max_tmds_rate_khz
+            .is_none_or(|max| character_rate_khz <= max)
     }
 
     /// For the strict sink: whether the line began too early for the write armed at `at`, so

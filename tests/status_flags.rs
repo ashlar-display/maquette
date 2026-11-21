@@ -169,3 +169,26 @@ fn an_unplugged_sink_receives_nothing() {
     bench.advance(MS);
     assert_eq!(bench.sink().status_flags_0(), Some(0));
 }
+
+#[test]
+fn a_sink_with_a_maximum_tmds_rate_locks_nothing_above_it() {
+    let config = SinkConfig::new().with_max_tmds_rate_khz(Some(340_000));
+    assert_eq!(config.max_tmds_rate_khz(), Some(340_000));
+    assert_eq!(SinkConfig::new().max_tmds_rate_khz(), None);
+    let bench = Bench::new(config, &[]).unwrap();
+    bench.ddc().write(SCDC, &[0x20, 0x03]).unwrap();
+    bench.set_line(TMDS_594);
+    bench.advance(MS);
+    // The clock, and nothing else.
+    assert_eq!(bench.sink().status_flags_0(), Some(0x01));
+    assert_eq!(bench.sink().scrambling_status(), Some(0));
+    // At the maximum it locks.
+    bench.set_line(Line::Tmds {
+        character_rate_khz: 340_000,
+        ratio: TmdsClockRatio::Div10,
+        scrambled: false,
+    });
+    bench.ddc().write(SCDC, &[0x20, 0x00]).unwrap();
+    bench.advance(MS);
+    assert_eq!(bench.sink().status_flags_0(), Some(0x0F));
+}

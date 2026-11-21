@@ -47,6 +47,7 @@ pub struct SinkConfig {
     pub(crate) ltp_requests: LanePatterns,
     pub(crate) lts3_timeout: Option<Duration>,
     pub(crate) frl_pass: FrlPass,
+    pub(crate) max_tmds_rate_khz: Option<u32>,
 }
 
 impl SinkConfig {
@@ -81,6 +82,7 @@ impl SinkConfig {
             },
             lts3_timeout: Some(Duration::from_millis(180)),
             frl_pass: FrlPass::Patterns,
+            max_tmds_rate_khz: None,
         }
     }
 
@@ -330,6 +332,20 @@ impl SinkConfig {
         Self { frl_pass, ..self }
     }
 
+    /// The highest TMDS character rate the sink takes, in kHz; `None` (the default) for any.
+    /// Above it the sink detects the clock but locks nothing: neither its lanes nor
+    /// scrambling, so its enable timeout clears `Scrambling_Enable` as for any line it cannot
+    /// lock to. The bench does not read the EDID it serves, so a test that wants its sink
+    /// to keep the limit its EDID states sets it here (*chosen*: the EDID is the test's
+    /// input, and no limit is the default a test without one expects).
+    #[must_use]
+    pub const fn with_max_tmds_rate_khz(self, max_tmds_rate_khz: Option<u32>) -> Self {
+        Self {
+            max_tmds_rate_khz,
+            ..self
+        }
+    }
+
     /// Whether the sink has SCDC.
     pub const fn has_scdc(&self) -> bool {
         self.scdc
@@ -443,6 +459,11 @@ impl SinkConfig {
     /// What an FRL sink checks before it passes link training and sets `FRL_start`.
     pub const fn frl_pass(&self) -> FrlPass {
         self.frl_pass
+    }
+
+    /// The highest TMDS character rate the sink takes, in kHz; `None` for any.
+    pub const fn max_tmds_rate_khz(&self) -> Option<u32> {
+        self.max_tmds_rate_khz
     }
 }
 
