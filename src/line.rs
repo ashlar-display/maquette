@@ -113,6 +113,7 @@ impl Default for Line {
 /// [`Bench::set_character_errors`](crate::Bench::set_character_errors); a target sees them
 /// with [`Env::character_errors`](crate::Env::character_errors). At creation there are none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[non_exhaustive]
 pub struct ErrorRates {
     /// Errors a second on lane 0.
     pub lane0: u32,
@@ -147,6 +148,51 @@ impl ErrorRates {
         }
     }
 
+    /// The rates with `per_second` errors a second on lane 0.
+    #[must_use]
+    pub const fn with_lane0(self, per_second: u32) -> Self {
+        Self {
+            lane0: per_second,
+            ..self
+        }
+    }
+
+    /// The rates with `per_second` errors a second on lane 1.
+    #[must_use]
+    pub const fn with_lane1(self, per_second: u32) -> Self {
+        Self {
+            lane1: per_second,
+            ..self
+        }
+    }
+
+    /// The rates with `per_second` errors a second on lane 2.
+    #[must_use]
+    pub const fn with_lane2(self, per_second: u32) -> Self {
+        Self {
+            lane2: per_second,
+            ..self
+        }
+    }
+
+    /// The rates with `per_second` errors a second on lane 3.
+    #[must_use]
+    pub const fn with_lane3(self, per_second: u32) -> Self {
+        Self {
+            lane3: per_second,
+            ..self
+        }
+    }
+
+    /// The rates with `per_second` Reed-Solomon corrections a second.
+    #[must_use]
+    pub const fn with_rs_corrections(self, per_second: u32) -> Self {
+        Self {
+            rs_corrections: per_second,
+            ..self
+        }
+    }
+
     /// The rates in lane order.
     pub(crate) const fn lanes(self) -> [u32; 4] {
         [self.lane0, self.lane1, self.lane2, self.lane3]
@@ -157,6 +203,7 @@ impl ErrorRates {
 /// and the least TxFFE level the source must apply on it. A lane outside its limits does
 /// not carry the training patterns the sink asks for, so training does not pass.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct LaneLimits {
     /// The highest FRL rate the lane trains at; `None` for any.
     pub max_rate: Option<HdmiForumFrl>,
@@ -173,6 +220,18 @@ impl LaneLimits {
             None => unreachable!(),
         },
     };
+
+    /// The limits with the lane training at `max_rate` at most; `None` for any.
+    #[must_use]
+    pub const fn with_max_rate(self, max_rate: Option<HdmiForumFrl>) -> Self {
+        Self { max_rate, ..self }
+    }
+
+    /// The limits with the lane needing TxFFE level `min_tx_ffe` at least.
+    #[must_use]
+    pub const fn with_min_tx_ffe(self, min_tx_ffe: TxFfeLevel) -> Self {
+        Self { min_tx_ffe, ..self }
+    }
 }
 
 impl Default for LaneLimits {

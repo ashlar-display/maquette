@@ -140,17 +140,11 @@ impl Input<'_> {
         match self.byte() % 3 {
             0 => LinkLanes::NONE,
             1 => LinkLanes {
-                lane0: LaneLimits {
-                    min_tx_ffe: TxFfeLevel::new(2).unwrap_or_default(),
-                    ..LaneLimits::NONE
-                },
+                lane0: LaneLimits::NONE.with_min_tx_ffe(TxFfeLevel::new(2).unwrap_or_default()),
                 ..LinkLanes::NONE
             },
             _ => LinkLanes {
-                lane3: LaneLimits {
-                    max_rate: Some(HdmiForumFrl::Rate6Gbps4Lanes),
-                    ..LaneLimits::NONE
-                },
+                lane3: LaneLimits::NONE.with_max_rate(Some(HdmiForumFrl::Rate6Gbps4Lanes)),
                 ..LinkLanes::NONE
             },
         }
@@ -164,13 +158,12 @@ impl Input<'_> {
             2 => 1_000 * u32::from(byte),
             _ => u32::MAX,
         };
-        ErrorRates {
-            lane0: rate(self.byte()),
-            lane1: rate(self.byte()),
-            lane2: rate(self.byte()),
-            lane3: rate(self.byte()),
-            rs_corrections: rate(self.byte()),
-        }
+        ErrorRates::NONE
+            .with_lane0(rate(self.byte()))
+            .with_lane1(rate(self.byte()))
+            .with_lane2(rate(self.byte()))
+            .with_lane3(rate(self.byte()))
+            .with_rs_corrections(rate(self.byte()))
     }
 
     fn config(&mut self) -> SinkConfig {

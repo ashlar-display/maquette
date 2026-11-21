@@ -67,9 +67,10 @@ implementations of hdmi-hal's traits.
   `Line::frl_with` and `with_equalization`), which the PHY drives when its output changes and a test sets with
   `set_line`; the last change wins. An unplugged sink receives no line.
 - **Character errors** (`ErrorRates`, errors a second on each lane, and Reed-Solomon
-  corrections a second), set with
-  `set_character_errors`, and **lane limits** for FRL link training (`LinkLanes`, each
-  lane's highest rate and least TxFFE level), set with `set_lane_limits`.
+  corrections a second), set with `set_character_errors`, and **lane limits** for FRL link
+  training (`LinkLanes`, a `LaneLimits` for each lane: its highest rate and least TxFFE
+  level), set with `set_lane_limits`. `ErrorRates` and `LaneLimits` are built with `const`
+  builders (`with_lane0`, `with_rs_corrections`, `with_max_rate`, `with_min_tx_ffe`, …).
 - **The scrambling lock:** `Scrambling_Status` is set once `Scrambling_Enable` is set, the
   line is scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names and that ratio fits the
   rate (1/40 above 340 Mcsc), no refusal withholds it, and the lock's `Trigger` has passed

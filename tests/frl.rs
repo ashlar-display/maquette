@@ -260,10 +260,7 @@ fn tx_ffe(level: u8) -> TxFfeLevel {
 fn a_lane_that_needs_a_txffe_level_passes_once_the_source_applies_it() {
     let bench = Bench::new(FRL_SINK, &[]).unwrap();
     let limits = LinkLanes {
-        lane1: LaneLimits {
-            min_tx_ffe: tx_ffe(2),
-            ..LaneLimits::NONE
-        },
+        lane1: LaneLimits::NONE.with_min_tx_ffe(tx_ffe(2)),
         ..LinkLanes::NONE
     };
     bench.set_lane_limits(limits);
@@ -291,10 +288,7 @@ fn a_lane_that_needs_a_txffe_level_passes_once_the_source_applies_it() {
 fn a_lane_does_not_train_above_its_maximum_rate() {
     let bench = Bench::new(FRL_SINK, &[]).unwrap();
     bench.set_lane_limits(LinkLanes {
-        lane3: LaneLimits {
-            max_rate: Some(HdmiForumFrl::Rate6Gbps4Lanes),
-            ..LaneLimits::NONE
-        },
+        lane3: LaneLimits::NONE.with_max_rate(Some(HdmiForumFrl::Rate6Gbps4Lanes)),
         ..LinkLanes::NONE
     });
     train_to_patterns(&bench, HdmiForumFrl::Rate8Gbps4Lanes, 0x04);
@@ -310,10 +304,9 @@ fn a_lane_does_not_train_above_its_maximum_rate() {
 fn a_lane_not_used_at_3_lanes_does_not_hold_training_back() {
     let bench = Bench::new(FRL_SINK, &[]).unwrap();
     bench.set_lane_limits(LinkLanes {
-        lane3: LaneLimits {
-            max_rate: Some(HdmiForumFrl::Rate3Gbps3Lanes),
-            min_tx_ffe: tx_ffe(7),
-        },
+        lane3: LaneLimits::NONE
+            .with_max_rate(Some(HdmiForumFrl::Rate3Gbps3Lanes))
+            .with_min_tx_ffe(tx_ffe(7)),
         ..LinkLanes::NONE
     });
     train_to_patterns(&bench, HdmiForumFrl::Rate6Gbps3Lanes, 0x02);
@@ -324,10 +317,7 @@ fn a_lane_not_used_at_3_lanes_does_not_hold_training_back() {
 #[test]
 fn the_lane_limits_are_a_bench_event_and_an_action() {
     let bench = Bench::new(FRL_SINK, &[]).unwrap();
-    let limits = LinkLanes::all(LaneLimits {
-        min_tx_ffe: tx_ffe(3),
-        ..LaneLimits::default()
-    });
+    let limits = LinkLanes::all(LaneLimits::NONE.with_min_tx_ffe(tx_ffe(3)));
     bench
         .schedule_action(Action::LaneLimits(limits), When::At(bench.now()))
         .unwrap();
@@ -360,10 +350,7 @@ fn failing_lane_1(
 ) -> (Bench<'static>, maquette::Timestamp) {
     let bench = Bench::new(config, &[]).unwrap();
     bench.set_lane_limits(LinkLanes {
-        lane1: LaneLimits {
-            min_tx_ffe: tx_ffe(needs),
-            ..LaneLimits::NONE
-        },
+        lane1: LaneLimits::NONE.with_min_tx_ffe(tx_ffe(needs)),
         ..LinkLanes::NONE
     });
     let start = bench.now();
@@ -434,10 +421,7 @@ fn timeouts_due_together_end_with_the_lower_rate_request() {
 #[test]
 fn requests_wait_for_flt_update_to_be_cleared() {
     let bench = Bench::new(FRL_SINK, &[]).unwrap();
-    bench.set_lane_limits(LinkLanes::all(LaneLimits {
-        min_tx_ffe: tx_ffe(7),
-        ..LaneLimits::NONE
-    }));
+    bench.set_lane_limits(LinkLanes::all(LaneLimits::NONE.with_min_tx_ffe(tx_ffe(7))));
     let start = bench.now();
     // FLT_update left set.
     bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
@@ -454,10 +438,7 @@ fn no_timeouts_with_flt_no_retrain_flt_no_timeout_or_none_set() {
     bench.ddc().write(SCDC, &[0x30, 0x02]).unwrap();
     let start = bench.now();
     train_to_patterns(&bench, HdmiForumFrl::Rate6Gbps4Lanes, 0x13);
-    bench.set_lane_limits(LinkLanes::all(LaneLimits {
-        min_tx_ffe: tx_ffe(7),
-        ..LaneLimits::NONE
-    }));
+    bench.set_lane_limits(LinkLanes::all(LaneLimits::NONE.with_min_tx_ffe(tx_ffe(7))));
     advance_to(&bench, start, 1_000);
     assert_eq!(training(&bench), (0, 0x65, 0x87));
     // FLT_no_timeout, the sink's test configuration.
@@ -520,11 +501,11 @@ fn at_4_lanes_lane_3_and_the_corrections_count_and_the_checksum_covers_lane_3() 
         counters(&bench),
         [0, 0x80, 0, 0x80, 0, 0x80, 0x00, 0, 0x80, 0, 0x80]
     );
-    bench.set_character_errors(ErrorRates {
-        lane3: 5_000,
-        rs_corrections: 7_000,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(
+        ErrorRates::NONE
+            .with_lane3(5_000)
+            .with_rs_corrections(7_000),
+    );
     bench.advance(Duration::from_millis(2));
     let bytes = counters(&bench);
     assert_eq!(&bytes[7..], [10, 0x80, 14, 0x80]);
@@ -554,10 +535,7 @@ fn the_corrections_count_only_in_frl() {
         ratio: maquette::TmdsClockRatio::Div10,
         scrambled: false,
     });
-    bench.set_character_errors(ErrorRates {
-        rs_corrections: 1_000_000,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_rs_corrections(1_000_000));
     bench.advance(Duration::from_millis(5));
     assert_eq!(bench.sink().status_flags_0().unwrap() & 0x0E, 0x0E);
     assert_eq!(&counters(&bench)[9..], [0, 0]);
@@ -566,10 +544,7 @@ fn the_corrections_count_only_in_frl() {
 #[test]
 fn rsed_update_is_set_by_the_corrections_and_ced_update_by_the_lanes() {
     let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
-    bench.set_character_errors(ErrorRates {
-        rs_corrections: 10,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_rs_corrections(10));
     bench.advance(Duration::from_secs(2));
     assert_eq!(
         training(&bench).0 & 0x42,
@@ -578,10 +553,7 @@ fn rsed_update_is_set_by_the_corrections_and_ced_update_by_the_lanes() {
     );
     // Lane 3 alone sets CED_Update.
     bench.ddc().write(SCDC, &[0x10, 0x40]).unwrap();
-    bench.set_character_errors(ErrorRates {
-        lane3: 10,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane3(10));
     bench.advance(Duration::from_secs(2));
     assert_eq!(training(&bench).0 & 0x42, 0x02);
 }
@@ -592,11 +564,11 @@ fn clear_on_read_and_moving_reads_reach_lane_3_and_the_corrections() {
         .with_ced_read(CedRead::ClearOnRead)
         .with_during_read(DuringRead::Moving);
     let bench = trained(config, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
-    bench.set_character_errors(ErrorRates {
-        lane3: 1_000,
-        rs_corrections: 1_000,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(
+        ErrorRates::NONE
+            .with_lane3(1_000)
+            .with_rs_corrections(1_000),
+    );
     bench.advance(Duration::from_millis(10));
     bench.set_character_errors(ErrorRates::NONE);
     let mut read = [0u8; 4];
@@ -616,10 +588,7 @@ fn frl_errors_count_from_the_lock_even_when_one_advance_spans_it() {
     phy.send_ltp(REQUESTED).unwrap();
     bench.advance(MS);
     phy.send_ltp(LanePatterns::default()).unwrap();
-    bench.set_character_errors(ErrorRates {
-        lane3: 1_000,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane3(1_000));
     // The lanes lock 1 ms after the patterns stop, within this advance.
     let stopped = bench.now();
     bench.advance(Duration::from_secs(3));
@@ -635,22 +604,14 @@ fn frl_errors_count_from_the_lock_even_when_one_advance_spans_it() {
 fn rsed_update_comes_from_its_own_checks_while_ced_update_is_set() {
     // CED_Update set by the lanes; the corrections rise 1 a second, below the rise of 4.
     let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
-    bench.set_character_errors(ErrorRates {
-        lane0: 100,
-        rs_corrections: 1,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane0(100).with_rs_corrections(1));
     bench.advance(Duration::from_millis(1_500));
     assert_eq!(training(&bench).0 & 0x42, 0x02);
     // Ten more seconds in one advance: no one-second check saw a rise of 4.
     bench.advance(Duration::from_secs(10));
     assert_eq!(training(&bench).0 & 0x42, 0x02, "no RSED_Update");
     // At 10 a second, it comes.
-    bench.set_character_errors(ErrorRates {
-        lane0: 100,
-        rs_corrections: 10,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane0(100).with_rs_corrections(10));
     bench.advance(Duration::from_secs(3));
     assert_eq!(training(&bench).0 & 0x42, 0x42);
 }
@@ -735,10 +696,9 @@ fn an_unchecked_sink_gives_up_waiting_for_the_clear_after_100_ms() {
 #[test]
 fn an_unchecked_sink_has_no_lts3_timeouts_and_still_refuses_a_rate_above_its_maximum() {
     let bench = Bench::new(UNCHECKED_SINK, &[]).unwrap();
-    bench.set_lane_limits(LinkLanes::all(LaneLimits {
-        min_tx_ffe: TxFfeLevel::MAX,
-        ..LaneLimits::NONE
-    }));
+    bench.set_lane_limits(LinkLanes::all(
+        LaneLimits::NONE.with_min_tx_ffe(TxFfeLevel::MAX),
+    ));
     // Three FFE levels: a checking sink would ask for another TxFFE level at 45 ms; this
     // one waits out its 100 ms and passes.
     let start = bench.now();

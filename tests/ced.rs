@@ -59,11 +59,7 @@ fn an_error_free_locked_link_reads_valid_zero_counts() {
 fn errors_are_counted_per_lane_with_a_checksum() {
     // Held, so a burst reads the bytes the sink holds.
     let bench = locked(SinkConfig::new().with_during_read(DuringRead::Held));
-    bench.set_character_errors(ErrorRates {
-        lane1: 1_000,
-        lane2: 300_000,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane1(1_000).with_lane2(300_000));
     bench.advance(Duration::from_millis(10));
     assert_eq!(count(&bench, 0), (0, true));
     assert_eq!(count(&bench, 1), (10, true));
@@ -113,10 +109,7 @@ fn a_lane_not_locked_counts_nothing_and_is_not_valid() {
 #[test]
 fn a_counter_stays_at_0x7fff() {
     let bench = locked(SinkConfig::new());
-    bench.set_character_errors(ErrorRates {
-        lane0: u32::MAX,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane0(u32::MAX));
     bench.advance(Duration::from_secs(1));
     assert_eq!(count(&bench, 0), (0x7FFF, true));
     assert_eq!(&counters(&bench)[..2], [0xFF, 0xFF]);
@@ -206,10 +199,7 @@ fn ced_update(bench: &Bench<'_>) -> bool {
 fn ced_update_is_set_by_a_rise_of_4_within_a_second_check() {
     // Locked at 1 ms; the checks fall at whole seconds of the bench's clock.
     let bench = locked(SinkConfig::new());
-    bench.set_character_errors(ErrorRates {
-        lane2: 4,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane2(4));
     // At 1 s the count is 3: a rise of 3.
     bench.advance(Duration::from_millis(999));
     assert!(!ced_update(&bench));
@@ -290,10 +280,7 @@ fn a_rise_of_0_is_taken_as_1() {
     let bench = locked(config);
     bench.advance(Duration::from_secs(3));
     assert!(!ced_update(&bench), "no rise, no flag");
-    bench.set_character_errors(ErrorRates {
-        lane0: 1,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane0(1));
     bench.advance(Duration::from_secs(2));
     assert!(ced_update(&bench));
 }
@@ -307,10 +294,7 @@ fn read_counters(bench: &Bench<'_>) -> [u8; 7] {
 }
 
 /// One error a microsecond on lane 0: at the default 90 µs a byte, 90 more each byte.
-const FAST: ErrorRates = ErrorRates {
-    lane0: 1_000_000,
-    ..ErrorRates::NONE
-};
+const FAST: ErrorRates = ErrorRates::NONE.with_lane0(1_000_000);
 
 #[test]
 fn a_held_burst_reads_the_counters_as_they_were_at_its_start() {
@@ -387,10 +371,7 @@ fn after_a_clear_ced_update_measures_the_rise_from_zero() {
     // Four errors by the next check, at 2 s: a rise of 4 from 0, though far below the
     // count the check before the clear saw. Asserted right after that check: a later one
     // would see a rise from the 2 s count whatever the clear did.
-    bench.set_character_errors(ErrorRates {
-        lane0: 5,
-        ..ErrorRates::NONE
-    });
+    bench.set_character_errors(ErrorRates::NONE.with_lane0(5));
     let at = maquette::Timestamp::from_micros(2_100_000);
     bench.advance(at.saturating_duration_since(bench.now()));
     assert_eq!(count(&bench, 0).0, 5);

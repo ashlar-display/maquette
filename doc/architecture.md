@@ -503,17 +503,22 @@ impl<'a, const LOG: usize, const FAULTS: usize> Bench<'a, LOG, FAULTS> {
 time it started stays. An unplugged sink receives no line: its targets see `Line::Off`.
 
 The link's character errors go with the line: `ErrorRates`, errors a second on each of
-lanes 0–3 (public fields, as hdmi-hal's `LanePatterns`) and Reed-Solomon corrections a
-second in FRL, none by default. The test sets
-them with `Bench::set_character_errors`, recorded as `Event::CharacterErrors`; a target sees
+lanes 0–3 and Reed-Solomon corrections a second in FRL, none by default
+(`ErrorRates::NONE.with_lane0(..)`, `ErrorRates::all(..)`). The test sets them with
+`Bench::set_character_errors`, recorded as `Event::CharacterErrors`; a target sees
 them through `Env::character_errors()`, none while the sink is unplugged. The sink's
 counters count them while each lane is locked ("Sink behaviour").
 
 So do the lanes' limits in FRL link training: `LinkLanes`, a `LaneLimits` for each lane (the
-highest rate it trains at, and the least TxFFE level it needs), none by default; set with
+highest rate it trains at, and the least TxFFE level it needs:
+`LaneLimits::NONE.with_max_rate(..).with_min_tx_ffe(..)`), none by default; set with
 `Bench::set_lane_limits`, recorded as `Event::LaneLimits`, seen through `Env::lane_limits()`.
 A lane outside its limits does not carry the patterns the sink asks for, so training does
 not pass: a procedure's TxFFE and rate fallbacks are tested against it.
+
+`ErrorRates` and `LaneLimits` are `#[non_exhaustive]` with `const` builders, so a quantity or
+a limit added later breaks no test; `LinkLanes` holds the four lanes as public fields, as
+hdmi-hal's `LanePatterns`.
 
 ### HPD, unplug and detach
 
