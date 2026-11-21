@@ -782,7 +782,7 @@ impl Scdc {
             }
             self.count_errors(next);
             self.see_counts(next, rise, env);
-            if self.get(UPDATE_0) & CED_UPDATE != 0 || !self.counts_rising() {
+            if self.get(UPDATE_0) & CED_UPDATE != 0 || !self.counts_rising(next) {
                 let seconds = now.saturating_duration_since(next).as_secs();
                 let seconds = u32::try_from(seconds).unwrap_or(u32::MAX);
                 if let Some(last) = next.checked_add(CED_CHECK.saturating_mul(seconds)) {
@@ -795,21 +795,51 @@ impl Scdc {
         self.count_errors(now);
     }
 
-    /// Whether a count can rise until the next event: a counter counting, with errors, and
-    /// below 0x7FFF.
-    fn counts_rising(&self) -> bool {
+    /// Whether a count can rise after `at` until the next event: a counter counting, with
+    /// errors, and below 0x7FFF.
+    fn counts_rising(&self, at: Timestamp) -> bool {
         let rates = self.counter_rates();
+        let flags = self.flags_at(at);
         (0..COUNTERS.len())
-            .any(|i| self.counting(i) && rates[i] > 0 && self.ced[i] < CED_MAX * CED_UNIT)
+            .any(|i| self.counting(i, flags) && rates[i] > 0 && self.ced[i] < CED_MAX * CED_UNIT)
     }
 
-    /// Whether counter `i` counts and is valid: a lane while it is locked; the Reed-Solomon
-    /// corrections while the FRL lanes are locked (*chosen*: Linux reads them only in FRL).
-    fn counting(&self, i: usize) -> bool {
+    /// Whether counter `i` counts and is valid with the status flags `flags`: a lane while
+    /// it is locked; the Reed-Solomon corrections while the FRL lanes are locked (*chosen*:
+    /// Linux reads them only in FRL).
+    fn counting(&self, i: usize, flags: u8) -> bool {
         if i == RS {
-            matches!(self.line, Line::Frl { .. }) && self.flags & LANES_LOCKED != 0
+            matches!(self.line, Line::Frl { .. }) && flags & LANES_LOCKED != 0
         } else {
-            self.flags & (1 << (i + 1)) != 0
+            flags & (1 << (i + 1)) != 0
+        }
+    }
+
+    /// When the lanes lock, between the last evaluation and the next, if they do: their
+    /// conditions hold since `lanes_from`, and a time trigger names the moment. The flags
+    /// change at the next event; the counters count from this moment.
+    fn lock_due(&self) -> Option<Timestamp> {
+        if self.flags & LANES_LOCKED != 0 {
+            return None;
+        }
+        let Trigger::After(delay) = self.trigger else {
+            return None;
+        };
+        self.lanes_from?.checked_add(delay)
+    }
+
+    /// The status flags as they are at `at`, since the last evaluation: with the lanes locked
+    /// once their lock is due.
+    fn flags_at(&self, at: Timestamp) -> u8 {
+        match self.lock_due() {
+            Some(due) if due <= at => {
+                let lanes = match self.line {
+                    Line::Frl { rate, .. } if frl_lanes(frl_value(rate)) == 4 => FOUR_LANES_LOCKED,
+                    _ => LANES_LOCKED,
+                };
+                self.flags | lanes
+            }
+            _ => self.flags,
         }
     }
 
@@ -824,9 +854,10 @@ impl Scdc {
     /// did; and keeps the counts for the next check.
     fn see_counts(&mut self, at: Timestamp, rise: u64, env: &mut Env<'_>) {
         self.checked_at = at;
+        let flags = self.flags_at(at);
         let mut set = 0;
         for i in 0..COUNTERS.len() {
-            if !self.counting(i) {
+            if !self.counting(i, flags) {
                 continue;
             }
             let count = (self.ced[i] / CED_UNIT).min(CED_MAX);
@@ -843,19 +874,32 @@ impl Scdc {
     }
 
     /// Counts the errors up to `now`, at the rates and on the counters counting since the
-    /// last count: neither changes between events.
+    /// last count: the rates do not change between events, and the counters counting only
+    /// where the lanes lock between them, which splits the count there.
     /// A time before the last count (a byte's time runs ahead of the transaction's start)
     /// counts nothing.
     fn count_errors(&mut self, now: Timestamp) {
-        if now <= self.counted_to {
+        if let Some(due) = self.lock_due()
+            && self.counted_to < due
+            && due <= now
+        {
+            self.count_span(due, self.flags);
+        }
+        self.count_span(now, self.flags_at(now));
+    }
+
+    /// Counts the errors from the last count up to `to`, on the counters counting with the
+    /// status flags `flags`.
+    fn count_span(&mut self, to: Timestamp, flags: u8) {
+        if to <= self.counted_to {
             return;
         }
-        let micros = now.saturating_duration_since(self.counted_to).as_micros();
+        let micros = to.saturating_duration_since(self.counted_to).as_micros();
         let micros = u64::try_from(micros).unwrap_or(u64::MAX);
-        self.counted_to = now;
+        self.counted_to = to;
         let rates = self.counter_rates();
         for (i, rate) in rates.into_iter().enumerate() {
-            if self.counting(i) {
+            if self.counting(i, flags) {
                 let more = u64::from(rate).saturating_mul(micros);
                 self.ced[i] = self.ced[i].saturating_add(more).min(CED_MAX * CED_UNIT);
             }
@@ -877,7 +921,11 @@ impl Scdc {
         let mut bytes = [0u8; 11];
         for (i, &low) in COUNTERS.iter().enumerate() {
             let [count_low, count_high, ..] = (self.ced[i] / CED_UNIT).to_le_bytes();
-            let valid = if self.counting(i) { CED_VALID } else { 0 };
+            let valid = if self.counting(i, self.flags) {
+                CED_VALID
+            } else {
+                0
+            };
             let at = usize::from(low - CED);
             bytes[at] = count_low;
             bytes[at + 1] = count_high | valid;

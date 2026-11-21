@@ -603,3 +603,28 @@ fn clear_on_read_and_moving_reads_reach_lane_3_and_the_corrections() {
     bench.ddc().write_read(SCDC, &[0x57], &mut read).unwrap();
     assert_eq!(read, [0, 0x80, 0, 0x80]);
 }
+
+#[test]
+fn frl_errors_count_from_the_lock_even_when_one_advance_spans_it() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    let mut phy = bench.phy();
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    clear_flt_update(&bench);
+    phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
+    phy.send_ltp(REQUESTED).unwrap();
+    bench.advance(MS);
+    phy.send_ltp(LanePatterns::default()).unwrap();
+    bench.set_character_errors(ErrorRates {
+        lane3: 1_000,
+        ..ErrorRates::NONE
+    });
+    // The lanes lock 1 ms after the patterns stop, within this advance.
+    let stopped = bench.now();
+    bench.advance(Duration::from_secs(3));
+    // One error a millisecond, from the lock 1 ms after the patterns stopped.
+    let locked_for = bench.now().saturating_duration_since(stopped) - MS;
+    let bytes = counters(&bench);
+    assert_eq!(bytes[8] & 0x80, 0x80, "lane 3 valid");
+    let count = u16::from_le_bytes([bytes[7], bytes[8] & 0x7F]);
+    assert_eq!(u128::from(count), locked_for.as_millis());
+}

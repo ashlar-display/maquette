@@ -388,3 +388,16 @@ fn after_a_clear_ced_update_measures_the_rise_from_zero() {
     bench.advance(Duration::from_secs(2));
     assert!(ced_update(&bench));
 }
+
+#[test]
+fn errors_count_from_the_lock_even_when_one_advance_spans_it() {
+    // The line starts and the bench advances 2 s in one step: the lanes lock 1 ms in, and
+    // count from there, though the flags change only at the advance's end.
+    let bench = Bench::new(SinkConfig::new(), &[]).unwrap();
+    bench.set_character_errors(ErrorRates::all(1_000));
+    bench.set_line(TMDS_297);
+    bench.advance(Duration::from_secs(2));
+    assert_eq!(count(&bench, 0), (1_999, true));
+    // The checks at 1 s and 2 s saw the counts as they were at those seconds.
+    assert!(ced_update(&bench));
+}
