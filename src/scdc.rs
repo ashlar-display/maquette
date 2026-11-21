@@ -242,8 +242,10 @@ fn role(reg: u8) -> Role {
 ///   rate, within the link's [`LaneLimits`](crate::LaneLimits), for the lock trigger
 ///   (*chosen*: no source gives the time), the sink posts the pass. A lane requested 0 needs
 ///   nothing.
-/// - After the pass, the lanes lock once the line is FRL at the rate without patterns and
-///   the lock trigger has passed: `Status_Flags_0` bits 1–3, and bit 4 at 4 lanes. Once
+/// - After the pass, the lanes lock once the line is FRL at the rate without patterns, each
+///   active lane within the link's limits, and the lock trigger has passed:
+///   `Status_Flags_0` bits 1–3, and bit 4 at 4 lanes. A lane leaving its limits loses the
+///   locks, as a link that degrades (*chosen*: no source shows the lanes' margins). Once
 ///   they are locked and the source has cleared `FLT_update`, the sink sets `FRL_start`
 ///   (Xilinx `xv_hdmirx1_intr.c:2153–2165`).
 ///
@@ -537,11 +539,9 @@ impl Scdc {
             patterns.lane3,
         ]
         .map(|pattern| pattern.map_or(0, LtpPattern::value));
-        let limit = limits.lanes()[lane];
         frl_value(line_rate) == rate
             && posted[lane] == carried[lane]
-            && limit.max_rate.is_none_or(|max| rate <= frl_value(max))
-            && tx_ffe_levels(equalization)[lane] >= limit.min_tx_ffe
+            && within_limits(lane, rate, equalization, limits)
     }
 
     /// The LTS:3 timeouts due by `now`, seen with the line and the lane limits as they were
@@ -1050,14 +1050,28 @@ impl Scdc {
                     && (scrambled || !high);
                 (true, decodable)
             }
-            Line::Frl { rate, patterns, .. } => {
+            Line::Frl {
+                rate,
+                patterns,
+                equalization,
+                ..
+            } => {
                 let trained = match self.training {
                     Training::Passed { rate: at } | Training::Started { rate: at } => {
                         frl_value(rate) == at
                     }
                     _ => false,
                 };
-                (false, trained && patterns == LanePatterns::default())
+                // Lanes outside their limits after the pass lose their lock: a link that
+                // degrades.
+                let value = frl_value(rate);
+                let limits = env.lane_limits();
+                let within = (0..frl_lanes(value))
+                    .all(|lane| within_limits(lane, value, equalization, limits));
+                (
+                    false,
+                    trained && patterns == LanePatterns::default() && within,
+                )
             }
             Line::Off => (false, false),
         };
@@ -1187,6 +1201,15 @@ fn same_lanes(a: Line, b: Line) -> bool {
         ) => rate == other_rate && patterns == other_patterns,
         _ => a == b,
     }
+}
+
+/// Whether `lane` at the `FRL_Rate` value `rate`, with `equalization` on the line, is
+/// within the link's `limits`: the rate at most its maximum, the TxFFE level at least its
+/// minimum.
+fn within_limits(lane: usize, rate: u8, equalization: Option<EqParams>, limits: LinkLanes) -> bool {
+    let limit = limits.lanes()[lane];
+    limit.max_rate.is_none_or(|max| rate <= frl_value(max))
+        && tx_ffe_levels(equalization)[lane] >= limit.min_tx_ffe
 }
 
 /// Each lane's TxFFE level on the line: 0 where the PHY has set none.

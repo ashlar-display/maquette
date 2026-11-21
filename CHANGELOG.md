@@ -69,7 +69,8 @@ implementations of hdmi-hal's traits.
 - **Character errors** (`ErrorRates`, errors a second on each lane, and Reed-Solomon
   corrections a second), set with `set_character_errors`, and **lane limits** for FRL link
   training (`LinkLanes`, a `LaneLimits` for each lane: its highest rate and least TxFFE
-  level), set with `set_lane_limits`. `ErrorRates` and `LaneLimits` are built with `const`
+  level), set with `set_lane_limits`: outside them a lane does not train, and after the
+  pass it loses the lane locks. `ErrorRates` and `LaneLimits` are built with `const`
   builders (`with_lane0`, `with_rs_corrections`, `with_max_rate`, `with_min_tx_ffe`, …).
 - **The scrambling lock:** `Scrambling_Status` is set once `Scrambling_Enable` is set, the
   line is scrambled TMDS at the ratio `TMDS_Bit_Clock_Ratio` names and that ratio fits the

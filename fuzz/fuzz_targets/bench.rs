@@ -469,12 +469,35 @@ fn check_flags(bench: &Bench<'_, LOG>) {
     );
     if flags & 0x0E != 0 {
         assert_eq!(flags & 0x0E, 0x0E, "lanes 0-2 lock together");
-        if let Line::Frl { rate, patterns, .. } = line {
-            let value = match rate {
-                HdmiForumFrl::Rate6Gbps4Lanes => 3,
-                HdmiForumFrl::Rate8Gbps4Lanes => 4,
-                _ => 0,
-            };
+        if let Line::Frl {
+            rate,
+            patterns,
+            equalization,
+            ..
+        } = line
+        {
+            let value = frl_value(rate);
+            // Every lane locked is within its limits: the rate at most its maximum, its
+            // TxFFE level at least its minimum.
+            let limits = bench.lane_limits();
+            let levels = equalization.map_or([0; 4], |eq| {
+                [
+                    eq.lane0.tx_ffe_level.value(),
+                    eq.lane1.tx_ffe_level.value(),
+                    eq.lane2.tx_ffe_level.value(),
+                    eq.lane3.map_or(0, |lane| lane.tx_ffe_level.value()),
+                ]
+            });
+            for (lane, limit) in [limits.lane0, limits.lane1, limits.lane2, limits.lane3]
+                .into_iter()
+                .enumerate()
+            {
+                assert!(
+                    limit.max_rate.is_none_or(|max| value <= frl_value(max))
+                        && levels[lane] >= limit.min_tx_ffe.value(),
+                    "lane {lane} locked outside its limits"
+                );
+            }
             assert_eq!(flags & 1, 0, "clock detected in FRL");
             assert_eq!(
                 sink.config_1().map(|config| config & 0x0F),

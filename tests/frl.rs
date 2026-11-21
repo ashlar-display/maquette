@@ -716,3 +716,46 @@ fn an_unchecked_sink_has_no_lts3_timeouts_and_still_refuses_a_rate_above_its_max
     bench.advance(Duration::from_millis(300));
     assert_eq!(training(&bench), (0, 0xFF, 0xFF));
 }
+
+#[test]
+fn a_lane_leaving_its_limits_after_the_pass_loses_the_locks() {
+    let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    assert_eq!(bench.sink().status_flags_0(), Some(0x5E));
+    bench.ddc().write(SCDC, &[0x10, 0x01]).unwrap();
+    // The link degrades: lane 3 no longer takes 6 Gbps.
+    bench.set_lane_limits(LinkLanes {
+        lane3: LaneLimits::NONE.with_max_rate(Some(HdmiForumFrl::Rate3Gbps3Lanes)),
+        ..LinkLanes::NONE
+    });
+    assert_eq!(
+        bench.sink().status_flags_0(),
+        Some(0x40),
+        "every lane unlocked"
+    );
+    let (update, ..) = training(&bench);
+    assert_eq!(update & 0x01, 0x01, "Status_Update");
+    assert_eq!(
+        update & 0x10,
+        0x10,
+        "FRL_start stays until the source clears it"
+    );
+    // It recovers: the lanes lock again after the trigger.
+    bench.set_lane_limits(LinkLanes::NONE);
+    bench.advance(MS);
+    assert_eq!(bench.sink().status_flags_0(), Some(0x5E));
+}
+
+#[test]
+fn a_lane_needing_more_txffe_after_the_pass_relocks_once_the_source_applies_it() {
+    let bench = trained(FRL_SINK, HdmiForumFrl::Rate6Gbps4Lanes, 0x03);
+    bench.set_lane_limits(LinkLanes {
+        lane0: LaneLimits::NONE.with_min_tx_ffe(tx_ffe(1)),
+        ..LinkLanes::NONE
+    });
+    assert_eq!(bench.sink().status_flags_0(), Some(0x40));
+    let mut eq = EqParams::new();
+    eq.lane0.tx_ffe_level = tx_ffe(1);
+    bench.phy().adjust_equalization(eq).unwrap();
+    bench.advance(MS);
+    assert_eq!(bench.sink().status_flags_0(), Some(0x5E));
+}

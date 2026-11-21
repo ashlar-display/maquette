@@ -514,7 +514,9 @@ highest rate it trains at, and the least TxFFE level it needs:
 `LaneLimits::NONE.with_max_rate(..).with_min_tx_ffe(..)`), none by default; set with
 `Bench::set_lane_limits`, recorded as `Event::LaneLimits`, seen through `Env::lane_limits()`.
 A lane outside its limits does not carry the patterns the sink asks for, so training does
-not pass: a procedure's TxFFE and rate fallbacks are tested against it.
+not pass: a procedure's TxFFE and rate fallbacks are tested against it. After the pass, a lane
+leaving its limits loses the lane locks (with `Status_Update`), as a link that degrades: a
+procedure's health monitoring and retraining are tested against it.
 
 `ErrorRates` and `LaneLimits` are `#[non_exhaustive]` with `const` builders, so a quantity or
 a limit added later breaks no test; `LinkLanes` holds the four lanes as public fields, as
@@ -673,7 +675,7 @@ source settles is marked *chosen*.
 | A rate the sink cannot take | one receiver: 0xF on every lane [17] | 0xF on every lane for a rate above the maximum or a value naming none (*chosen*) |
 | The pass (0 on every lane, with `FLT_update`), then `FRL_start` | settled [17] | fixed |
 | What comes before the pass and `FRL_start` | the receivers differ [17]: one posts new requests only once the source clears `FLT_update`, passes once each lane carries its pattern, and sets `FRL_start` once the lanes lock and the pass is cleared; the other waits up to 100 ms for each clear, passes whatever the lanes carry (logging its error counts), and sets `FRL_start` without the lanes in sync | a setting, `with_frl_pass`: `FrlPass::Patterns` (*chosen* default, the least forgiving), matching counted from the clear, at the rate, within the link's `LaneLimits`, for the lock trigger (*chosen*), a lane requested 0 needing nothing, with the LTS:3 timeouts; or `FrlPass::Unchecked`, the 100 ms waits, no check of the lanes, no timeouts |
-| The FRL lane locks | settled that the receivers set them as the lanes lock [15] | lanes 0–2 (and 3 at 4 lanes) lock once the line is FRL at the rate without patterns, after the pass, for the lock trigger; a change of output keeps them; `Clock_Detected` stays clear in FRL (*chosen*) |
+| The FRL lane locks | settled that the receivers set them as the lanes lock [15] | lanes 0–2 (and 3 at 4 lanes) lock once the line is FRL at the rate without patterns, after the pass, each lane within the link's `LaneLimits`, for the lock trigger; a lane leaving its limits loses them (*chosen*: no source shows the lanes' margins); a change of output keeps them; `Clock_Detected` stays clear in FRL (*chosen*) |
 | Lanes that do not pass in time | one receiver: an LTS:3 timer of 180/90/60/45 ms by `FFE_Levels` 0–3; at each timeout while FFE levels remain, 0xE on the lanes not passing, then the patterns again once cleared; after the last, 0xF on every lane; none with `FLT_no_timeout` or `FLT_no_retrain` [17] | a setting, `with_lts3_timeout`: 180 ms by default (*chosen*), split into `FFE_Levels` + 1 attempts as that receiver's table, or `None`; the source's `FFE_Levels` always taken (*chosen*: that receiver asks for another TxFFE level only when its integrator enables it); the timeouts seen with the line and lane limits as they were before the event that finds them due |
 | `FRL_Rate` 0 returns to legacy | settled [17] | the requests cleared; a reset of the status group also returns to legacy (*chosen*) |
 | `Status_Update` set when the status flags change | no receiver source shows it (the receivers set it in hardware); one source family reads the flags only when it is set, others regardless [15] | a setting: `StatusUpdate::OnChange` (*chosen* default) or `Never` |
