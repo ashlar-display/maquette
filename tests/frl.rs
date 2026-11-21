@@ -652,3 +652,41 @@ fn rsed_update_comes_from_its_own_checks_while_ced_update_is_set() {
     bench.advance(Duration::from_secs(3));
     assert_eq!(training(&bench).0 & 0x42, 0x42);
 }
+
+#[test]
+fn frl_start_waits_for_the_source_to_clear_the_pass() {
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    let mut phy = bench.phy();
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    clear_flt_update(&bench);
+    phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
+    phy.send_ltp(REQUESTED).unwrap();
+    bench.advance(MS);
+    assert_eq!(training(&bench), (0x20, 0, 0), "the pass");
+    // The source stops the patterns but leaves FLT_update set: the lanes lock, and no
+    // FRL_start comes.
+    phy.send_ltp(LanePatterns::default()).unwrap();
+    bench.advance(Duration::from_millis(10));
+    assert_eq!(bench.sink().status_flags_0(), Some(0x5E));
+    assert_eq!(training(&bench).0 & 0x30, 0x20);
+    clear_flt_update(&bench);
+    assert_eq!(training(&bench).0 & 0x30, 0x10);
+}
+
+#[test]
+fn the_last_timeout_asks_for_no_lower_rate_when_every_lane_passes() {
+    // The lanes carry their patterns, but the source leaves FLT_update set past the whole
+    // LTS:3 time: the sink posts nothing, and once cleared, it passes at the rate.
+    let bench = Bench::new(FRL_SINK, &[]).unwrap();
+    let mut phy = bench.phy();
+    let start = bench.now();
+    bench.ddc().write(SCDC, &[0x31, 0x03]).unwrap();
+    phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
+    phy.send_ltp(REQUESTED).unwrap();
+    advance_to(&bench, start, 400);
+    assert_eq!(training(&bench), (0x20, 0x65, 0x87));
+    clear_flt_update(&bench);
+    assert_eq!(training(&bench), (0, 0x65, 0x87), "no lower-rate request");
+    bench.advance(MS);
+    assert_eq!(training(&bench), (0x20, 0, 0));
+}

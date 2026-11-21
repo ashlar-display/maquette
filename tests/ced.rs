@@ -380,12 +380,16 @@ fn after_a_clear_ced_update_measures_the_rise_from_zero() {
     bench.set_character_errors(ErrorRates::NONE);
     read_counters(&bench);
     bench.ddc().write(SCDC, &[0x10, 0x02]).unwrap();
-    // Four errors after the clear: a rise of 4 from 0, though below the count before it.
+    // Four errors by the next check, at 2 s: a rise of 4 from 0, though far below the
+    // count the check before the clear saw. Asserted right after that check: a later one
+    // would see a rise from the 2 s count whatever the clear did.
     bench.set_character_errors(ErrorRates {
-        lane0: 4,
+        lane0: 5,
         ..ErrorRates::NONE
     });
-    bench.advance(Duration::from_secs(2));
+    let at = maquette::Timestamp::from_micros(2_100_000);
+    bench.advance(at.saturating_duration_since(bench.now()));
+    assert_eq!(count(&bench, 0).0, 5);
     assert!(ced_update(&bench));
 }
 
