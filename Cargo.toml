@@ -33,4 +33,4 @@ critical-section = "1.2"
 # feature set; a bare-target build of the library does not see this.
 critical-section = { version = "1.2", features = ["std"] }
 # Drives the async checks' futures in tests.
-pollster = "0.4"
+pollster = "1.0"
