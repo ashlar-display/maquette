@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   releases" section says how 0.1.0 and later releases were and are uploaded, and the
   architecture document describes how the crate works rather than a design to be built.
 
+### Internal
+
+- **The tests' `pollster` dev-dependency moved from 0.4 to 1.0**; `block_on` is
+  unchanged, and 1.0 needs Rust 1.69, within this crate's MSRV.
+
 ## [0.1.0] - 2026-11-21
 
 ### Added
